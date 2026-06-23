@@ -16,14 +16,14 @@ export default function PageHeader({ title, subtitle, live, right }: PageHeaderP
   }, []);
 
   return (
-    <div className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-line px-4 sm:px-6 py-4 flex items-center justify-between gap-3 shadow-sm">
-      <div>
-        <h1 className="text-xl font-semibold text-primary">{title}</h1>
-        {subtitle && <p className="text-xs text-steel mt-0.5">{subtitle}</p>}
+    <div className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-line px-4 sm:px-6 py-3 sm:py-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 shadow-sm">
+      <div className="min-w-0">
+        <h1 className="text-lg sm:text-xl font-semibold text-primary truncate">{title}</h1>
+        {subtitle && <p className="text-xs text-steel mt-0.5 truncate">{subtitle}</p>}
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 sm:gap-4 flex-wrap justify-end">
         {live !== undefined && (
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-1.5 text-xs">
             <span className="w-2 h-2 rounded-full bg-accent live-dot" />
             <span className="text-steel">{live} live</span>
           </div>
