@@ -77,7 +77,7 @@ export default function Reports() {
         }
       />
 
-      <div className="px-6 pb-8 space-y-5">
+      <div className="px-4 sm:px-6 pb-8 space-y-5">
         {/* Tab switcher */}
         <div className="panel p-3 flex items-center justify-end">
           <div className="flex gap-1 bg-base rounded-lg p-0.5 border border-line">

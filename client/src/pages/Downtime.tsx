@@ -84,7 +84,7 @@ export default function Downtime() {
         )}
       />
 
-      <div className="px-6 pb-8 space-y-5">
+      <div className="px-4 sm:px-6 pb-8 space-y-5">
         {/* Summary cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard label="Total Events" value={fmtNum(summary?.totalEvents || 0)} sub={winLabel} accent="#64748B" icon={Clock} />

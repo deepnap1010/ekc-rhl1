@@ -59,7 +59,7 @@ export default function History() {
         )}
       />
 
-      <div className="px-6 pb-8 space-y-5">
+      <div className="px-4 sm:px-6 pb-8 space-y-5">
         {/* Filters */}
         <div className="panel p-4 grid md:grid-cols-3 gap-3">
           <div>

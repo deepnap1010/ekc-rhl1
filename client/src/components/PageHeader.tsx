@@ -16,7 +16,7 @@ export default function PageHeader({ title, subtitle, live, right }: PageHeaderP
   }, []);
 
   return (
-    <div className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-line px-6 py-4 flex items-center justify-between shadow-sm">
+    <div className="sticky top-0 z-10 bg-surface/95 backdrop-blur border-b border-line px-4 sm:px-6 py-4 flex items-center justify-between gap-3 shadow-sm">
       <div>
         <h1 className="text-xl font-semibold text-primary">{title}</h1>
         {subtitle && <p className="text-xs text-steel mt-0.5">{subtitle}</p>}

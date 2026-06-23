@@ -134,7 +134,7 @@ export default function Roles() {
         )}
       />
 
-      <div className="px-6 pb-8 grid lg:grid-cols-[240px_1fr] gap-5">
+      <div className="px-4 sm:px-6 pb-8 grid lg:grid-cols-[240px_1fr] gap-5">
         {/* Role tree — Super Admin → Plant Head → Departments → roles */}
         <div className="panel p-2 h-fit space-y-2">
           {/* Leadership */}
