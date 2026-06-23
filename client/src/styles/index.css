@@ -1,0 +1,41 @@
+/* client/src/styles/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+
+html, body, #root { height: 100%; }
+body {
+  background: #F4F6F9;
+  color: #1E293B;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* thin scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #F4F6F9; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
+@layer components {
+  .panel { @apply bg-surface border border-line rounded-card shadow-panel; }
+  .card  { @apply bg-raised border border-line rounded-card shadow-card; }
+  .data  { @apply font-mono tabular-nums; }
+  .label { @apply text-[11px] uppercase tracking-wider text-steel; }
+  .pill  { @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium; }
+  .input { @apply w-full bg-base border border-line rounded-lg px-3 py-2 text-sm text-primary outline-none focus:border-accent placeholder:text-steel/60; }
+}
+
+/* status dot pulse for running machines */
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(13,148,136,0.45); }
+  70%  { box-shadow: 0 0 0 6px rgba(13,148,136,0); }
+  100% { box-shadow: 0 0 0 0 rgba(13,148,136,0); }
+}
+.live-dot { animation: pulse-ring 2s infinite; }
+
+/* tab underline active */
+.tab-active { @apply border-b-2 border-accent text-accent font-semibold; }
+.tab-inactive { @apply border-b-2 border-transparent text-steel hover:text-primary hover:border-line; }

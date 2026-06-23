@@ -1,0 +1,33 @@
+# Render Blueprint — ONE Web Service that runs the API + socket.io AND serves the
+# built React client from a single origin (no CORS, no separate frontend host).
+# Deploy via Render dashboard → New + → Blueprint → connect this repo.
+services:
+  - type: web
+    name: ekc-smartfactory
+    runtime: node
+    plan: free                 # free tier sleeps after ~15 min idle (cold start on next hit)
+    region: singapore          # closest to India; change to oregon / frankfurt if you prefer
+    branch: main               # the branch Render auto-deploys (match your repo's default)
+    healthCheckPath: /health
+    autoDeploy: true           # redeploy automatically on every push to `branch`
+    # Build the client bundle, then install the server's runtime deps.
+    buildCommand: cd client && npm install --include=dev && npm run build && cd ../server && npm install
+    # Start the API server (tsx). It also serves ../client/dist when present.
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_NAME
+        value: test            # the EKC data lives in the `test` database
+      - key: MONGO_URI
+        sync: false            # SECRET — paste your Atlas connection string in the dashboard
+      - key: JWT_SECRET
+        generateValue: true    # Render generates a strong random secret for you
+      # Bootstrap admin — only used while the `users` collection is EMPTY.
+      # Your Atlas already has real users, so these are optional.
+      - key: ADMIN_NAME
+        value: Super Admin
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
