@@ -4,17 +4,19 @@ export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
+      // Driven by CSS variables (see styles/index.css) so the palette can switch
+      // between light/dark themes. `<alpha-value>` keeps opacity utilities working.
       colors: {
-        base:    '#F4F6F9',   // main page background
-        surface: '#FFFFFF',   // panels / sidebar
-        raised:  '#F8F9FB',   // cards inside panels
-        line:    '#E2E8F0',   // borders / dividers
-        steel:   '#64748B',   // muted / secondary text
-        primary: '#1E293B',   // primary body text
-        accent:  '#0D9488',   // teal-600 (EKC brand action color)
-        idle:    '#D97706',   // amber-600
-        stopped: '#DC2626',   // red-600
-        running: '#0D9488',   // same as accent
+        base:    'rgb(var(--c-base) / <alpha-value>)',     // main page background
+        surface: 'rgb(var(--c-surface) / <alpha-value>)',  // panels / sidebar
+        raised:  'rgb(var(--c-raised) / <alpha-value>)',   // cards inside panels
+        line:    'rgb(var(--c-line) / <alpha-value>)',     // borders / dividers
+        steel:   'rgb(var(--c-steel) / <alpha-value>)',    // muted / secondary text
+        primary: 'rgb(var(--c-primary) / <alpha-value>)',  // primary body text
+        accent:  'rgb(var(--c-accent) / <alpha-value>)',   // teal (EKC brand action color)
+        idle:    'rgb(var(--c-idle) / <alpha-value>)',     // amber
+        stopped: 'rgb(var(--c-stopped) / <alpha-value>)',  // red
+        running: 'rgb(var(--c-running) / <alpha-value>)',  // same as accent
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],

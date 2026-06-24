@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, ChevronDown, Pencil, Search, Users, Cpu, X, GitBranch, Eye, Building2 } from 'lucide-react';
 import { userApi } from '../api/endpoints';
-import { Spinner } from '../components/ui';
+import { Spinner, Avatar } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import { useAuthStore } from '../store/auth';
 import { roleStyle } from '../lib/orgRole';
@@ -241,9 +241,7 @@ export default function OrgChart() {
             {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </button>
 
-          <span className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0" style={{ backgroundColor: `${rs.color}22`, color: rs.color }}>
-            {u.name.slice(0, 2).toUpperCase()}
-          </span>
+          <Avatar src={u.avatar} name={u.name} size={32} color={rs.color} />
 
           <div className="min-w-0 flex-1 cursor-pointer" onClick={() => hasKids && toggle(u.id)}>
             <div className="text-sm font-medium text-primary truncate">{u.name}</div>

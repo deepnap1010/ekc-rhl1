@@ -53,6 +53,7 @@ interface StripableUser {
   role?: { _id?: unknown; name?: string; key?: string } | null;
   reportsTo?: unknown;
   assignedMachines?: string[];
+  avatar?: string;
   active?: boolean;
   deletion?: unknown;
 }
@@ -95,7 +96,13 @@ export const updateRolePermissions = asyncHandler(async (req, res) => {
 export const deleteRole = asyncHandler(async (req, res) => {
   const role = await Role.findById(req.params.id);
   if (!role) return fail(res, 404, 'Role not found');
-  if (role.isSystem) return fail(res, 403, 'System roles cannot be deleted');
+  // Only the Super Admin role is protected; every other role (system or custom) can
+  // be removed when no longer needed. Detach it from any users that still reference it.
+  const key = `${role.key || ''} ${role.name || ''}`.toLowerCase();
+  if (key.includes('super') && key.includes('admin')) {
+    return fail(res, 403, 'The Super Admin role cannot be deleted');
+  }
+  await User.updateMany({ role: role._id }, { $set: { role: null } });
   await role.deleteOne();
   return ok(res, { deleted: true });
 });
@@ -126,7 +133,7 @@ export const listUsers = asyncHandler(async (req, res) => {
 });
 
 export const createUser = asyncHandler(async (req, res) => {
-  const { name, email, password, role, plant, reportsTo, assignedMachines, isSuperAdmin } = req.body as {
+  const { name, email, password, role, plant, reportsTo, assignedMachines, isSuperAdmin, avatar } = req.body as {
     name?: string;
     email?: string;
     password?: string;
@@ -135,9 +142,10 @@ export const createUser = asyncHandler(async (req, res) => {
     reportsTo?: unknown;
     assignedMachines?: string[];
     isSuperAdmin?: boolean;
+    avatar?: string;
   };
   if (!name || !email || !password || !role) return fail(res, 400, 'name, email, password, role required');
-  const user = new User({ name, email, role, plant, reportsTo: reportsTo || null, assignedMachines, isSuperAdmin });
+  const user = new User({ name, email, role, plant, reportsTo: reportsTo || null, assignedMachines, isSuperAdmin, avatar: avatar || '' });
   await user.setPassword(password);
   await user.save();
   invalidateBootstrapCache();   // first real user → bootstrap login disables immediately
@@ -317,6 +325,7 @@ function stripUser(u: StripableUser) {
     role: u.role ? { id: u.role._id, name: u.role.name, key: u.role.key } : null,
     reportsTo: u.reportsTo || null,
     assignedMachines: u.assignedMachines || [],
+    avatar: u.avatar || '',
     active: u.active,
     deletion: u.deletion || null,
   };

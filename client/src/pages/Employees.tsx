@@ -1,9 +1,10 @@
 // client/src/pages/Employees.tsx — employee directory + full create/edit/deactivate.
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Search, Plus, Pencil, UserX, UserCheck, Users, ShieldCheck, Trash2, History } from 'lucide-react';
+import { Search, Plus, Pencil, UserX, UserCheck, Users, ShieldCheck, Trash2, History, Camera } from 'lucide-react';
 import { userApi, rbacApi, machineApi } from '../api/endpoints';
-import { Spinner } from '../components/ui';
+import { resizeImage } from '../lib/image';
+import { Spinner, Avatar } from '../components/ui';
 import Modal from '../components/Modal';
 import PageHeader from '../components/PageHeader';
 import DeleteEmployeeModal from '../components/DeleteEmployeeModal';
@@ -82,7 +83,7 @@ export default function Employees() {
                   <tr key={u.id} className={`border-t border-line hover:bg-base/60 ${!u.active ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
                       <span className="flex items-center gap-2.5">
-                        <span className="w-7 h-7 rounded-full bg-accent/15 text-accent flex items-center justify-center text-[10px] font-semibold shrink-0">{u.name.slice(0, 2).toUpperCase()}</span>
+                        <Avatar src={u.avatar} name={u.name} size={28} />
                         <span className="font-medium text-primary">{u.name}</span>
                       </span>
                     </td>
@@ -201,6 +202,7 @@ interface EmployeeForm {
   reportsTo: string;
   isSuperAdmin: boolean;
   assignedMachines: string[];
+  avatar: string;
 }
 
 interface EmployeeModalProps {
@@ -217,9 +219,21 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
   const [form, setForm] = useState<EmployeeForm>({
     name: employee?.name || '', email: employee?.email || '', password: '',
     dept: deptKeyForRole(employee?.role), role: employee?.role?.id || '', plant: employee ? (employee.plant || '') : 'KASEZ (Gandhidham)', reportsTo: employee?.reportsTo || '',
-    isSuperAdmin: employee?.isSuperAdmin || false, assignedMachines: employee?.assignedMachines || [],
+    isSuperAdmin: employee?.isSuperAdmin || false, assignedMachines: employee?.assignedMachines || [], avatar: employee?.avatar || '',
   });
   const [error, setError] = useState('');
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  const onPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { setError('Please choose an image file'); return; }
+    setPhotoBusy(true);
+    try { set('avatar', await resizeImage(f)); }
+    catch { setError('Could not read that image'); }
+    finally { setPhotoBusy(false); }
+  };
   const set = <K extends keyof EmployeeForm,>(k: K, v: EmployeeForm[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   // "Reports to" follows the chosen role's department-config parent
@@ -260,6 +274,7 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
         name: form.name.trim(), email: form.email.trim().toLowerCase(),
         role: form.isSuperAdmin ? null : (form.role || null), plant: form.plant.trim(),
         reportsTo: form.reportsTo || null, assignedMachines: form.assignedMachines, isSuperAdmin: form.isSuperAdmin,
+        avatar: form.avatar,
       };
       if (form.password) body.password = form.password;
       return isEdit ? userApi.update(employee!.id, body) : userApi.create(body);
@@ -285,6 +300,23 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
         {/* Decoys absorb the browser's saved-login autofill so the real email/password stay empty. */}
         <input type="text" name="username" autoComplete="username" tabIndex={-1} aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
         <input type="password" name="password" autoComplete="current-password" tabIndex={-1} aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
+
+        {/* Profile photo — saved to this employee's record in the DB */}
+        <div className="flex items-center gap-4">
+          <Avatar src={form.avatar} name={form.name} size={56} />
+          <div className="flex flex-wrap gap-2">
+            <label className="cursor-pointer flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-accent/30 text-accent bg-accent/5 hover:bg-accent/10 transition-colors">
+              <Camera size={14} /> {photoBusy ? 'Processing…' : form.avatar ? 'Change photo' : 'Upload photo'}
+              <input type="file" accept="image/*" className="hidden" onChange={onPhoto} />
+            </label>
+            {form.avatar && (
+              <button type="button" onClick={() => set('avatar', '')} className="text-sm px-3 py-2 rounded-lg border border-line text-steel hover:text-stopped hover:border-stopped/40 transition-colors">
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+
         <div className="grid sm:grid-cols-2 gap-4">
           <Field label="Full name" required><input value={form.name} onChange={(e) => set('name', e.target.value)} className="input" placeholder="Enter full name" autoFocus autoComplete="off" /></Field>
           <Field label="Email" required><input type="email" name="ekc_emp_email" value={form.email} onChange={(e) => set('email', e.target.value)} className="input" placeholder="Enter your email" autoComplete="off" /></Field>

@@ -18,6 +18,7 @@ r.post('/auth/login', auth.login);
 r.use(authenticate);
 
 r.get('/auth/me', auth.me);
+r.patch('/auth/me', auth.updateMe); // self-service profile edit (name / email / avatar)
 
 // Dashboard
 r.get('/dashboard/overview', authorize('dashboard'), dash.overview);

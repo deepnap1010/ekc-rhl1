@@ -10,7 +10,7 @@ import {
   ArrowDown, MapPin, Crown, type LucideProps,
 } from 'lucide-react';
 import { userApi, machineApi } from '../api/endpoints';
-import { Spinner } from '../components/ui';
+import { Spinner, Avatar } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import type { User, Machine } from '../types/api';
 import {
@@ -230,9 +230,7 @@ function RoleCard({ role, people, accent, navigate }: RoleCardProps) {
             {people.map((u) => (
               <button key={u.id} onClick={() => navigate(`/orgchart/${u.id}`)} title="View in org chart"
                 className="group flex items-center gap-1.5 bg-surface border border-line hover:border-accent/40 rounded-full pl-1 pr-2 py-0.5 transition-colors">
-                <span className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-semibold" style={{ background: `${accent}22`, color: accent }}>
-                  {u.name.slice(0, 2).toUpperCase()}
-                </span>
+                <Avatar src={u.avatar} name={u.name} size={20} color={accent} interactive={false} />
                 <span className="text-xs text-primary group-hover:text-accent">{u.name}</span>
                 {u.assignedMachines?.length ? <span className="text-[10px] text-steel inline-flex items-center gap-0.5"><Cpu size={10} />{u.assignedMachines.length}</span> : null}
               </button>
@@ -271,9 +269,7 @@ function LeaderCard({ icon: Icon, accent, title, sub, people, navigate }: Leader
           {people.map((u) => (
             <button key={u.id} onClick={() => navigate(`/orgchart/${u.id}`)} title="View in org chart"
               className="group flex items-center gap-1.5 bg-base border border-line hover:border-accent/40 rounded-full pl-1 pr-2 py-0.5 transition-colors">
-              <span className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-semibold" style={{ background: `${accent}22`, color: accent }}>
-                {u.name.slice(0, 2).toUpperCase()}
-              </span>
+              <Avatar src={u.avatar} name={u.name} size={20} color={accent} interactive={false} />
               <span className="text-xs text-primary group-hover:text-accent">{u.name}</span>
             </button>
           ))}

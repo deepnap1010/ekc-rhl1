@@ -45,6 +45,8 @@ export const authApi = {
   login: (email: string, password: string) =>
     post<LoginResponse>('/auth/login', { email, password }),
   me: () => get<User>('/auth/me'),
+  // Update the signed-in user's own name / email / avatar (persists to the DB).
+  updateMe: (body: { name?: string; email?: string; avatar?: string }) => patch<User>('/auth/me', body),
 };
 
 export const dashboardApi = {

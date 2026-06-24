@@ -20,6 +20,7 @@ export interface IUser {
   plant: string;
   reportsTo: Types.ObjectId | null;
   assignedMachines: string[];
+  avatar: string; // profile photo as a compressed data URL ('' = use default icon)
   active: boolean;
   lastLoginAt?: Date;
   deletion?: Deletion | null;
@@ -45,6 +46,7 @@ const userSchema = new mongoose.Schema<IUser, UserModel, IUserMethods>(
     plant: { type: String, default: '' },
     reportsTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // org chart
     assignedMachines: { type: [String], default: [] }, // machineIds for operators
+    avatar: { type: String, default: '' }, // profile photo (compressed data URL), display-only
 
     active: { type: Boolean, default: true },
     lastLoginAt: { type: Date },

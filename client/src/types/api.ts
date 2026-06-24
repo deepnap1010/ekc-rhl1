@@ -51,7 +51,9 @@ export interface User {
   role: UserRole | null;
   assignedMachines?: string[];
   reportsTo?: string | null;
+  avatar?: string | null;
   active?: boolean;
+  lastLoginAt?: string | null;
   deletion?: UserDeletion | null;
   // Present only on rows from GET /users/deleted (Employee History).
   removedBy?: string | null;
@@ -80,6 +82,7 @@ export interface UserWritePayload {
   reportsTo?: string | null;
   assignedMachines?: string[];
   isSuperAdmin?: boolean;
+  avatar?: string;
   active?: boolean;
 }
 

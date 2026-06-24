@@ -3,21 +3,58 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: light; }
+/* Design tokens as RGB channels so Tailwind's `<alpha-value>` works (bg-accent/10
+   etc.) AND the whole palette can be re-themed by swapping these variables.
+   Light values are byte-identical to the original hex palette. */
+:root {
+  --c-base: 244 246 249;     /* #F4F6F9 */
+  --c-surface: 255 255 255;  /* #FFFFFF */
+  --c-raised: 248 249 251;   /* #F8F9FB */
+  --c-line: 226 232 240;     /* #E2E8F0 */
+  --c-steel: 100 116 139;    /* #64748B */
+  --c-primary: 30 41 59;     /* #1E293B */
+  --c-accent: 13 148 136;    /* #0D9488 */
+  --c-idle: 215 119 6;       /* #D97706 */
+  --c-stopped: 220 38 38;    /* #DC2626 */
+  --c-running: 13 148 136;   /* #0D9488 */
+  --c-scroll-track: 244 246 249;
+  --c-scroll-thumb: 203 213 225;
+  --c-scroll-thumb-hover: 148 163 184;
+  color-scheme: light;
+}
+
+/* Dark theme — applied by toggling [data-theme="dark"] on <html> from Settings.
+   Structural tokens flip; brand/status hues stay recognisable (slightly brighter). */
+:root[data-theme='dark'] {
+  --c-base: 15 23 42;        /* slate-900 */
+  --c-surface: 30 41 59;     /* slate-800 */
+  --c-raised: 36 49 66;      /* between 800/700 */
+  --c-line: 51 65 85;        /* slate-700 */
+  --c-steel: 148 163 184;    /* slate-400 */
+  --c-primary: 226 232 240;  /* slate-200 */
+  --c-accent: 20 184 166;    /* teal-500 */
+  --c-idle: 245 158 11;      /* amber-500 */
+  --c-stopped: 248 113 113;  /* red-400 */
+  --c-running: 20 184 166;   /* teal-500 */
+  --c-scroll-track: 15 23 42;
+  --c-scroll-thumb: 51 65 85;
+  --c-scroll-thumb-hover: 71 85 105;
+  color-scheme: dark;
+}
 
 html, body, #root { height: 100%; }
 body {
-  background: #F4F6F9;
-  color: #1E293B;
+  background: rgb(var(--c-base));
+  color: rgb(var(--c-primary));
   font-family: 'Inter', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 /* thin scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #F4F6F9; }
-::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+::-webkit-scrollbar-track { background: rgb(var(--c-scroll-track)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--c-scroll-thumb)); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-scroll-thumb-hover)); }
 
 @layer components {
   .panel { @apply bg-surface border border-line rounded-card shadow-panel; }

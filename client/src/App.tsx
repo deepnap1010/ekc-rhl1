@@ -18,6 +18,7 @@ import Alerts from './pages/Alerts';
 import OrgChart from './pages/OrgChart';
 import OrgPersonDetail from './pages/OrgPersonDetail';
 import Departments from './pages/Departments';
+import Settings from './pages/Settings';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1, staleTime: 10000 } },
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/orgchart/:id"           element={P('orgchart', <OrgPersonDetail />)} />
             <Route path="/departments"            element={P('orgchart', <Departments />)} />
             <Route path="/roles"                  element={P('roles', <Roles />)} />
+            <Route path="/settings"               element={P('settings', <Settings />)} />
           </Route>
         </Routes>
       </BrowserRouter>

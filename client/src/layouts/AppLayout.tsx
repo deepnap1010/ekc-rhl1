@@ -1,12 +1,15 @@
 // client/src/layouts/AppLayout.tsx
-import { useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
-  Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X,
+  Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
+import { useSettings, applyTheme } from '../lib/settings';
+import { useT } from '../lib/i18n';
+import { Avatar } from '../components/ui';
 import { toast } from '../store/toast';
 import { disconnectSocket } from '../lib/socket';
 
@@ -29,15 +32,35 @@ const NAV: NavItem[] = [
   { to: '/orgchart',  label: 'Org Chart',          icon: Network,     module: 'orgchart',  section: 'Management' },
   { to: '/departments',label: 'Departments',       icon: Building2,   module: 'orgchart',  section: 'Management' },
   { to: '/roles',     label: 'Roles & Permissions',icon: ShieldCheck, module: 'roles',     section: 'Management' },
+  { to: '/settings',  label: 'Settings',           icon: SettingsIcon,module: 'settings',  section: 'System' },
 ];
 
 export default function AppLayout() {
   const { user, can, logout } = useAuthStore();
+  const { company, appearance } = useSettings();
+  const t = useT();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false); // mobile drawer
+  const location = useLocation();
+  // Drawer state — only relevant below the lg breakpoint; the sidebar is always
+  // visible from lg up regardless of this flag.
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const allowed = NAV.filter((n) => can(n.module));
   const sections = [...new Set(allowed.map((n) => n.section))];
+  const displayName = user?.name || '';
+
+  // Belt-and-braces theme application: re-assert the theme whenever the preference
+  // changes (the settings store also does this via its listener).
+  useEffect(() => { applyTheme(); }, [appearance.theme]);
+
+  // Close the drawer whenever the route changes (e.g. after tapping a nav item).
+  useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+
+  // Lock body scroll while the off-canvas drawer is open on small screens.
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [mobileOpen]);
 
   const handleLogout = () => {
     disconnectSocket();
@@ -48,12 +71,21 @@ export default function AppLayout() {
 
   return (
     <div className="flex h-screen bg-base overflow-hidden">
-      {/* Backdrop — mobile only, when the drawer is open */}
-      {open && <div onClick={() => setOpen(false)} className="fixed inset-0 bg-slate-900/40 z-30 lg:hidden" aria-hidden />}
+      {/* Backdrop — only on small screens when the drawer is open */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-primary/40 backdrop-blur-[1px] lg:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden
+        />
+      )}
 
-      {/* Sidebar — static on desktop (lg+), slide-in drawer below lg */}
+      {/* Sidebar — static from lg up; off-canvas drawer below it */}
       <aside
-        className={`fixed lg:static inset-y-0 left-0 z-40 w-64 lg:w-60 shrink-0 bg-surface border-r border-line flex flex-col shadow-xl lg:shadow-sm transform transition-transform duration-200 lg:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}
+        className={`fixed inset-y-0 left-0 z-40 w-64 bg-surface border-r border-line flex flex-col shadow-sm
+          transform transition-transform duration-200 ease-out
+          lg:static lg:z-auto lg:w-60 lg:shrink-0 lg:translate-x-0
+          ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
         {/* Brand */}
         <div className="px-5 py-4 flex items-center gap-2.5 border-b border-line">
@@ -61,11 +93,15 @@ export default function AppLayout() {
             <Gauge size={20} className="text-accent" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="font-semibold text-sm leading-tight text-primary truncate">EKC SmartFactory</div>
-            <div className="text-[10px] text-steel">Production Monitor</div>
+            <div className="font-semibold text-sm leading-tight text-primary truncate">{company.appName}</div>
+            <div className="text-[10px] text-steel truncate">{company.tagline}</div>
           </div>
-          {/* Close — mobile only */}
-          <button onClick={() => setOpen(false)} className="lg:hidden text-steel hover:text-primary p-1 -mr-1" aria-label="Close menu">
+          {/* Close button — drawer only */}
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="lg:hidden text-steel hover:text-primary p-1 -mr-1"
+            aria-label="Close menu"
+          >
             <X size={18} />
           </button>
         </div>
@@ -74,14 +110,14 @@ export default function AppLayout() {
         <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-5">
           {sections.map((sec) => (
             <div key={sec}>
-              <div className="label px-2 mb-1.5">{sec}</div>
+              <div className="label px-2 mb-1.5">{t(sec)}</div>
               <div className="space-y-0.5">
                 {allowed.filter((n) => n.section === sec).map((n) => (
                   <NavLink
                     key={n.to}
                     to={n.to}
                     end={n.to === '/'}
-                    onClick={() => setOpen(false)}
+                    onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
                       `flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
                         isActive
@@ -90,8 +126,8 @@ export default function AppLayout() {
                       }`
                     }
                   >
-                    <n.icon size={17} />
-                    {n.label}
+                    <n.icon size={17} className="shrink-0" />
+                    {t(n.label)}
                   </NavLink>
                 ))}
               </div>
@@ -102,11 +138,9 @@ export default function AppLayout() {
         {/* User footer */}
         <div className="border-t border-line p-3">
           <div className="flex items-center gap-2.5 px-1.5 mb-2">
-            <div className="w-8 h-8 rounded-full bg-accent/15 text-accent flex items-center justify-center text-xs font-semibold shrink-0">
-              {user?.name?.slice(0, 2).toUpperCase()}
-            </div>
+            <Avatar src={user?.avatar} name={displayName} size={32} />
             <div className="min-w-0">
-              <div className="text-xs font-medium text-primary truncate">{user?.name}</div>
+              <div className="text-xs font-medium text-primary truncate">{displayName}</div>
               <div className="text-[10px] text-steel truncate">
                 {user?.role?.name || (user?.isSuperAdmin ? 'Super Admin' : '')}
               </div>
@@ -116,23 +150,27 @@ export default function AppLayout() {
             onClick={handleLogout}
             className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-steel hover:text-stopped hover:bg-stopped/5 transition-colors"
           >
-            <LogOut size={16} /> Sign out
+            <LogOut size={16} /> {t('Sign out')}
           </button>
         </div>
       </aside>
 
-      {/* Main column */}
+      {/* Right column — mobile top bar + scrollable content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Mobile top bar — brand + hamburger (sidebar is off-canvas here) */}
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-surface border-b border-line shrink-0">
-          <button onClick={() => setOpen(true)} className="text-steel hover:text-primary p-1 -ml-1" aria-label="Open menu">
+        {/* Mobile top bar with hamburger — hidden from lg up */}
+        <header className="lg:hidden flex items-center gap-3 bg-surface border-b border-line px-4 py-3 shadow-sm">
+          <button
+            onClick={() => setMobileOpen(true)}
+            className="text-steel hover:text-primary p-1 -ml-1"
+            aria-label="Open menu"
+          >
             <Menu size={22} />
           </button>
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
               <Gauge size={16} className="text-accent" />
             </div>
-            <span className="font-semibold text-sm text-primary truncate">EKC SmartFactory</span>
+            <span className="font-semibold text-sm text-primary truncate">{company.appName}</span>
           </div>
         </header>
 

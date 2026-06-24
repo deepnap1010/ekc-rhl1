@@ -7,7 +7,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Search, Users, Cpu, Eye, Building2, GitBranch } from 'lucide-react';
 import { userApi, machineApi } from '../api/endpoints';
-import { Spinner, StatCard, StatusPill } from '../components/ui';
+import { Spinner, StatCard, StatusPill, Avatar } from '../components/ui';
 import Modal from '../components/Modal';
 import { prettyType } from '../lib/format';
 import { roleStyle } from '../lib/orgRole';
@@ -16,7 +16,7 @@ import type { User } from '../types/api';
 const sortFn = (a: User, b: User) => roleStyle(a).rank - roleStyle(b).rank || a.name.localeCompare(b.name);
 
 interface MachineInfo { label: string; type?: string; status?: string; plant?: string }
-interface MachineOwner { id: string; name: string; color: string; role: string }
+interface MachineOwner { id: string; name: string; color: string; role: string; avatar?: string }
 interface MachineRow { rawId: string; label: string; type?: string; status?: string; plant?: string; owners: MachineOwner[] }
 
 export default function OrgPersonDetail() {
@@ -81,7 +81,7 @@ export default function OrgPersonDetail() {
       (u.assignedMachines || []).forEach((mid) => {
         const info = machineMap.get(mid);
         const row = byMachine.get(mid) || { rawId: mid, label: info?.label || mid, type: info?.type, status: info?.status, plant: info?.plant, owners: [] };
-        if (!row.owners.some((o) => o.id === u.id)) row.owners.push({ id: u.id, name: u.name, color: rs.color, role: rs.label });
+        if (!row.owners.some((o) => o.id === u.id)) row.owners.push({ id: u.id, name: u.name, color: rs.color, role: rs.label, avatar: u.avatar || '' });
         byMachine.set(mid, row);
       });
     });
@@ -116,9 +116,7 @@ export default function OrgPersonDetail() {
           <ArrowLeft size={16} /> Org Chart
         </button>
         <div className="flex items-center gap-3">
-          <span className="w-12 h-12 rounded-full flex items-center justify-center text-sm font-semibold shrink-0" style={{ backgroundColor: `${rs.color}22`, color: rs.color }}>
-            {person.name.slice(0, 2).toUpperCase()}
-          </span>
+          <Avatar src={person.avatar} name={person.name} size={48} color={rs.color} />
           <div className="min-w-0">
             <h1 className="text-xl font-bold text-primary truncate">{person.name}</h1>
             <p className="text-xs" style={{ color: rs.color }}>
@@ -165,9 +163,7 @@ export default function OrgPersonDetail() {
                   const mc = u.assignedMachines?.length || 0;
                   return (
                     <div key={u.id} className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-base/70" style={{ marginLeft: q ? 0 : depth * 18 }}>
-                      <span className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0" style={{ backgroundColor: `${urs.color}22`, color: urs.color }}>
-                        {u.name.slice(0, 2).toUpperCase()}
-                      </span>
+                      <Avatar src={u.avatar} name={u.name} size={28} color={urs.color} />
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium text-primary truncate">{u.name}</div>
                         <div className="text-[11px] truncate" style={{ color: urs.color }}>
@@ -241,9 +237,7 @@ export default function OrgPersonDetail() {
                 {machineModal.owners.map((o) => (
                   <button key={o.id} onClick={() => { setMachineModal(null); navigate(`/orgchart/${o.id}`); }}
                     className="w-full flex items-center gap-2.5 py-2 px-1 text-left hover:bg-base/60 rounded-lg transition-colors">
-                    <span className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0" style={{ background: `${o.color}22`, color: o.color }}>
-                      {o.name.slice(0, 2).toUpperCase()}
-                    </span>
+                    <Avatar src={o.avatar} name={o.name} size={28} color={o.color} interactive={false} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium text-primary truncate">{o.name}</div>
                       <div className="text-[11px] truncate" style={{ color: o.color }}>{o.role}</div>

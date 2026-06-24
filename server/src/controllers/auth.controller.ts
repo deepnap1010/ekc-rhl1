@@ -16,6 +16,8 @@ interface SanitizableUser {
   isSuperAdmin?: boolean;
   role?: AuthRole | null;
   assignedMachines?: string[];
+  avatar?: string;
+  lastLoginAt?: Date | null;
 }
 
 export const login = asyncHandler(async (req, res) => {
@@ -63,6 +65,40 @@ export const me = asyncHandler(async (req, res) => {
   return ok(res, sanitize(user as unknown as SanitizableUser));
 });
 
+// Self-service profile edit — the authenticated user updates their OWN name / email.
+// Only touches existing fields (no schema change). Any logged-in user may edit their
+// own profile, so it deliberately has no module-permission gate.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const updateMe = asyncHandler(async (req, res) => {
+  if (req.user?.bootstrap) {
+    return fail(res, 400, 'Profile editing is not available for the bootstrap admin — create a real user first.');
+  }
+  const { name, email, avatar } = req.body as { name?: string; email?: string; avatar?: string };
+  const update: { name?: string; email?: string; avatar?: string } = {};
+  if (typeof name === 'string' && name.trim()) update.name = name.trim();
+  if (typeof email === 'string' && email.trim()) {
+    const lc = email.trim().toLowerCase();
+    if (!EMAIL_RE.test(lc)) return fail(res, 400, 'Please enter a valid email address');
+    update.email = lc;
+  }
+  if (typeof avatar === 'string') update.avatar = avatar; // '' clears the photo
+  if (!Object.keys(update).length) return fail(res, 400, 'Nothing to update');
+
+  try {
+    const user = await User
+      .findByIdAndUpdate(req.user?._id, { $set: update }, { new: true, runValidators: true })
+      .populate('role')
+      .lean();
+    if (!user) return fail(res, 404, 'User not found');
+    return ok(res, sanitize(user as unknown as SanitizableUser));
+  } catch (e: unknown) {
+    if (e && typeof e === 'object' && (e as { code?: number }).code === 11000) {
+      return fail(res, 409, 'That email is already in use by another account');
+    }
+    throw e;
+  }
+});
+
 function sanitize(user: SanitizableUser) {
   return {
     id: user._id,
@@ -81,5 +117,7 @@ function sanitize(user: SanitizableUser) {
         }
       : null,
     assignedMachines: user.assignedMachines || [],
+    avatar: user.avatar || '',
+    lastLoginAt: user.lastLoginAt ?? null,
   };
 }
