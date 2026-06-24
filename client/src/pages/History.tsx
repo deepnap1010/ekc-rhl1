@@ -1,47 +1,59 @@
-// client/src/pages/History.tsx
-import { useState, useEffect } from 'react';
+// client/src/pages/History.tsx — full telemetry archive for one machine:
+// stat bar · per-metric summary (sparkline + min/avg/max) · multi-line trends · raw log.
+import { useState, useEffect, Fragment, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Download, History as HistoryIcon } from 'lucide-react';
+import { Download, History as HistoryIcon, BarChart3 } from 'lucide-react';
 import { machineApi } from '../api/endpoints';
-import { Spinner } from '../components/ui';
+import { Spinner, StatusPill, FreshnessPill } from '../components/ui';
+import TrendChart from '../components/TrendChart';
+import Sparkline from '../components/Sparkline';
 import PageHeader from '../components/PageHeader';
 import { fmtTime, prettyKey, fmtNum, fmtMetric, prettyType } from '../lib/format';
-import type { ApiMeta } from '../types/api';
+import type { ApiMeta, MetricStat } from '../types/api';
+
+const PAGE = 50;
 
 export default function History() {
   const [code, setCode] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
   const { data: machines } = useQuery({
     queryKey: ['machines', 'list-all'],
     queryFn: () => machineApi.list({ limit: 200, sort: 'name' }).then((r) => r.data),
-    
   });
-useEffect(() => {
-  if (!machines?.length) return;
 
-  setCode((prev) =>
-    prev ||
-    machines[0].code ||
-    machines[0].machineId ||
-    machines[0]._id ||
-    ''
-  );
-}, [machines]);
+  useEffect(() => {
+    if (!machines?.length) return;
+    setCode((prev) => prev || machines[0].code || machines[0].machineId || machines[0]._id || '');
+  }, [machines]);
+
+  const { data: machine } = useQuery({
+    queryKey: ['machine', code],
+    queryFn: () => machineApi.get(code).then((r) => r.data),
+    enabled: !!code,
+  });
+
+  const { data: stats } = useQuery({
+    queryKey: ['machine-stats', code],
+    queryFn: () => machineApi.stats(code, { window: 200 }).then((r) => r.data),
+    enabled: !!code,
+  });
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['history', code, from, to, page],
-    queryFn: () => machineApi.history(code, { from: from || undefined, to: to || undefined, page, limit: 50 }),
+    queryFn: () => machineApi.history(code, { from: from || undefined, to: to || undefined, page, limit: PAGE }),
     enabled: !!code,
-    refetchInterval: 0,
   });
 
   const records = data?.data || [];
   const meta = data?.meta ?? ({} as ApiMeta);
-  // Columns derive from the telemetry payload itself (varies by machine type).
+  const metrics = stats?.metrics || [];
+  // Raw-log columns derive from the (server-flattened) telemetry payload itself.
   const metricKeys = Object.keys(records[0]?.data || {}).slice(0, 12);
+  const pageCount = Math.max(1, Math.ceil((meta.total || 0) / PAGE));
 
   const exportCsv = () => {
     if (!records.length) return;
@@ -110,52 +122,132 @@ useEffect(() => {
           </div>
         ) : isLoading ? <Spinner /> : (
           <>
+            {/* Machine stat bar */}
+            {machine && (
+              <div className="panel p-4 sm:p-5">
+                <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+                  <div className="flex flex-wrap items-center gap-3 min-w-0">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-primary truncate">{machine.name || code}</h3>
+                      <div className="data text-[11px] text-steel truncate">{String(code).toUpperCase()}{machine.subtitle ? ` · ${machine.subtitle}` : ''}</div>
+                    </div>
+                    <StatusPill status={machine.status} />
+                    <FreshnessPill lastSeenAt={machine.lastSeenAt} />
+                  </div>
+                  <div className="flex flex-wrap gap-x-6 gap-y-2">
+                    <Stat label="Total Readings" value={fmtNum(machine.telemetryCount || 0)} />
+                    <Stat label="Live Metrics" value={fmtNum(machine.latest?.namedCount || 0)} />
+                    <Stat label="Registers" value={fmtNum(machine.registerCount || 0)} />
+                    <Stat label="First Seen" value={fmtTime(machine.registeredAt)} />
+                    <Stat label="Last Reading" value={fmtTime(machine.latest?.ts || machine.lastSeenAt)} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Per-metric summary — current value + sparkline + min/avg/max */}
+            {metrics.length > 0 && (
+              <div className="panel p-4 sm:p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <BarChart3 size={15} className="text-accent" />
+                  <h3 className="font-semibold text-sm text-primary flex-1">Metric Summary</h3>
+                  <span className="text-[11px] text-steel">{metrics.length} metric{metrics.length === 1 ? '' : 's'} · last {fmtNum(stats?.window || 0)} readings</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {metrics.slice(0, 12).map((m) => <MetricCard key={m.key} m={m} />)}
+                </div>
+              </div>
+            )}
+
+            {/* Multi-line trends (its own panel + Normalize toggle) */}
+            {metrics.length > 0 && <TrendChart code={code} from={from} to={to} keys={metrics.map((m) => m.key)} />}
+
             {meta.total > 0 && (
               <div className="flex items-center justify-between text-xs text-steel">
-                <span>{fmtNum(meta.total)} readings{from || to ? ' in range' : ' total'} — page {page}</span>
+                <span>{fmtNum(meta.total)} readings{from || to ? ' in range' : ' total'} — page {page} of {pageCount}</span>
                 {isFetching && <span className="text-accent">Refreshing…</span>}
               </div>
             )}
 
+            {/* Raw log — click a row to inspect the full payload */}
             <div className="panel overflow-x-auto">
               <table className="w-full text-sm whitespace-nowrap">
                 <thead className="bg-base">
                   <tr className="text-steel">
-                    <th className="text-left label px-4 py-3">Timestamp</th>
+                    <th className="text-left label px-4 py-3 sticky left-0 bg-base">Timestamp</th>
                     {metricKeys.map((k) => (
-                      <th key={k} className="text-left label px-4 py-3">{prettyKey(k)}</th>
+                      <th key={k} className="text-right label px-4 py-3">{prettyKey(k)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {records.length === 0 ? (
                     <tr>
-                      <td colSpan={13} className="text-center text-steel py-10">No readings found for this range</td>
+                      <td colSpan={metricKeys.length + 1} className="text-center text-steel py-10">No readings found for this range</td>
                     </tr>
                   ) : records.map((r) => (
-                    <tr key={r._id} className="border-t border-line hover:bg-white/5">
-                      <td className="px-4 py-2.5 data text-xs">{fmtTime(r.timestamp)}</td>
-                      {metricKeys.map((k) => (
-                        <td key={k} className="px-4 py-2.5 data text-xs">{fmtMetric(r.data?.[k])}</td>
-                      ))}
-                    </tr>
+                    <Fragment key={r._id}>
+                      <tr
+                        onClick={() => setExpandedRow(expandedRow === r._id ? null : r._id)}
+                        className="border-t border-line hover:bg-base/60 cursor-pointer"
+                      >
+                        <td className="px-4 py-2.5 data text-xs sticky left-0 bg-surface">{fmtTime(r.timestamp)}</td>
+                        {metricKeys.map((k) => (
+                          <td key={k} className="px-4 py-2.5 data text-xs text-right">{fmtMetric(r.data?.[k])}</td>
+                        ))}
+                      </tr>
+                      {expandedRow === r._id && (
+                        <tr className="bg-base">
+                          <td colSpan={metricKeys.length + 1} className="border-t border-line">
+                            <pre className="p-4 text-xs overflow-auto max-h-72">{JSON.stringify(r.data, null, 2)}</pre>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
             </div>
 
-            {meta.total > 50 && (
-              <div className="flex items-center justify-between text-sm">
+            {pageCount > 1 && (
+              <div className="flex items-center justify-between text-sm flex-wrap gap-2">
                 <span className="text-steel">{fmtNum(meta.total)} total readings</span>
-                <div className="flex gap-2">
-                  <button disabled={page === 1} onClick={() => setPage(page - 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-white/5">Prev</button>
-                  <span className="px-3 py-1.5 text-steel">Page {page}</span>
-                  <button disabled={page * 50 >= meta.total} onClick={() => setPage(page + 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-white/5">Next</button>
+                <div className="flex items-center gap-2">
+                  <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Prev</button>
+                  <span className="px-2 py-1.5 text-steel">Page <span className="data">{page}</span> of <span className="data">{pageCount}</span></span>
+                  <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Next</button>
                 </div>
               </div>
             )}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-steel">{label}</div>
+      <div className="data text-sm font-bold text-primary mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+// One metric's snapshot over the window: current value, trend sparkline, min/avg/max.
+function MetricCard({ m }: { m: MetricStat }) {
+  return (
+    <div className="rounded-lg border border-line bg-base p-3">
+      <div className="label truncate" title={prettyKey(m.key)}>{prettyKey(m.key)}</div>
+      <div className={`data text-xl font-bold mt-0.5 truncate ${m.faultCount && m.last === null ? 'text-stopped' : 'text-primary'}`}>
+        {m.last === null ? (m.faultCount ? 'FAULT' : '—') : fmtMetric(m.last)}
+      </div>
+      {(m.spark?.length ?? 0) > 1 && <div className="mt-1.5"><Sparkline data={m.spark} width={260} height={32} /></div>}
+      <div className="flex justify-between gap-1 text-[10px] text-steel mt-2 pt-2 border-t border-line">
+        <span>min <span className="data text-primary/70">{fmtMetric(m.min)}</span></span>
+        <span>avg <span className="data text-primary/70">{fmtMetric(m.avg)}</span></span>
+        <span>max <span className="data text-primary/70">{fmtMetric(m.max)}</span></span>
       </div>
     </div>
   );
