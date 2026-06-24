@@ -9,7 +9,8 @@ import TrendChart from '../components/TrendChart';
 import Sparkline from '../components/Sparkline';
 import PageHeader from '../components/PageHeader';
 import { fmtTime, prettyKey, fmtNum, fmtMetric, prettyType } from '../lib/format';
-import type { ApiMeta, MetricStat } from '../types/api';
+import { isFault, isRegisterKey, isMetaKey } from '../lib/metrics';
+import type { ApiMeta, MetricStat, MetricValue } from '../types/api';
 
 const PAGE = 50;
 
@@ -198,8 +199,8 @@ export default function History() {
                       </tr>
                       {expandedRow === r._id && (
                         <tr className="bg-base">
-                          <td colSpan={metricKeys.length + 1} className="border-t border-line">
-                            <pre className="p-4 text-xs overflow-auto max-h-72">{JSON.stringify(r.data, null, 2)}</pre>
+                          <td colSpan={metricKeys.length + 1} className="border-t border-line p-0">
+                            <ReadingDetail data={(r.data || {}) as Record<string, MetricValue>} timestamp={r.timestamp} />
                           </td>
                         </tr>
                       )}
@@ -231,6 +232,49 @@ function Stat({ label, value }: { label: string; value: ReactNode }) {
     <div>
       <div className="text-[10px] uppercase tracking-wide text-steel">{label}</div>
       <div className="data text-sm font-bold text-primary mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+// Expanded-row detail: the full reading as a clean signal grid (no raw JSON).
+function ReadingDetail({ data, timestamp }: { data: Record<string, MetricValue>; timestamp: string | Date }) {
+  const entries = Object.entries(data).filter(([k]) => !isMetaKey(k));
+  const named = entries.filter(([k]) => !isRegisterKey(k));
+  const registers = entries.filter(([k]) => isRegisterKey(k));
+  const status = data.status;
+  const faults = entries.filter(([, v]) => isFault(v)).length;
+
+  return (
+    <div className="p-4 space-y-3 bg-base/40">
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <span className="label">Reading</span>
+        <span className="data text-primary">{fmtTime(timestamp)}</span>
+        {status != null && <StatusPill status={String(status)} />}
+        {faults > 0 && <span className="pill bg-stopped/10 text-stopped !text-[10px]">{faults} fault{faults > 1 ? 's' : ''}</span>}
+        <span className="ml-auto text-steel">{entries.length} signals</span>
+      </div>
+      <SignalGrid title="Named signals" entries={named} />
+      <SignalGrid title="Raw registers" entries={registers} muted />
+    </div>
+  );
+}
+
+function SignalGrid({ title, entries, muted }: { title: string; entries: [string, MetricValue][]; muted?: boolean }) {
+  if (!entries.length) return null;
+  return (
+    <div>
+      <div className="label mb-1.5">{title} <span className="text-steel/50">({entries.length})</span></div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-1.5">
+        {entries.map(([k, v]) => {
+          const fault = isFault(v);
+          return (
+            <div key={k} className={`rounded-md border px-2 py-1.5 min-w-0 ${fault ? 'border-stopped/30 bg-stopped/5' : 'border-line bg-surface'}`}>
+              <div className="data text-[10px] text-steel truncate" title={prettyKey(k)}>{prettyKey(k)}</div>
+              <div className={`data text-sm font-semibold truncate ${fault ? 'text-stopped' : muted ? 'text-steel' : 'text-primary'}`}>{fault ? 'FAULT' : fmtMetric(v)}</div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
