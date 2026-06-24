@@ -1,5 +1,5 @@
 // client/src/pages/History.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Download, History as HistoryIcon } from 'lucide-react';
 import { machineApi } from '../api/endpoints';
@@ -17,7 +17,19 @@ export default function History() {
   const { data: machines } = useQuery({
     queryKey: ['machines', 'list-all'],
     queryFn: () => machineApi.list({ limit: 200, sort: 'name' }).then((r) => r.data),
+    
   });
+useEffect(() => {
+  if (!machines?.length) return;
+
+  setCode((prev) =>
+    prev ||
+    machines[0].code ||
+    machines[0].machineId ||
+    machines[0]._id ||
+    ''
+  );
+}, [machines]);
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['history', code, from, to, page],
