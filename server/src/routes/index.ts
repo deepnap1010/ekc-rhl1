@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '../middleware/auth.js';
 import * as auth from '../controllers/auth.controller.js';
+import * as ingest from '../controllers/ingest.controller.js';
 import * as machine from '../controllers/machine.controller.js';
 import * as dash from '../controllers/dashboard.controller.js';
 import * as rbac from '../controllers/rbac.controller.js';
@@ -13,6 +14,7 @@ const r = Router();
 
 // --- Public ---
 r.post('/auth/login', auth.login);
+r.post('/ingest', ingest.ingest); // PLC / data-source telemetry ingest — guarded by the x-ingest-key header
 
 // --- Everything below requires a valid session ---
 r.use(authenticate);

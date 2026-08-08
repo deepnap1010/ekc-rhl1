@@ -1,0 +1,60 @@
+// server/src/controllers/ingest.controller.ts
+// POST /api/v1/ingest — the data source (PLC agents / middleware) pushes real
+// readings here over HTTP. Guarded by the `x-ingest-key` header (env.INGEST_KEY).
+// Each reading is stored as a telemetry document and folded into the machine's
+// latest snapshot; the server's change streams then push it live to every client.
+// This ONLY persists what the source sends — it never fabricates data.
+import type { AnyBulkWriteOperation } from 'mongoose';
+import { Machine, type IMachine } from '../models/Machine.js';
+import { Telemetry } from '../models/Telemetry.js';
+import { ok, fail, asyncHandler } from '../utils/http.js';
+import { env } from '../config/env.js';
+
+interface Reading {
+  machineId?: string;
+  code?: string;
+  machineName?: string;
+  name?: string;
+  machineType?: string;
+  type?: string;
+  status?: string;
+  timestamp?: string | number | Date;
+  data?: Record<string, unknown>;
+}
+
+export const ingest = asyncHandler(async (req, res) => {
+  // Fail closed: no key configured, or a wrong/absent header → reject.
+  if (!env.ingestKey || req.get('x-ingest-key') !== env.ingestKey) {
+    return fail(res, 401, 'Invalid or missing x-ingest-key');
+  }
+
+  // Accept either one reading or an array of readings.
+  const body = req.body as Reading | Reading[];
+  const readings = Array.isArray(body) ? body : [body];
+  if (!readings.length) return fail(res, 400, 'No readings provided');
+
+  const now = new Date();
+  const telemetry: Record<string, unknown>[] = [];
+  const machineOps: AnyBulkWriteOperation<IMachine>[] = [];
+
+  for (const r of readings) {
+    const id = String(r.machineId || r.code || '').trim();
+    if (!id) return fail(res, 400, 'Each reading requires a machineId (or code)');
+    const ts = r.timestamp ? new Date(r.timestamp) : now;
+    const data = r.data && typeof r.data === 'object' ? r.data : {};
+    const name = r.name || r.machineName;
+    const type = r.type || r.machineType;
+
+    telemetry.push({ machineId: id, machineName: name, machineType: type, timestamp: ts, receivedAt: now, data });
+
+    const set: Partial<IMachine> = { machineId: id, code: id, currentParameters: data, lastReadingAt: ts, lastSeenAt: now };
+    if (name) set.name = name;
+    if (type) set.type = type;
+    if (r.status) set.status = r.status;
+    machineOps.push({ updateOne: { filter: { $or: [{ code: id }, { machineId: id }] }, update: { $set: set }, upsert: true } });
+  }
+
+  await Telemetry.insertMany(telemetry, { ordered: false });
+  await Machine.bulkWrite(machineOps, { ordered: false });
+  return ok(res, { ingested: telemetry.length });
+});

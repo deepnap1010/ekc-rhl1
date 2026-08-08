@@ -21,6 +21,7 @@ export interface Env {
   jwtExpiry: string;
   refreshExpiry: string;
   clientOrigin: string[];
+  ingestKey: string;
   adminName: string;
   adminEmail: string;
   adminPassword: string;
@@ -40,6 +41,10 @@ export const env: Env = {
   refreshExpiry: process.env.REFRESH_EXPIRY || '7d',
 
   clientOrigin: (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(','),
+
+  // Shared secret the data source / PLC agents send as `x-ingest-key` to POST /api/v1/ingest.
+  // Empty = ingest disabled (fails closed). Set INGEST_KEY in .env to enable.
+  ingestKey: process.env.INGEST_KEY || '',
 
   // First-access bootstrap admin. Used ONLY while the `users` collection is empty;
   // it issues a session without writing any document. As soon as you create real
