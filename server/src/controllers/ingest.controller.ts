@@ -24,8 +24,10 @@ interface Reading {
 
 export const ingest = asyncHandler(async (req, res) => {
   // Fail closed: no key configured, or a wrong/absent header → reject.
-  if (!env.ingestKey || req.get('x-ingest-key') !== env.ingestKey) {
-    return fail(res, 401, 'Invalid or missing x-ingest-key');
+  // Accept x-ingest-key OR x-api-key (the JCI-style header) so JCI integrations are drop-in.
+  const providedKey = req.get('x-ingest-key') || req.get('x-api-key');
+  if (!env.ingestKey || providedKey !== env.ingestKey) {
+    return fail(res, 401, 'Invalid or missing x-ingest-key (or x-api-key)');
   }
 
   // Accept either one reading or an array of readings.
