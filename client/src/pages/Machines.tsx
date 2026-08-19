@@ -8,7 +8,7 @@ import { StatusPill } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtMetric, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
+import { fmtCompact, fmtDuration, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress } from '../lib/params';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
@@ -442,10 +442,6 @@ function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardPr
     refetchInterval: 20000,
   });
   const trend = cardStats?.metrics?.[0];
-  const bar = cardStats?.metrics?.[1];
-  const barPct = bar && bar.last != null && bar.min != null && bar.max != null && bar.max > bar.min
-    ? Math.max(4, Math.min(100, ((bar.last - bar.min) / (bar.max - bar.min)) * 100))
-    : (bar ? 100 : 0);
 
   return (
     <Link
@@ -512,19 +508,6 @@ function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardPr
           <div className="w-28 h-12 shrink-0 self-center"><Sparkline data={trend.spark} height={48} color={TEAL} /></div>
         )}
       </div>
-
-      {/* Secondary metric with progress bar */}
-      {bar && (
-        <div className="mb-3">
-          <div className="flex items-center justify-between text-[11px] mb-1">
-            <span className="text-steel uppercase tracking-wide truncate" title={prettyKey(paramLabel(bar.key))}>{prettyKey(paramLabel(bar.key))}</span>
-            <span className="data text-primary font-semibold shrink-0">{fmtMetric(bar.last)}</span>
-          </div>
-          <div className="h-1.5 rounded-full bg-line overflow-hidden">
-            <div className="h-full rounded-full bg-accent" style={{ width: `${barPct}%` }} />
-          </div>
-        </div>
-      )}
 
       {/* Uptime / downtime / idle — rolling 24h, reconstructed from telemetry + downtime */}
       <div className="mt-auto grid grid-cols-3 gap-1.5">
