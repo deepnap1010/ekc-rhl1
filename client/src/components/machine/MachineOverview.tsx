@@ -5,11 +5,11 @@
 // what the machine actually streams: machines with zone temperatures get the
 // Temperature Overview; everything else gets a Primary Readings / Digital I/O panel.
 import { useMemo, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
   Cpu, Thermometer, Activity, Gauge, Database, Clock, Power,
-  ArrowRight, Search, BarChart3, Bell, ChevronRight, ChevronDown, LineChart,
+  ArrowRight, Search, BarChart3, Bell, ChevronRight, ChevronDown, LineChart, Calendar,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../../api/endpoints';
 import { StatusPill } from '../ui';
@@ -19,6 +19,8 @@ import MetricTrendModal, { type DrillEntry } from './MetricTrendModal';
 import { fmtNum, fmtMetric, fmtTime, fmtDuration, prettyKey, prettyType } from '../../lib/format';
 import { namedMetrics, isNumeric, isFault, freshness, type NamedMetric } from '../../lib/metrics';
 import { useMachineTelemetry } from '../../hooks/useLive';
+import { useSettings, shiftWindowOn } from '../../lib/settings';
+import { LINKS } from '../../lib/linkedMetrics';
 import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent } from '../../types/api';
 
 const isZoneTemp = (k: string) => /(^|_)t\d+$/i.test(k);
@@ -75,9 +77,6 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
     }
     return out;
   }, [m.zones, statByKey]);
-
-  const firstPrimaryKey = m.primary[0]?.key;
-  const primarySpark = (firstPrimaryKey ? statByKey[firstPrimaryKey]?.spark : undefined) || [];
 
   // Click a metric tile → open its evaluated trend (real /stats data, key-consistent).
   const [drill, setDrill] = useState<{ title: string; unit?: string; entries: DrillEntry[] } | null>(null);
@@ -247,31 +246,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           </div>
         </Panel>
 
-        <Panel icon={Cpu} title="Key Parameters">
-          <div className="grid sm:grid-cols-2 gap-x-5 gap-y-0.5">
-            <div className="divide-y divide-line">
-              {m.keyParams.slice(0, Math.ceil(m.keyParams.length / 2)).map((k) => <KeyRow key={k.label} {...k} />)}
-            </div>
-            <div className="divide-y divide-line">
-              {m.keyParams.slice(Math.ceil(m.keyParams.length / 2)).map((k) => <KeyRow key={k.label} {...k} />)}
-            </div>
-          </div>
-          {(m.hasTemp ? tempSpark : primarySpark).length > 1 && (
-            <button type="button" title="Click to view trend"
-              onClick={() => m.hasTemp
-                ? openMetric(zoneEntries(), 'Temperature — All Zones', '°C')
-                : openMetric([{ key: firstPrimaryKey as string, label: prettyKey(firstPrimaryKey || 'Trend'), stat: firstPrimaryKey ? statByKey[firstPrimaryKey] : undefined }], prettyKey(firstPrimaryKey || 'Trend'))}
-              className="group mt-auto pt-4 block w-full text-left">
-              <div className="rounded-lg border border-line bg-base p-3 group-hover:border-accent/50 group-hover:bg-accent/5 transition-colors">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="label flex items-center gap-1">{m.hasTemp ? 'Temperature Trend (Avg)' : `${prettyKey(firstPrimaryKey || 'Trend')} Trend`} <LineChart size={11} className="text-accent opacity-0 group-hover:opacity-100 transition-opacity" /></span>
-                  {m.hasTemp && <span className="text-[10px] text-steel">°C</span>}
-                </div>
-                <Sparkline data={m.hasTemp ? tempSpark : primarySpark} width={420} height={70} color="#2563EB" />
-              </div>
-            </button>
-          )}
-        </Panel>
+        <ShiftProductionPanel machine={machine} />
       </div>
 
       <AllSignalsPanel
@@ -294,6 +269,83 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
         />
       )}
     </div>
+  );
+}
+
+// ── shift/date production filter — replaces the old static Key Parameters ──────
+// Pick any date + shift (or the full day) and see what THIS machine produced in
+// that window, plus its runtime split. Data comes from /machines/activity
+// (read-only reconstruction from telemetry + downtime). A machine without its own
+// production counter borrows the linked machine's (same pairing as the cards).
+function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
+  const settings = useSettings();
+  const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const [day, setDay] = useState(() => localDay(new Date()));
+  const [shiftName, setShiftName] = useState('');
+  const shift = settings.shifts.find((s) => s.name === shiftName) || null;
+
+  const base = new Date(`${day}T00:00:00`);
+  const valid = !!day && !Number.isNaN(base.getTime());
+  const win = valid
+    ? (shift ? shiftWindowOn(shift, base) : { from: base, to: new Date(base.getTime() + 24 * 3600 * 1000) })
+    : null;
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['machine-shift-prod', day, shiftName],
+    queryFn: () => machineApi.activity({ from: win!.from.toISOString(), to: win!.to.toISOString() }),
+    enabled: !!win,
+    placeholderData: keepPreviousData,
+    refetchInterval: 60000,
+  });
+
+  const rows = data?.data || [];
+  const codes = [machine.code, machine.machineId, machine.id, machine._id].filter(Boolean).map(String);
+  const row = rows.find((r) => codes.includes(r.code));
+  let production = row?.production ?? null;
+  let borrowedFrom: string | null = null;
+  if (production == null || production <= 0) {
+    const link = LINKS.find((l) => codes.some((c) => c.toUpperCase() === l.target));
+    const srcRow = link ? rows.find((r) => String(r.code).toUpperCase() === link.source) : null;
+    if (srcRow?.production != null && srcRow.production > 0) { production = srcRow.production; borrowedFrom = srcRow.code; }
+  }
+
+  return (
+    <Panel icon={Calendar} title="Production by Shift">
+      <div className="flex items-center gap-2 flex-wrap mb-4">
+        <input type="date" value={day} onChange={(e) => setDay(e.target.value)}
+          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+        <select value={shiftName} onChange={(e) => setShiftName(e.target.value)}
+          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent">
+          <option value="">Full day</option>
+          {settings.shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+        </select>
+      </div>
+      {!win ? (
+        <div className="text-sm text-steel py-6 text-center">Pick a date to see production.</div>
+      ) : isLoading && !row ? (
+        <div className="text-sm text-steel py-6 text-center">Loading…</div>
+      ) : (
+        <>
+          <div className="rounded-lg border border-line bg-base px-4 py-3 mb-3">
+            <div className="text-[10px] uppercase tracking-wide text-steel">Production{shift ? ` · ${shift.name}` : ' · Full day'}</div>
+            <div className="data text-3xl font-bold text-primary leading-tight">
+              {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
+            </div>
+            {borrowedFrom
+              ? <div className="text-[10px] text-steel mt-0.5">via linked machine {borrowedFrom}</div>
+              : row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <MiniStat label="Runtime" value={fmtDuration(row?.runningMs || 0)} color="#059669" />
+            <MiniStat label="Downtime" value={fmtDuration((row?.stoppedMs || 0) + (row?.offlineMs || 0))} color="#DC2626" />
+            <MiniStat label="Idle" value={fmtDuration(row?.idleMs || 0)} color="#D97706" />
+          </div>
+          <div className="text-[10px] text-steel/60 mt-3">
+            {fmtNum(row?.readings || 0)} readings · {fmtTime(win.from)} → {fmtTime(win.to)}
+          </div>
+        </>
+      )}
+    </Panel>
   );
 }
 
@@ -367,18 +419,6 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
   health = clamp(health, 0, 100);
   const healthStatus = health >= 80 ? 'running' : health >= 50 ? 'idle' : 'stopped';
 
-  const keyParams: { icon: LucideIcon; label: string; value: string; color: string }[] = [];
-  if (temp) { keyParams.push({ icon: Thermometer, label: 'Avg Temperature', value: `${temp.avg}°C`, color: '#D97706' }); keyParams.push({ icon: Thermometer, label: 'Max Temperature', value: `${temp.max}°C`, color: '#DC2626' }); }
-  if (pressure) keyParams.push({ icon: Gauge, label: `Pressure (${prettyKey(pressure.key)})`, value: fmtMetric(pressure.value), color: '#2563EB' });
-  if (cycles) keyParams.push({ icon: Activity, label: `Cycles (${prettyKey(cycles.key)})`, value: fmtNum(cycles.value), color: '#7C3AED' });
-  if (!temp) primary.slice(0, 4).forEach((p) => keyParams.push({ icon: Cpu, label: prettyKey(p.key), value: p.fault ? 'FAULT' : fmtMetric(p.value), color: p.fault ? '#DC2626' : '#0D9488' }));
-  if (!temp && !primary.length && hasIO) {
-    keyParams.push({ icon: Power, label: 'Inputs Active', value: `${io.activeIn}/${inputs.length}`, color: '#2563EB' });
-    keyParams.push({ icon: Power, label: 'Outputs Active', value: `${io.activeOut}/${outputs.length}`, color: '#7C3AED' });
-  }
-  keyParams.push({ icon: Database, label: 'Data Quality', value: `${dataQuality}%`, color: dataQuality >= 90 ? '#059669' : '#D97706' });
-  keyParams.push({ icon: BarChart3, label: 'Uptime', value: `${uptimePct}%`, color: '#059669' });
-
   return {
     hasTemp, zones, temp, primary, pressure, cycles,
     io, hasIO, registers,
@@ -386,7 +426,6 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
     checks, health, healthStatus,
     runtimeMs, downMs, uptimePct, efficiency, openDowntime,
     plcType: plcTypeOf(machine),
-    keyParams,
   };
 }
 
@@ -440,16 +479,6 @@ function MiniTile({ icon: Icon, accent, label, value }: { icon: LucideIcon; acce
         <div className="text-[10px] text-steel uppercase tracking-wide truncate">{label}</div>
         <div className="data text-sm font-bold text-primary truncate">{value}</div>
       </div>
-    </div>
-  );
-}
-
-function KeyRow({ icon: Icon, label, value, color }: { icon?: LucideIcon; label: string; value: ReactNode; color: string }): JSX.Element {
-  return (
-    <div className="flex items-center gap-2 py-2 text-sm">
-      {Icon && <Icon size={14} style={{ color }} className="shrink-0" />}
-      <span className="text-steel flex-1 min-w-0 truncate">{label}</span>
-      <span className="data font-semibold" style={{ color }}>{value}</span>
     </div>
   );
 }

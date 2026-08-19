@@ -15,15 +15,14 @@ export type Severity = 'info' | 'warning' | 'critical';
 
 export interface ShiftTiming { name: string; start: string; end: string }
 
-// The most recent occurrence of a shift as a concrete [from, to] window: today's
-// if it has started, else yesterday's. Overnight shifts (end <= start) span midnight.
-export function shiftWindow(sh: ShiftTiming, now = new Date()): { from: Date; to: Date } {
+// A shift's concrete [from, to] window anchored on a given day.
+// Overnight shifts (end <= start) span midnight into the next day.
+export function shiftWindowOn(sh: ShiftTiming, day: Date): { from: Date; to: Date } {
   const [sh_, sm] = sh.start.split(':').map(Number);
   const [eh, em] = sh.end.split(':').map(Number);
-  const from = new Date(now); from.setHours(sh_ || 0, sm || 0, 0, 0);
-  const to = new Date(now); to.setHours(eh || 0, em || 0, 0, 0);
+  const from = new Date(day); from.setHours(sh_ || 0, sm || 0, 0, 0);
+  const to = new Date(day); to.setHours(eh || 0, em || 0, 0, 0);
   if (to <= from) to.setDate(to.getDate() + 1);
-  if (from > now) { from.setDate(from.getDate() - 1); to.setDate(to.getDate() - 1); }
   return { from, to };
 }
 

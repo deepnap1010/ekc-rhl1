@@ -8,14 +8,13 @@ import { StatusPill } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtNum, fmtMetric, fmtDuration, prettyKey, prettyType, fmtTime, breachesThreshold, isNumeric } from '../lib/format';
+import { fmtCompact, fmtMetric, fmtDuration, prettyKey, prettyType, fmtTime, breachesThreshold, isNumeric } from '../lib/format';
 import { cardParams, paramLabel, isRawAddress } from '../lib/params';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
-import { linkedExtras, LINKS } from '../lib/linkedMetrics';
-import { useSettings, shiftWindow } from '../lib/settings';
+import { linkedExtras } from '../lib/linkedMetrics';
 import type { Machine, MachineTick, MachineActivityRow } from '../types/api';
 
 const TEAL = '#0D9488';
@@ -86,37 +85,6 @@ export default function Machines() {
     queryFn: () => machineApi.activity({ from: new Date(from).toISOString(), to: new Date(to).toISOString() }),
     enabled: rangeActive,
   });
-
-  // Shift mode — pick any configured shift (Settings → Shift timings, fully dynamic)
-  // and every card scopes to that shift's latest window: production made in the
-  // shift + uptime/downtime/idle within it. Pure read path — nothing is written.
-  const settings = useSettings();
-  const [shiftName, setShiftName] = useState('');
-  const shift = settings.shifts.find((x) => x.name === shiftName) || null;
-  const win = shift ? shiftWindow(shift) : null;
-  const { data: shiftAct } = useQuery({
-    queryKey: ['machine-activity-shift', shiftName, win?.from.getTime()],
-    queryFn: () => machineApi.activity({ from: win!.from.toISOString(), to: win!.to.toISOString() }),
-    enabled: !!win,
-    placeholderData: keepPreviousData,
-    refetchInterval: 60000,
-  });
-  const shiftBy = new Map((shiftAct?.data || []).map((r) => [r.code, r]));
-
-  // A machine with no production counter of its own borrows the linked machine's
-  // shift production (same pairing as the live cards: BM03←HP02, BM04←SPG08).
-  const shiftProdOf = (code: string): number | null => {
-    if (!shift) return null;
-    const own = shiftBy.get(code)?.production;
-    if (own != null && own > 0) return own;
-    const link = LINKS.find((l) => l.target === code.toUpperCase());
-    if (link) {
-      const srcCode = [...shiftBy.keys()].find((c) => String(c).toUpperCase() === link.source);
-      const sp = srcCode != null ? shiftBy.get(srcCode)?.production : null;
-      if (sp != null && sp > 0) return sp;
-    }
-    return own ?? null;
-  };
 
   // Rolling 24h uptime/downtime/idle per machine — shown on every card. The `to`
   // edge is rounded to the minute so the query key stays stable between renders.
@@ -227,19 +195,6 @@ export default function Machines() {
             ))}
           </select>
           <select
-            value={shiftName}
-            onChange={(e) => setShiftName(e.target.value)}
-            className={`rounded-xl border px-3 py-2.5 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 ${
-              shift ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'
-            }`}
-            title="Scope cards to a shift"
-          >
-            <option value="">All Day (Live)</option>
-            {settings.shifts.map((sh) => (
-              <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>
-            ))}
-          </select>
-          <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
             className="rounded-xl border border-line bg-base px-3 py-2.5 text-sm text-primary outline-none cursor-pointer transition-colors hover:border-accent/40"
@@ -276,17 +231,12 @@ export default function Machines() {
             )}
           </div>
           <button
-            onClick={() => { setSearch(''); setStatus('all'); setSortBy('status'); setFrom(''); setTo(''); setShiftName(''); }}
+            onClick={() => { setSearch(''); setStatus('all'); setSortBy('status'); setFrom(''); setTo(''); }}
             title="Reset filters"
             className="w-10 h-10 flex items-center justify-center rounded-xl border border-line text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0"
           >
             <Filter size={16} />
           </button>
-          {win && (
-            <div className="w-full text-[11px] text-accent flex items-center gap-1.5 px-1">
-              <Calendar size={12} /> {shiftName} window: {fmtTime(win.from)} → {fmtTime(win.to)} — cards show production &amp; uptime for this shift
-            </div>
-          )}
         </div>
 
         {rangeActive ? (
@@ -379,9 +329,7 @@ export default function Machines() {
               return (
                 <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
                   extraParams={extras[String(ref).toUpperCase()]}
-                  activity={shift ? shiftBy.get(ref) : actBy.get(ref)}
-                  shiftLabel={shift?.name}
-                  shiftProduction={shiftProdOf(ref)} />
+                  activity={actBy.get(ref)} />
               );
             })}
           </div>
@@ -421,12 +369,10 @@ interface MachineCardProps {
   machine: Machine;
   liveTick?: MachineTick;
   extraParams?: Record<string, number>; // proxy params borrowed from a linked machine
-  activity?: MachineActivityRow;        // uptime/downtime/idle — 24h, or the selected shift
-  shiftLabel?: string;                  // set when a shift is selected
-  shiftProduction?: number | null;      // production made within that shift
+  activity?: MachineActivityRow;        // rolling 24h uptime/downtime/idle
 }
 
-function MachineCard({ machine, liveTick, extraParams, activity, shiftLabel, shiftProduction }: MachineCardProps) {
+function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardProps) {
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   const own       = Object.keys(cp).length ? cp : (machine.latestData || {});
   const params    = extraParams ? { ...own, ...extraParams } : own;
@@ -475,17 +421,12 @@ function MachineCard({ machine, liveTick, extraParams, activity, shiftLabel, shi
 
   const cells = cardParams(params, 9);
   const headline = computeHeadline(params);
-  // Shift mode: the hero becomes the production made WITHIN the selected shift.
-  // Machines with no production counter keep their normal headline (the most
-  // decision-relevant of their own signals) — nothing goes blank.
-  const hero: Headline = (shiftLabel && shiftProduction != null && shiftProduction > 0)
-    ? { label: `Production · ${shiftLabel}`, value: fmtNum(shiftProduction), unit: 'pcs', tone: 'good' }
-    : headline ?? {
-      label: 'Signals Tracked',
-      value: fmtCompact(sigTotal),
-      tone: 'neutral',
-      sub: 'unmapped raw signals',
-    };
+  const hero: Headline = headline ?? {
+    label: 'Signals Tracked',
+    value: fmtCompact(sigTotal),
+    tone: 'neutral',
+    sub: 'unmapped raw signals',
+  };
 
   // Per-card trends: [0] drives the hero sparkline, [1] the secondary progress bar.
   const statKey = machine.code || machine.machineId || machine._id;
