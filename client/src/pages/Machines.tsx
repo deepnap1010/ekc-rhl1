@@ -1,6 +1,6 @@
 // client/src/pages/Machines.tsx
 import { useEffect, useReducer, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, type LucideIcon } from 'lucide-react';
 import { machineApi } from '../api/endpoints';
@@ -8,8 +8,9 @@ import { StatusPill } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtMetric, fmtDuration, prettyKey, prettyType, fmtTime, breachesThreshold, isNumeric } from '../lib/format';
-import { cardParams, paramLabel, isRawAddress } from '../lib/params';
+import { fmtCompact, fmtMetric, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
+import { paramLabel, isRawAddress } from '../lib/params';
+import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
@@ -30,6 +31,7 @@ const STATUS_OPTIONS = [
 ];
 
 const SORT_OPTIONS = [
+  { value: 'process', label: 'Sort: Process order' },
   { value: 'name', label: 'Sort: Name (fixed order)' },
   { value: 'status', label: 'Sort: Status (running first)' },
   { value: 'production', label: 'Sort: Production ↓' },
@@ -67,7 +69,7 @@ function tallyActivity(rows: MachineActivityRow[]) {
 export default function Machines() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
-  const [sortBy, setSortBy] = useState('status');
+  const [sortBy, setSortBy] = useState('process');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const live = useDashboardLive();
@@ -127,6 +129,8 @@ export default function Machines() {
     return v.length ? v[0] : (typeof m.oee === 'number' ? m.oee : Number.POSITIVE_INFINITY);
   };
   const SORTS: Record<string, (a: Machine, b: Machine) => number> = {
+    // Production-flow order: cutting → SPG (numeric) → furnaces → the rest.
+    process: (a, b) => processCompare(a, b),
     status: (a, b) => machineRank(a) - machineRank(b),
     name: (a, b) => String(a.code || a.machineId || a.name || '').localeCompare(String(b.code || b.machineId || b.name || '')),
     production: (a, b) => productionOf(b) - productionOf(a), // ↓ highest first
@@ -373,12 +377,12 @@ interface MachineCardProps {
 }
 
 function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardProps) {
+  const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   const own       = Object.keys(cp).length ? cp : (machine.latestData || {});
   const params    = extraParams ? { ...own, ...extraParams } : own;
   const status    = effectiveStatus({ status: liveTick?.status || machine.status, lastReadingAt: liveTick?.lastReadingAt || machine.lastReadingAt });
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
-  const thresholds = machine.thresholds || {};
   const id        = machine.code || machine._id;
   const code      = machine.code || machine.machineId || machine.name || '—';
   const nameLabel = machine.name || machine.machineName;
@@ -419,7 +423,6 @@ function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardPr
   const liveCount  = sigEntries.filter(([, v]) => (isNumeric(v) && Number(v) !== 0) || (typeof v === 'string' && v.trim() !== '')).length;
   const rawOnly    = sigTotal > 0 && namedCount === 0;
 
-  const cells = cardParams(params, 9);
   const headline = computeHeadline(params);
   const hero: Headline = headline ?? {
     label: 'Signals Tracked',
@@ -522,23 +525,6 @@ function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardPr
         </div>
       )}
 
-      {/* Key parameters */}
-      {cells.length > 0 && (
-        <div className="grid grid-cols-3 gap-1.5 mb-3">
-          {cells.map(([k, v]) => {
-            const breach = breachesThreshold(k, v, thresholds);
-            const raw = isRawAddress(k);
-            const cellLabel = raw ? paramLabel(k).toUpperCase() : prettyKey(paramLabel(k));
-            return (
-              <div key={k} className={`overflow-hidden rounded-md px-2 py-1.5 border ${breach ? 'bg-stopped/10 border-stopped/30' : 'bg-base border-line'}`}>
-                <div className={`truncate ${raw ? 'data text-[9px] text-steel/70' : 'text-[9px] text-steel uppercase tracking-wide'}`} title={cellLabel}>{cellLabel}</div>
-                <div className={`data text-xs font-semibold truncate ${breach ? 'text-stopped' : 'text-primary'}`} title={String(fmtMetric(v))}>{fmtMetric(v)}</div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Uptime / downtime / idle — rolling 24h, reconstructed from telemetry + downtime */}
       <div className="mt-auto grid grid-cols-3 gap-1.5">
         <ActStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
@@ -546,11 +532,26 @@ function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardPr
         <ActStat label="Idle" ms={activity?.idleMs} color={AMBER} />
       </div>
 
-      {/* Footer */}
-      <div className="mt-2.5 pt-2.5 border-t border-line flex items-center justify-between text-[10px]">
+      {/* Footer — the card is a summary; deep views live behind these links */}
+      <div className="mt-2.5 pt-2.5 border-t border-line flex items-center justify-between gap-2 text-[10px]">
         <span className="text-steel/70 truncate">{fmtTime(lastSeen)}</span>
-        <span className="inline-flex items-center gap-0.5 text-accent/80 font-medium group-hover:text-accent transition-colors">
-          View dashboard <ArrowRight size={11} className="transition-transform group-hover:translate-x-0.5" />
+        <span className="flex items-center gap-3 shrink-0">
+          <span
+            role="link" tabIndex={0}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=parameters`); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=parameters`); } }}
+            className="inline-flex items-center gap-0.5 text-steel hover:text-accent font-medium transition-colors cursor-pointer"
+          >
+            Parameters <ArrowRight size={11} />
+          </span>
+          <span
+            role="link" tabIndex={0}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=history`); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=history`); } }}
+            className="inline-flex items-center gap-0.5 text-accent/80 font-medium group-hover:text-accent transition-colors cursor-pointer"
+          >
+            View History <ArrowRight size={11} className="transition-transform group-hover:translate-x-0.5" />
+          </span>
         </span>
       </div>
     </Link>

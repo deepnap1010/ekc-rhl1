@@ -4,12 +4,15 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
   ArrowLeft, Download, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal,
+  Cpu, Database,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../api/endpoints';
 import { StatusPill, Spinner, FreshnessPill } from '../components/ui';
 import TrendChart from '../components/TrendChart';
 import ConfigurePanel from '../components/machine/ConfigurePanel';
 import MachineOverview from '../components/machine/MachineOverview';
+import MachineParameters from '../components/machine/MachineParameters';
+import MachineEvents from '../components/machine/MachineEvents';
 import { fmtNum, fmtMetric, fmtTime, fmtDuration, prettyKey, prettyType } from '../lib/format';
 import { isFault, rankNamedKeys, flattenReading } from '../lib/metrics';
 import { useMachineLive } from '../hooks/useLive';
@@ -17,11 +20,13 @@ import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine, MetricValue } from '../types/api';
 
 const TABS = [
-  { key: 'overview',  label: 'Overview',  icon: Activity },
-  { key: 'history',   label: 'History',   icon: HistoryIcon },
-  { key: 'downtime',  label: 'Downtime',  icon: Clock },
-  { key: 'specs',     label: 'Specs',     icon: FileText },
-  { key: 'configure', label: 'Configure', icon: SlidersHorizontal },
+  { key: 'overview',   label: 'Overview',   icon: Activity },
+  { key: 'parameters', label: 'Parameters', icon: Cpu },        // full live signal view (raw telemetry's home)
+  { key: 'history',    label: 'History',    icon: HistoryIcon }, // operational EVENTS (state + production)
+  { key: 'telemetry',  label: 'Telemetry',  icon: Database },    // raw reading log (archive + CSV)
+  { key: 'downtime',   label: 'Downtime',   icon: Clock },
+  { key: 'specs',      label: 'Specs',      icon: FileText },
+  { key: 'configure',  label: 'Configure',  icon: SlidersHorizontal },
 ];
 
 export default function MachineDetail() {
@@ -91,9 +96,11 @@ export default function MachineDetail() {
       </div>
 
       <div className="px-4 sm:px-6 py-6">
-        {tab === 'overview'  && <MachineOverview key={`ov-${id}`} machine={machine} status={status} lastSeenAt={lastSeenAt} onTab={setTab} />}
-        {tab === 'history'   && <HistoryTab key={`hi-${id}`} code={id} />}
-        {tab === 'downtime'  && <DowntimeTab key={`dt-${id}`} code={id} />}
+        {tab === 'overview'   && <MachineOverview key={`ov-${id}`} machine={machine} status={status} lastSeenAt={lastSeenAt} onTab={setTab} />}
+        {tab === 'parameters' && <MachineParameters key={`pa-${id}`} machine={machine} code={String(id)} />}
+        {tab === 'history'    && <MachineEvents key={`ev-${id}`} code={String(id)} />}
+        {tab === 'telemetry'  && <HistoryTab key={`hi-${id}`} code={id} />}
+        {tab === 'downtime'   && <DowntimeTab key={`dt-${id}`} code={id} />}
         {tab === 'specs'     && <SpecsTab machine={machine} status={status} lastSeenAt={lastSeenAt} />}
         {tab === 'configure' && <ConfigurePanel key={`cf-${id}`} machine={machine} />}
       </div>
