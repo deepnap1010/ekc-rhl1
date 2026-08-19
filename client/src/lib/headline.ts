@@ -56,7 +56,9 @@ export function computeHeadline(data?: ParameterMap): Headline | null {
   // counter, never a digital I/O bit or raw register.
   const prod = productionValue(data, { nonZero: true });
   if (prod !== null) {
-    return { label: 'Production', value: fmtNum(prod), unit: 'pcs', tone: 'neutral' };
+    // Labelled "Count" because the card shows the counter's RAW value —
+    // production-in-a-window (the delta) lives on the dashboard/history views.
+    return { label: 'Production Count', value: fmtNum(prod), unit: 'pcs', tone: 'neutral' };
   }
 
   // 2) Efficiency / OEE
