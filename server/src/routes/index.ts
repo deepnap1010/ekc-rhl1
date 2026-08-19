@@ -10,6 +10,7 @@ import * as downtime from '../controllers/downtime.controller.js';
 import * as reports from '../controllers/reports.controller.js';
 import * as alerts from '../controllers/alerts.controller.js';
 import * as events from '../controllers/events.controller.js';
+import * as config from '../controllers/config.controller.js';
 
 const r = Router();
 
@@ -37,6 +38,10 @@ r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);
 r.get('/machines/:code/history', authorize('history'), machine.machineHistory);
 r.get('/machines/:code/downtime', authorize('downtime'), downtime.machineDowntime);
+
+// Shared config — shifts / products / process stages, same for every desktop
+r.get('/config', config.getConfig);
+r.put('/config', authorize('settings', 'update'), config.updateConfig);
 
 // Operational events — state sessions + production events (read-only feed)
 r.get('/events', authorize('history'), events.listEvents);

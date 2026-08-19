@@ -23,18 +23,18 @@ import { fmtNum, fmtDuration, fmtTime } from '../lib/format';
 import { prettyType } from '../lib/format';
 import { useDashboardLive } from '../hooks/useLive';
 import { useFilters, resolveRange, shiftApplies, DATE_PRESETS } from '../store/filters';
-import { useSettings } from '../lib/settings';
+import { useAppConfig } from '../hooks/useAppConfig';
 import type { RankingRow } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', INDIGO = '#6366F1', VIOLET = '#8B5CF6';
 
 export default function Dashboard() {
   const live = useDashboardLive();
-  const settings = useSettings();
+  const { shifts } = useAppConfig();   // shared server-side shift config
   const f = useFilters();
 
   // Shared filter selection → one concrete window every query below uses.
-  const range = resolveRange(f, settings.shifts);
+  const range = resolveRange(f, shifts);
   const fromISO = range?.from.toISOString();
   const toISO = range?.to.toISOString();
 
@@ -162,7 +162,7 @@ export default function Dashboard() {
             title={shiftApplies(f.preset) ? 'Scope to a shift window' : 'Shift filtering applies to Today / Yesterday'}
           >
             <option value="">All Shifts</option>
-            {settings.shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+            {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
           </select>
 
           {(f.machineId || f.shiftName || f.preset !== 'today') && (

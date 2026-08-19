@@ -8,6 +8,7 @@ import type {
   RankingRow,
   MachineEventRow,
   EventsSummary,
+  AppConfigShape,
   ProductionByType,
   Machine,
   MachineSummary,
@@ -63,6 +64,12 @@ export const dashboardApi = {
 export const eventsApi = {
   list: (params?: Params) => get<MachineEventRow[]>('/events', params),
   summary: (params?: Params) => get<EventsSummary>('/events/summary', params),
+};
+
+export const configApi = {
+  get: () => get<AppConfigShape>('/config'),
+  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages'>>) =>
+    api.put('/config', body) as unknown as Promise<ApiResponse<AppConfigShape>>,
 };
 
 export const machineApi = {

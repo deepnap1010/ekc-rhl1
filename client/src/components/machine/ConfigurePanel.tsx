@@ -13,9 +13,10 @@ import { fmtMetric, fmtTime, prettyType, prettyKey } from '../../lib/format';
 import { cardParams, paramLabel } from '../../lib/params';
 import {
   machineKey, getConfig, saveConfig, clearConfig,
-  EKC_PLANTS, PROCESS_STAGES, CYLINDER_PRODUCTS, SHIFTS,
+  EKC_PLANTS,
   type MachineConfig,
 } from '../../lib/machineConfig';
+import { useAppConfig } from '../../hooks/useAppConfig';
 import type { Machine } from '../../types/api';
 
 const numOrU = (v: string): number | undefined => (v === '' ? undefined : Number(v));
@@ -24,6 +25,9 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
   const id = machineKey(machine);
   const [cfg, setCfg] = useState<MachineConfig>(() => getConfig(id));
   const [saved, setSaved] = useState(false);
+  // Shared config — products / stages / shifts come from the server (same on
+  // every desktop), not from hard-coded frontend arrays.
+  const { products, processStages, shifts } = useAppConfig();
 
   const { data: users } = useQuery({
     queryKey: ['users', 'config'],
@@ -92,7 +96,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           <Field label="Process stage">
             <select className="input" value={cfg.stage || ''} onChange={(e) => set({ stage: e.target.value })}>
               <option value="">Auto ({typeLabel})</option>
-              {PROCESS_STAGES.map((s) => <option key={s} value={s}>{s}</option>)}
+              {processStages.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </Field>
         </div>
@@ -104,7 +108,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           <Field label="Cylinder type / product">
             <select className="input" value={cfg.product || ''} onChange={(e) => set({ product: e.target.value })}>
               <option value="">—</option>
-              {CYLINDER_PRODUCTS.map((p) => <option key={p} value={p}>{p}</option>)}
+              {products.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </Field>
           <Field label="Cylinder spec / size">
@@ -128,7 +132,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           <Field label="Shift">
             <select className="input" value={cfg.shift || ''} onChange={(e) => set({ shift: e.target.value })}>
               <option value="">—</option>
-              {SHIFTS.map((s) => <option key={s} value={s}>{s}</option>)}
+              {shifts.map((s) => <option key={s.name} value={s.name}>{s.name} · {s.start}–{s.end}</option>)}
             </select>
           </Field>
           <Field label="Supervisor">

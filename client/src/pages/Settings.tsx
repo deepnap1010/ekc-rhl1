@@ -18,16 +18,34 @@ import Modal from '../components/Modal';
 import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
-import { machineApi, authApi } from '../api/endpoints';
+import { machineApi, authApi, configApi } from '../api/endpoints';
 import { resizeImage } from '../lib/image';
 import { Avatar } from '../components/ui';
 import {
-  useSettings, patchSettings, resetSettings, resetAllLocalData, APP_VERSION,
+  useSettings, patchSettings, getSettings, resetSettings, resetAllLocalData, APP_VERSION,
   LANGUAGES, REGIONS, STANDARD_OPTIONS, PLANT_TIMEZONES, EKC_PLANTS,
   type Settings, type ThemeMode, type Severity,
 } from '../lib/settings';
 
 type SectionId = 'profile' | 'company' | 'alerts' | 'security' | 'production' | 'reports' | 'system';
+
+// Shifts / products / process stages are SHARED lists (server app_config) so
+// every desktop sees the same values. Edits here save locally as always, and —
+// when the user may update settings — are pushed to the server, debounced so
+// typing a shift name doesn't fire a request per keystroke.
+let sharedSyncTimer: ReturnType<typeof setTimeout> | undefined;
+function syncSharedConfig(): void {
+  clearTimeout(sharedSyncTimer);
+  sharedSyncTimer = setTimeout(() => {
+    try {
+      if (!useAuthStore.getState().can('settings', 'update')) return;
+      const s = getSettings();
+      void configApi
+        .update({ shifts: s.shifts, products: s.production.products, processStages: s.production.processStages })
+        .catch(() => { /* offline / denied — local copy still applies on this device */ });
+    } catch { /* ignore */ }
+  }, 800);
+}
 
 const SECTIONS: { id: SectionId; label: string; icon: LucideIcon; emoji: string }[] = [
   { id: 'profile',    label: 'Profile & Account',   icon: UserIcon,     emoji: '👤' },
@@ -423,20 +441,20 @@ function CompanySection({ s }: { s: Settings }) {
         <div className="space-y-2">
           {s.shifts.map((sh, i) => (
             <div key={i} className="flex items-center gap-3 flex-wrap">
-              <input value={sh.name} onChange={(e) => patchSettings((d) => { d.shifts[i].name = e.target.value; })}
+              <input value={sh.name} onChange={(e) => { patchSettings((d) => { d.shifts[i].name = e.target.value; }); syncSharedConfig(); }}
                 placeholder={`Shift ${i + 1}`}
                 className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm font-medium text-primary outline-none focus:border-accent w-32" />
-              <input type="time" value={sh.start} onChange={(e) => patchSettings((d) => { d.shifts[i].start = e.target.value; })} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+              <input type="time" value={sh.start} onChange={(e) => { patchSettings((d) => { d.shifts[i].start = e.target.value; }); syncSharedConfig(); }} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
               <ArrowRight size={14} className="text-steel" />
-              <input type="time" value={sh.end} onChange={(e) => patchSettings((d) => { d.shifts[i].end = e.target.value; })} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-              <button onClick={() => patchSettings((d) => { d.shifts.splice(i, 1); })} title="Remove shift"
+              <input type="time" value={sh.end} onChange={(e) => { patchSettings((d) => { d.shifts[i].end = e.target.value; }); syncSharedConfig(); }} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+              <button onClick={() => { patchSettings((d) => { d.shifts.splice(i, 1); }); syncSharedConfig(); }} title="Remove shift"
                 className="text-steel/50 hover:text-stopped transition-colors" disabled={s.shifts.length <= 1}>
                 <X size={15} />
               </button>
             </div>
           ))}
         </div>
-        <button onClick={() => patchSettings((d) => { d.shifts.push({ name: `Shift ${d.shifts.length + 1}`, start: '06:00', end: '14:00' }); })}
+        <button onClick={() => { patchSettings((d) => { d.shifts.push({ name: `Shift ${d.shifts.length + 1}`, start: '06:00', end: '14:00' }); }); syncSharedConfig(); }}
           className="mt-3 flex items-center gap-1.5 text-sm text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10 rounded-lg px-3 py-1.5 font-medium transition-colors">
           <Plus size={14} /> Add shift
         </button>
@@ -550,11 +568,11 @@ function ProductionSection({ s }: { s: Settings }) {
   return (
     <>
       <Section title="Product catalog" desc="Cylinder products manufactured across EKC plants." icon={Factory}>
-        <TagEditor tags={s.production.products} onChange={(next) => patchSettings((d) => { d.production.products = next; })} placeholder="e.g. Type-3 Composite" />
+        <TagEditor tags={s.production.products} onChange={(next) => { patchSettings((d) => { d.production.products = next; }); syncSharedConfig(); }} placeholder="e.g. Type-3 Composite" />
       </Section>
 
       <Section title="Process stages" desc="The cylinder manufacturing flow, in order." icon={Factory}>
-        <TagEditor tags={s.production.processStages} onChange={(next) => patchSettings((d) => { d.production.processStages = next; })} placeholder="e.g. Shot Blasting" />
+        <TagEditor tags={s.production.processStages} onChange={(next) => { patchSettings((d) => { d.production.processStages = next; }); syncSharedConfig(); }} placeholder="e.g. Shot Blasting" />
       </Section>
 
       <Section title="Standards & compliance" desc="Regulatory standards the products are certified against." icon={Shield}>

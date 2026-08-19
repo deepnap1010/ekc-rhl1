@@ -19,7 +19,8 @@ import MetricTrendModal, { type DrillEntry } from './MetricTrendModal';
 import { fmtNum, fmtMetric, fmtTime, fmtDuration, prettyKey, prettyType } from '../../lib/format';
 import { namedMetrics, isNumeric, isFault, freshness, type NamedMetric } from '../../lib/metrics';
 import { useMachineTelemetry } from '../../hooks/useLive';
-import { useSettings, shiftWindowOn } from '../../lib/settings';
+import { shiftWindowOn } from '../../lib/settings';
+import { useAppConfig } from '../../hooks/useAppConfig';
 import { LINKS } from '../../lib/linkedMetrics';
 import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent } from '../../types/api';
 
@@ -278,14 +279,14 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
 // (read-only reconstruction from telemetry + downtime). A machine without its own
 // production counter borrows the linked machine's (same pairing as the cards).
 function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
-  const settings = useSettings();
+  const { shifts } = useAppConfig();   // shared server-side shift config
   const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const [day, setDay] = useState(() => localDay(new Date()));
   const [shiftName, setShiftName] = useState('');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const isCustom = shiftName === '__custom__';
-  const shift = settings.shifts.find((s) => s.name === shiftName) || null;
+  const shift = shifts.find((s) => s.name === shiftName) || null;
 
   // Window is either a custom [from,to] (datetime pickers) or a day ± shift.
   let win: { from: Date; to: Date } | null = null;
@@ -324,7 +325,7 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
         <select value={shiftName} onChange={(e) => setShiftName(e.target.value)}
           className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent">
           <option value="">Full day</option>
-          {settings.shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+          {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
           <option value="__custom__">Custom range…</option>
         </select>
         {isCustom ? (

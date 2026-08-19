@@ -382,6 +382,14 @@ export interface OvMachine {
   health: OvMachineHealth;
 }
 export interface OvCapabilityBlocked { name: string; needs: string }
+// Shared (server-side) config — same shifts/products/stages on every desktop.
+export interface AppConfigShape {
+  shifts: { name: string; start: string; end: string }[];
+  products: string[];
+  processStages: string[];
+  stored: boolean;
+}
+
 // Range KPIs reconstructed for the dashboard's selected window (real figures
 // from telemetry + downtime spans; oee stays null — inputs don't exist).
 export interface DashboardWindow {
