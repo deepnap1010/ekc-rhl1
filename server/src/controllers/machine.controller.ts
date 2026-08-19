@@ -13,6 +13,7 @@ import { computeStats } from '../utils/metrics.js';
 import { normalizeData, rankNamed } from '../utils/normalize.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
+import { cached } from '../utils/cache.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -169,18 +170,21 @@ export const machineActivity = asyncHandler(async (req, res) => {
     // One reading-count + first/last reading (timestamp AND payload) per machine over
     // the range — the $sort rides the {machineId,timestamp} index. The first/last
     // payloads let us report the production counter's delta for the range (read-only).
-    Telemetry.aggregate([
-      { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
-      // Sort DESC so the {machineId:1, timestamp:-1} index backs the sort — an
-      // ascending sort forced a blocking in-memory sort that blew the 32MB limit
-      // on a 24h range. Newest-first: $first = latest reading, $last = earliest.
-      { $sort: { machineId: 1, timestamp: -1 } },
-      { $group: {
-        _id: '$machineId', readings: { $sum: 1 },
-        firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
-        firstData: { $last: '$data' }, lastData: { $first: '$data' },
-      } },
-    ]).option({ allowDiskUse: true, maxTimeMS: 20000 }),
+    // Cached per (scope, window) for 30s so all clients polling the rolling-24h view
+    // share ONE scan of the telemetry range instead of each running it every poll.
+    cached('activity:' + JSON.stringify(scoped || 'all') + ':' + fromD.toISOString() + ':' + toD.toISOString(), 30_000, () =>
+      Telemetry.aggregate([
+        { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+        // Sort DESC so the {machineId:1, timestamp:-1} index backs the sort — an
+        // ascending sort forced a blocking in-memory sort that blew the 32MB limit
+        // on a 24h range. Newest-first: $first = latest reading, $last = earliest.
+        { $sort: { machineId: 1, timestamp: -1 } },
+        { $group: {
+          _id: '$machineId', readings: { $sum: 1 },
+          firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
+          firstData: { $last: '$data' }, lastData: { $first: '$data' },
+        } },
+      ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec()),
     // Downtime spans overlapping the range (open spans have endedAt null).
     DowntimeEvent.find({
       machineId: { $in: refs },

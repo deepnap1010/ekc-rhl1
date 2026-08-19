@@ -30,5 +30,9 @@ const telemetrySchema = new mongoose.Schema<ITelemetry>(
 
 // The history query is always: this machine, newest first → make it index-covered & fast at scale.
 telemetrySchema.index({ machineId: 1, timestamp: -1 });
+// Fleet-wide time-range scans (dashboard 7-day volume, activity windows) filter by
+// timestamp across ALL machines — the compound index above can't serve that, so a
+// standalone timestamp index turns those collection scans into index range seeks.
+telemetrySchema.index({ timestamp: -1 });
 
 export const Telemetry = mongoose.model<ITelemetry>('Telemetry', telemetrySchema);

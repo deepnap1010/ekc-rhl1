@@ -9,6 +9,7 @@ import { Role }          from '../models/Role.js';
 import { ok, asyncHandler } from '../utils/http.js';
 import { getFleetSnapshot } from '../services/fleet.service.js';
 import { machineScope } from '../utils/scope.js';
+import { cached } from '../utils/cache.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 
@@ -38,19 +39,24 @@ export const overview = asyncHandler(async (req, res) => {
   const scope = machineScope(req.user as ScopedUser | undefined);
   const sm = scope ? { machineId: { $in: scope } } : null;
 
+  // The two heavy hitters (per-machine fleet snapshot + 7-day telemetry scan) are
+  // cached per-scope for 30s: all clients polling the dashboard share ONE Atlas
+  // computation instead of each recomputing on every poll. Scope in the key keeps a
+  // restricted user from ever seeing another scope's data.
+  const scopeKey = JSON.stringify(sm || 'all');
   const [snapshot, statusAgg, downAgg, employeeCount, activity, teamByRole, rolesCount, superAdmins] = await Promise.all([
-    getFleetSnapshot(scope),
+    cached('snap:' + scopeKey, 30_000, () => getFleetSnapshot(scope)),
     Machine.aggregate([...(sm ? [{ $match: sm }] : []), { $group: { _id: '$status', count: { $sum: 1 } } }]),
     DowntimeEvent.aggregate([
       { $match: { startedAt: { $gte: since24h }, ...(sm || {}) } },
       { $group: { _id: null, totalMs: { $sum: num('$durationMs') }, count: { $sum: 1 } } },
     ]),
     User.countDocuments({ active: true }),
-    Telemetry.aggregate([
+    cached('vol7d:' + scopeKey, 30_000, () => Telemetry.aggregate([
       { $match: { timestamp: { $gte: since7d }, ...(sm || {}) } },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }, readings: { $sum: 1 } } },
       { $sort: { _id: 1 } },
-    ]),
+    ]).option({ maxTimeMS: 20000, allowDiskUse: true }).exec()),
     User.aggregate([
       { $match: { active: true } },
       { $group: { _id: '$role', count: { $sum: 1 } } },
