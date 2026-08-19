@@ -9,7 +9,7 @@ import {
   Download, FileBarChart, AlertTriangle, Clock, ShieldCheck, Play, CircleSlash, Power,
   Gauge as GaugeIcon, type LucideIcon,
 } from 'lucide-react';
-import { reportsApi } from '../api/endpoints';
+import { reportsApi, machineApi } from '../api/endpoints';
 import { StatCard, Spinner } from '../components/ui';
 import { Donut, Gauge, Legend, ERROR_COLORS, STATUS_COLORS, BLUE_RAMP, PALETTE } from '../components/charts';
 import PageHeader from '../components/PageHeader';
@@ -26,15 +26,24 @@ const PIE_COLORS = [ACCENT, '#6366F1', '#EC4899', '#8B5CF6', '#3B82F6', IDLE];
 
 export default function Reports() {
   const [tab, setTab] = useState('overview');
+  const [machineId, setMachineId] = useState('');
+  const mid = machineId || undefined;
+
+  // Machine selector options — the real machine dataset.
+  const { data: machineList } = useQuery({
+    queryKey: ['machines', 'selector'],
+    queryFn: () => machineApi.list({ limit: 200, sort: 'name' }).then((r) => r.data),
+    staleTime: 60_000,
+  });
 
   const { data: prodData, isLoading: prodLoading } = useQuery({
-    queryKey: ['reports', 'production'],
-    queryFn: () => reportsApi.production().then((r) => r.data),
+    queryKey: ['reports', 'production', machineId],
+    queryFn: () => reportsApi.production({ machineId: mid }).then((r) => r.data),
     refetchInterval: 60000,
   });
   const { data: dtData, isLoading: dtLoading } = useQuery({
-    queryKey: ['reports', 'downtime'],
-    queryFn: () => reportsApi.downtime().then((r) => r.data),
+    queryKey: ['reports', 'downtime', machineId],
+    queryFn: () => reportsApi.downtime({ machineId: mid }).then((r) => r.data),
     refetchInterval: 60000,
   });
   const { data: plantData } = useQuery({
@@ -43,13 +52,13 @@ export default function Reports() {
     refetchInterval: 60000,
   });
   const { data: fleetData, isLoading: fleetLoading } = useQuery({
-    queryKey: ['reports', 'fleet'],
-    queryFn: () => reportsApi.fleet().then((r) => r.data),
+    queryKey: ['reports', 'fleet', machineId],
+    queryFn: () => reportsApi.fleet({ machineId: mid }).then((r) => r.data),
     refetchInterval: 60000,
   });
   const { data: relData, isLoading: relLoading } = useQuery({
-    queryKey: ['reports', 'reliability'],
-    queryFn: () => reportsApi.reliability().then((r) => r.data),
+    queryKey: ['reports', 'reliability', machineId],
+    queryFn: () => reportsApi.reliability({ machineId: mid }).then((r) => r.data),
     refetchInterval: 60000,
   });
 
@@ -58,28 +67,60 @@ export default function Reports() {
     ? Math.round(prodData.byType.reduce((s, r) => s + r.efficiency, 0) / prodData.byType.length)
     : 0;
 
-  const exportProdCsv = () => {
-    if (!prodData?.machines?.length) return;
-    const header = 'Machine,Type,Plant,Status,Output,OEE (%),Capacity';
-    const rows = prodData.machines.map((m) => [m.code, m.type, m.plant, m.status, m.output, m.efficiency, m.capacity].join(','));
-    download([header, ...rows].join('\n'), 'production_report.csv');
+  // Export the ACTIVE tab's (already filtered) dataset — never the whole database.
+  const exportCsv = () => {
+    const suffix = machineId ? `_${machineId}` : '';
+    if (tab === 'production' && prodData?.machines?.length) {
+      const header = 'Machine,Type,Plant,Status,Output,OEE (%),Capacity';
+      const rows = prodData.machines.map((m) => [m.code, m.type, m.plant, m.status, m.output, m.efficiency, m.capacity].join(','));
+      download([header, ...rows].join('\n'), `production_report${suffix}.csv`);
+    } else if (tab === 'downtime' && dtData?.byMachine?.length) {
+      const header = 'Machine,Events,Downtime (ms)';
+      const rows = dtData.byMachine.map((m) => [m._id, m.events, m.totalMs].join(','));
+      download([header, ...rows].join('\n'), `downtime_report${suffix}.csv`);
+    } else if (tab === 'plants' && plantData?.length) {
+      const header = 'Plant,Machines,Running,Idle,Stopped,Offline,Output,Avg OEE (%)';
+      const rows = plantData.map((p) => [p.plant, p.total, p.running, p.idle, p.stopped, p.offline, p.totalOutput, p.avgEfficiency].join(','));
+      download([header, ...rows].join('\n'), 'plants_report.csv');
+    } else if (tab === 'fleet' && fleetData?.machines?.length) {
+      const header = 'Machine,Type,Status,Health,Score,Readings,Faults,Downtime (ms),Downtime events';
+      const rows = fleetData.machines.map((m) => [m.machineId, m.type, m.status, m.health, m.score, m.readings, m.faultCount, m.downtimeMs, m.downtimeEvents].join(','));
+      download([header, ...rows].join('\n'), `fleet_report${suffix}.csv`);
+    } else if (tab === 'reliability' && relData?.machines?.length) {
+      const header = 'Machine,Events,Downtime (ms),Availability (%),MTTR (ms),MTBF (ms)';
+      const rows = relData.machines.map((m) => [m.machineId, m.events, m.downtimeMs, m.availability, m.mttrMs, m.mtbfMs].join(','));
+      download([header, ...rows].join('\n'), `reliability_report${suffix}.csv`);
+    }
   };
+  const exportable = tab !== 'overview';
 
   return (
     <div>
       <PageHeader
         title="Reports"
-        subtitle="Production, OEE & downtime summary"
-        right={
-          <button onClick={exportProdCsv} className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20">
+        subtitle={machineId ? `Machine Report — ${machineId.toUpperCase()}` : 'Fleet Report — production, OEE & downtime'}
+        right={exportable ? (
+          <button onClick={exportCsv} className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20">
             <Download size={14} /> Export CSV
           </button>
-        }
+        ) : undefined}
       />
 
       <div className="px-4 sm:px-6 pb-8 space-y-5">
-        {/* Tab switcher */}
-        <div className="panel p-3 flex items-center justify-end">
+        {/* Machine scope + tab switcher */}
+        <div className="panel p-3 flex items-center justify-between gap-3 flex-wrap">
+          <select
+            value={machineId}
+            onChange={(e) => setMachineId(e.target.value)}
+            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[230px] ${machineId ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+            title="Scope reports to one machine"
+          >
+            <option value="">All Machines</option>
+            {(machineList || []).map((m) => {
+              const c = m.code || m.machineId || m._id;
+              return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+            })}
+          </select>
           <div className="flex gap-1 bg-base rounded-lg p-0.5 border border-line">
             {['overview', 'production', 'downtime', 'plants', 'fleet', 'reliability'].map((t) => (
               <button
@@ -93,8 +134,13 @@ export default function Reports() {
           </div>
         </div>
 
+        {/* Plants is inherently a fleet-wide rollup — say so instead of faking a filter */}
+        {machineId && tab === 'plants' && (
+          <div className="panel p-3 text-xs text-steel">Plants is a fleet-wide rollup — the machine filter doesn't apply to this tab.</div>
+        )}
+
         {/* ---- OVERVIEW ---- */}
-        {tab === 'overview' && <OverviewReport />}
+        {tab === 'overview' && <OverviewReport machineId={mid} />}
 
         {/* ---- PRODUCTION ---- */}
         {tab === 'production' && (
@@ -419,11 +465,11 @@ function DtTooltip({ active, payload, label }: ChartTooltipProps) {
 // ── Overview: live downtime & error analysis console (real health + downtime) ─
 const OV_WINDOWS: [number, string][] = [[7, '7d'], [30, '30d'], [90, '90d']];
 
-function OverviewReport() {
+function OverviewReport({ machineId }: { machineId?: string }) {
   const [days, setDays] = useState(30);
   const { data, isLoading } = useQuery({
-    queryKey: ['reports', 'overview', days],
-    queryFn: () => reportsApi.overview({ days }).then((r) => r.data),
+    queryKey: ['reports', 'overview', days, machineId || ''],
+    queryFn: () => reportsApi.overview({ days, machineId }).then((r) => r.data),
     refetchInterval: 30000,
   });
   if (isLoading) return <Spinner />;

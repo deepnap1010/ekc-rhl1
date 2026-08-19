@@ -72,9 +72,10 @@ export const listDowntime = asyncHandler(async (req, res) => {
 
 // GET /downtime/summary — aggregate KPIs for the downtime page cards
 export const downtimeSummary = asyncHandler(async (req, res) => {
-  const { from, to, plant } = req.query as Record<string, string | undefined>;
+  const { from, to, plant, machineId } = req.query as Record<string, string | undefined>;
 
   const matchStage: FilterQuery<IDowntimeEvent> = {};
+  if (machineId && machineId !== 'all') matchStage.machineId = machineId;
   if (from || to) {
     const range: { $gte?: Date; $lte?: Date } = {};
     if (from) range.$gte = new Date(from);
@@ -89,7 +90,11 @@ export const downtimeSummary = asyncHandler(async (req, res) => {
   // Row-level scope: operators' KPIs only cover their assigned machines.
   const scope = machineScope(req.user as ScopeUser);
   if (scope) {
-    if (matchStage.machineId && typeof matchStage.machineId === 'object') {
+    if (typeof matchStage.machineId === 'string') {
+      if (!scope.includes(matchStage.machineId)) {
+        return ok(res, { totalEvents: 0, totalMs: 0, openEvents: 0, idleEvents: 0, stoppedEvents: 0, unacknowledged: 0, worstMachines: [], byType: [] });
+      }
+    } else if (matchStage.machineId && typeof matchStage.machineId === 'object') {
       const requested = (matchStage.machineId as { $in?: string[] }).$in || [];
       matchStage.machineId = { $in: requested.filter((c) => scope.includes(c)) };
     } else {

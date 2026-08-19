@@ -2,18 +2,18 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Clock, AlertTriangle, Activity, Pencil, Check } from 'lucide-react';
-import { downtimeApi } from '../api/endpoints';
+import { downtimeApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { StatCard, Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
-import { fmtDuration, fmtTime, fmtNum } from '../lib/format';
+import { fmtDuration, fmtTime, fmtNum, prettyType } from '../lib/format';
 import type { ApiMeta, DowntimeEvent } from '../types/api';
 
 const TYPES = ['all', 'idle', 'stopped', 'offline'];
 const STATUS_OPTS = ['all', 'open', 'closed'];
 const REVIEW_OPTS = ['all', 'unacknowledged', 'acknowledged'];
 // Bounding every query by a time window keeps it index-backed at production scale.
-const WINDOWS: [string, number | null][] = [['7d', 7], ['30d', 30], ['90d', 90], ['all', null]];
+const WINDOWS: [string, number | null][] = [['7d', 7], ['30d', 30], ['90d', 90], ['all', null], ['custom', null]];
 const PAGE_SIZE = 25;
 
 export default function Downtime() {
@@ -25,13 +25,33 @@ export default function Downtime() {
   const [page, setPage] = useState(1);
   const [reasonModal, setReasonModal] = useState<DowntimeEvent | null>(null);
   const [win, setWin] = useState('30d');
+  const [machineId, setMachineId] = useState('');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
 
-  // `from` recomputes only when the window changes, so the query key stays stable.
-  const from = useMemo(() => {
+  // Machine selector options — the real machine dataset.
+  const { data: machineList } = useQuery({
+    queryKey: ['machines', 'selector'],
+    queryFn: () => machineApi.list({ limit: 200, sort: 'name' }).then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  // Range recomputes only when the window/custom inputs change → stable query keys.
+  const range = useMemo(() => {
+    if (win === 'custom') {
+      const f = customFrom ? new Date(customFrom) : null;
+      const t = customTo ? new Date(customTo) : null;
+      if (f && t && !Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime()) && f < t) {
+        return { from: f.toISOString(), to: t.toISOString() };
+      }
+      return { from: undefined, to: undefined };
+    }
     const days = ({ '7d': 7, '30d': 30, '90d': 90 } as Record<string, number>)[win];
-    return days ? new Date(Date.now() - days * 86400000).toISOString() : undefined;
-  }, [win]);
-  const winLabel = win === 'all' ? 'all time' : `last ${win.replace('d', '')} days`;
+    return { from: days ? new Date(Date.now() - days * 86400000).toISOString() : undefined, to: undefined };
+  }, [win, customFrom, customTo]);
+  const from = range.from;
+  const to = range.to;
+  const winLabel = win === 'custom' ? 'custom range' : win === 'all' ? 'all time' : `last ${win.replace('d', '')} days`;
 
   const ackMut = useMutation({
     mutationFn: ({ id, acknowledged }: { id: string; acknowledged: boolean }) =>
@@ -40,15 +60,18 @@ export default function Downtime() {
   });
 
   const { data: summary } = useQuery({
-    queryKey: ['downtime', 'summary', win],
-    queryFn: () => downtimeApi.summary({ from }).then((r) => r.data),
+    queryKey: ['downtime', 'summary', win, machineId, from, to],
+    queryFn: () => downtimeApi.summary({ from, to, machineId: machineId || undefined }).then((r) => r.data),
     refetchInterval: 30000,
+    placeholderData: keepPreviousData,
   });
 
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['downtime', 'list', win, type, status, review, page],
+    queryKey: ['downtime', 'list', win, machineId, from, to, type, status, review, page],
     queryFn: () => downtimeApi.list({
       from,
+      to,
+      machineId: machineId || undefined,
       type: type !== 'all' ? type : undefined,
       status: status !== 'all' ? status : undefined,
       acknowledged: review === 'unacknowledged' ? 'false' : review === 'acknowledged' ? 'true' : undefined,
@@ -111,6 +134,27 @@ export default function Downtime() {
 
         {/* Filters */}
         <div className="panel p-3 flex flex-wrap gap-3 items-center">
+          <select
+            value={machineId}
+            onChange={(e) => { setMachineId(e.target.value); setPage(1); }}
+            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[230px] ${machineId ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+            title="Scope downtime to one machine"
+          >
+            <option value="">All Machines</option>
+            {(machineList || []).map((m) => {
+              const c = m.code || m.machineId || m._id;
+              return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+            })}
+          </select>
+          {win === 'custom' && (
+            <span className="flex items-center gap-1.5">
+              <input type="datetime-local" value={customFrom} onChange={(e) => { setCustomFrom(e.target.value); setPage(1); }}
+                className="rounded-xl border border-line bg-base px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+              <span className="text-steel text-xs">→</span>
+              <input type="datetime-local" value={customTo} onChange={(e) => { setCustomTo(e.target.value); setPage(1); }}
+                className="rounded-xl border border-line bg-base px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+            </span>
+          )}
           <FilterGroup label="Type" value={type} opts={typeOpts} onChange={(v) => { setType(v); setPage(1); }} />
           <FilterGroup label="Status" value={status} opts={STATUS_OPTS} onChange={(v) => { setStatus(v); setPage(1); }} />
           <FilterGroup label="Review" value={review} opts={REVIEW_OPTS} onChange={(v) => { setReview(v); setPage(1); }} />
