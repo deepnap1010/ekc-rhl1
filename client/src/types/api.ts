@@ -426,6 +426,13 @@ export interface MachineEventRow {
   meta?: Record<string, unknown>;
 }
 
+// Minute-level change log row (machine History tab) — only real changes survive.
+export interface TimelineRow {
+  ts: string;
+  production: number | null;
+  status: string | null;
+}
+
 export interface EventsSummary {
   from: string; to: string;
   sessions: { running: number; idle: number; stopped: number; offline: number };

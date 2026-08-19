@@ -10,7 +10,8 @@ import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { flattenData } from '../utils/flatten.js';
 import { computeStats } from '../utils/metrics.js';
-import { normalizeData, rankNamed } from '../utils/normalize.js';
+import { normalizeData, rankNamed, isNumericValue } from '../utils/normalize.js';
+import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { computeActivity } from '../services/activity.service.js';
@@ -148,6 +149,69 @@ export const machineActivity = asyncHandler(async (req, res) => {
   // range metrics and rankings, so all three always agree.
   const act = await computeActivity(machineScope(req.user as ScopeUser), fromD, toD);
   return ok(res, act.rows, { from: act.from.toISOString(), to: act.to.toISOString(), windowMs: act.windowMs });
+});
+
+// GET /machines/:code/timeline?from&to — the machine's minute-level CHANGE log:
+// one row per minute (latest reading in that minute), and only minutes where the
+// production counter or the reported status actually changed survive — so every
+// row is a real change, not telemetry spam. Default window: last 7 days.
+// Read-only over `telemetries`; the row's full payload is fetched on demand by
+// the client ("View parameters"), so this response stays light at scale.
+export const machineTimeline = asyncHandler(async (req, res) => {
+  const m = await findMachine(req.params.code);
+  if (!m) return fail(res, 404, 'Machine not found');
+  if (!inUserScope(req.user as ScopeUser, m.code, m.machineId)) return fail(res, 403, 'You are not assigned to this machine');
+  const refs = [m.code, m.machineId].filter(Boolean) as string[];
+
+  const q = req.query as Record<string, string | undefined>;
+  const parseD = (s?: string): Date | null => {
+    if (!s) return null;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const nowMin = Math.floor(Date.now() / 60_000) * 60_000;
+  const toD = parseD(q.to) || new Date(nowMin);
+  const fromD = parseD(q.from) || new Date(toD.getTime() - 7 * 24 * 3600 * 1000);
+  if (fromD >= toD) return fail(res, 400, 'from must be before to');
+  const endD = new Date(Math.min(toD.getTime(), Date.now()));
+
+  // Latest reading per minute — the sort rides {machineId, timestamp:-1}.
+  const agg = (await Telemetry.aggregate([
+    { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+    { $sort: { machineId: 1, timestamp: -1 } },
+    { $group: {
+      _id: { $dateTrunc: { date: '$timestamp', unit: 'minute' } },
+      ts: { $first: '$timestamp' },
+      data: { $first: '$data' },
+    } },
+    { $sort: { _id: 1 } },
+  ]).option({ allowDiskUse: true, maxTimeMS: 20000 })) as { _id: Date; ts: Date; data?: Record<string, unknown> }[];
+
+  // One production-counter key for the whole range (newest payload that has one),
+  // via the shared picker — same key the event engine and activity view use.
+  let prodKey: string | null = null;
+  for (let i = agg.length - 1; i >= 0 && !prodKey; i -= 1) prodKey = pickProductionKey(flattenData(agg[i].data || {}));
+
+  // Keep only real changes (production or status differs from the previous minute).
+  const rows: { ts: Date; production: number | null; status: string | null }[] = [];
+  let prevProd: number | null = null;
+  let prevStatus: string | null = null;
+  for (const r of agg) {
+    const flat = flattenData(r.data || {});
+    const production = prodKey && isNumericValue(flat[prodKey]) ? Number(flat[prodKey]) : null;
+    const rawStatus = flat.status;
+    const status = typeof rawStatus === 'string' && rawStatus.trim() ? rawStatus.trim().toLowerCase() : null;
+    if (rows.length && production === prevProd && status === prevStatus) continue;
+    rows.push({ ts: r.ts, production, status });
+    prevProd = production;
+    prevStatus = status;
+  }
+  rows.reverse(); // newest first
+
+  return ok(res, rows.slice(0, 2000), {
+    from: fromD.toISOString(), to: endD.toISOString(),
+    productionKey: prodKey, total: rows.length, minutes: agg.length,
+  });
 });
 
 // Resolve a machine by business `code`, then by the raw `machineId` (the mirror

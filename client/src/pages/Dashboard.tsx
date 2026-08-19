@@ -9,8 +9,8 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
-  ShieldCheck, Radio, Bell, AlertTriangle, CheckCircle2,
-  Database, Gauge, Clock, ArrowUpRight,
+  Radio, Bell, AlertTriangle, CheckCircle2,
+  Gauge, Clock, ArrowUpRight,
   Cpu, Play, Pause, CircleSlash, Power,
   Sparkles, Wrench, TrendingUp, Zap,
   Factory, Timer, CalendarClock, Trophy, TrendingDown, RotateCcw,
@@ -64,9 +64,7 @@ export default function Dashboard() {
   });
 
   const fleet     = ov?.fleet     || { total: 0, running: 0, idle: 0, stopped: 0, offline: 0 };
-  const health    = ov?.health    || { healthy: 0, warning: 0, critical: 0, offline: 0, avgScore: 0 };
   const alerts    = ov?.alerts    || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
-  const signals   = ov?.signals   || { named: 0, io: 0, registers: 0, mapped: 0, total: 0, mappedPct: 0 };
   const reporting = ov?.reporting || { reporting: 0, live: 0, total: 0 };
   const win       = ov?.window;
   const [drill, setDrill] = useState<string | null>(null);
@@ -189,7 +187,7 @@ export default function Dashboard() {
         </div>
 
         {/* Window KPIs — real reconstructed figures for the selected range */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi label="Production" value={win ? `${fmtNum(win.production)} pcs` : '—'}
             sub={win ? `${win.reported} of ${win.machines} reported` : 'No data in range'} color={TEAL} icon={Factory} />
           <Kpi label="Runtime" value={win ? fmtDuration(win.runningMs) : '—'}
@@ -198,20 +196,17 @@ export default function Dashboard() {
             sub={win ? `idle ${fmtDuration(win.idleMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
           <Kpi label="Availability" value={win ? `${win.availabilityPct}%` : '—'}
             sub="running ÷ window" color={win && win.availabilityPct >= 75 ? TEAL : win && win.availabilityPct >= 50 ? AMBER : RED} icon={CalendarClock} />
-          <Kpi label="OEE" value="—" sub="needs cycle + quality signals" color={STEEL} icon={Gauge} />
         </div>
 
         {/* Analytical KPIs */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          <Kpi label="Fleet Health"  value={`${health.avgScore}%`} sub={`${health.critical} critical · ${health.warning} warn`} color={health.avgScore >= 80 ? TEAL : health.avgScore >= 50 ? AMBER : RED} icon={ShieldCheck} />
-          <Kpi label="Signal Coverage" value={`${signals.mappedPct}%`} sub={`${fmtNum(signals.mapped)} of ${fmtNum(signals.total)} mapped`} color={INDIGO} icon={Database} />
+        <div className="grid grid-cols-3 gap-3">
           <Kpi label="Reporting"     value={`${reporting.reporting}/${reporting.total}`} sub={`${reporting.live} live now`} color={TEAL} icon={Radio} />
           <Kpi label="Active Alerts" value={fmtNum(alerts.total)} sub={`${alerts.critical} crit · ${alerts.warning} warn`} color={alerts.critical ? RED : alerts.warning ? AMBER : TEAL} icon={AlertTriangle} />
           <Kpi label="Downtime events" value={fmtNum(ov?.downtime?.events || 0)} sub={`${fmtDuration(ov?.downtime?.totalMs)} in window`} color={AMBER} icon={Clock} />
         </div>
 
-        {/* Status + health + alerts — each drills into per-machine detail */}
-        <div className="grid lg:grid-cols-3 gap-5">
+        {/* Status + alerts — each drills into per-machine detail */}
+        <div className="grid lg:grid-cols-2 gap-5">
           <Panel title="Machine Status" subtitle={`${fleet.total} machine${fleet.total === 1 ? '' : 's'} · ${fleet.running} running now`} icon={Cpu} onClick={() => setDrill('status')}>
             <div className="flex items-center gap-4">
               <Donut segments={statusSeg} size={128} thickness={16} emptyColor={SLATE}>
@@ -224,15 +219,6 @@ export default function Dashboard() {
                   : <Legend rows={statusSeg} total={fleet.total} format={(v) => fmtNum(v)} scroll={false} />}
               </div>
             </div>
-          </Panel>
-
-          <Panel title="Health Distribution" subtitle={`Avg score ${health.avgScore}/100`} icon={ShieldCheck} onClick={() => setDrill('health')}>
-            <StackBar segments={[
-              { label: 'Healthy', value: health.healthy, color: TEAL },
-              { label: 'Warning', value: health.warning, color: AMBER },
-              { label: 'Critical', value: health.critical, color: RED },
-              { label: 'Offline', value: health.offline, color: SLATE },
-            ]} unit={fleet.total === 1 ? 'machine' : 'machines'} />
           </Panel>
 
           <Panel title="Alert Composition" subtitle={`${alerts.total} active in scope`} icon={AlertTriangle} onClick={() => setDrill('alerts')}>
@@ -386,29 +372,6 @@ function Panel({ title, subtitle, icon: Icon, children, onClick }: { title: stri
         {clickable && <span className="text-[10px] font-medium text-steel/40 group-hover:text-accent transition-colors inline-flex items-center gap-0.5 shrink-0">Details <ArrowUpRight size={12} /></span>}
       </div>
       {children}
-    </div>
-  );
-}
-
-function StackBar({ segments, unit }: { segments: { label: string; value: number; color: string }[]; unit: string }): JSX.Element {
-  const total = segments.reduce((s, x) => s + (x.value || 0), 0);
-  if (!total) return <div className="text-sm text-steel py-4 text-center">No data.</div>;
-  return (
-    <div>
-      <div className="flex h-3 rounded-full overflow-hidden bg-line">
-        {segments.filter((s) => s.value > 0).map((s) => (
-          <div key={s.label} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} title={`${s.label}: ${s.value}`} />
-        ))}
-      </div>
-      <div className="mt-3 space-y-1.5">
-        {segments.map((s) => (
-          <div key={s.label} className="flex items-center justify-between text-xs">
-            <span className="flex items-center gap-2 text-steel"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />{s.label}</span>
-            <span className="data text-primary font-medium">{fmtNum(s.value)} <span className="text-steel/60">· {total ? Math.round((s.value / total) * 100) : 0}%</span></span>
-          </div>
-        ))}
-      </div>
-      <div className="text-[10px] text-steel/60 mt-2 pt-2 border-t border-line">{fmtNum(total)} {unit} total</div>
     </div>
   );
 }

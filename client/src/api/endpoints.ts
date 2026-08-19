@@ -14,6 +14,7 @@ import type {
   MachineSummary,
   MachineActivityRow,
   MachineStats,
+  TimelineRow,
   Telemetry,
   DowntimeEvent,
   DowntimeSummary,
@@ -79,6 +80,7 @@ export const machineApi = {
   get: (code: string) => get<Machine>(`/machines/${code}`),
   stats: (code: string, params?: Params) => get<MachineStats>(`/machines/${code}/stats`, params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),
+  timeline: (code: string, params?: { from?: string; to?: string }) => get<TimelineRow[]>(`/machines/${code}/timeline`, params),
   downtime: (code: string, params?: Params) => get<DowntimeEvent[]>(`/machines/${code}/downtime`, params),
 };
 

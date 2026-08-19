@@ -37,6 +37,7 @@ r.get('/machines/:code', authorize('machines'), machine.getMachine);
 r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);
 r.get('/machines/:code/history', authorize('history'), machine.machineHistory);
+r.get('/machines/:code/timeline', authorize('history'), machine.machineTimeline); // minute-level change log
 r.get('/machines/:code/downtime', authorize('downtime'), downtime.machineDowntime);
 
 // Shared config — shifts / products / process stages, same for every desktop
