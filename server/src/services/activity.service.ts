@@ -73,24 +73,35 @@ export async function computeActivity(
     .lean()) as LeanM[];
   const refs = [...new Set(machines.flatMap((m) => [m.code, m.machineId].filter(Boolean) as string[]))];
 
-  const cacheKey = 'activity:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
+  const cacheKey = 'activity2:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
     + ':' + fromD.toISOString() + ':' + toD.toISOString();
 
-  const [tele, events] = await Promise.all([
-    // One reading-count + first/last reading (timestamp AND payload) per machine.
-    // Sort DESC so {machineId:1, timestamp:-1} backs the sort (ascending blew the
-    // 32MB in-memory limit). Newest-first: $first = latest, $last = earliest.
+  const [teleAgg, events] = await Promise.all([
     // Cached 30s per (scope, only, window) so polling clients share one scan.
-    cached(cacheKey, 30_000, () =>
-      Telemetry.aggregate([
-        { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
-        { $sort: { machineId: 1, timestamp: -1 } },
-        { $group: {
-          _id: '$machineId', readings: { $sum: 1 },
-          firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
-          firstData: { $last: '$data' }, lastData: { $first: '$data' },
-        } },
-      ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec()),
+    cached(cacheKey, 30_000, async () => {
+      const [tele, minutes] = await Promise.all([
+        // One reading-count + first/last reading (timestamp AND payload) per
+        // machine. Sort DESC so {machineId:1, timestamp:-1} backs the sort.
+        Telemetry.aggregate([
+          { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+          { $sort: { machineId: 1, timestamp: -1 } },
+          { $group: {
+            _id: '$machineId', readings: { $sum: 1 },
+            firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
+            firstData: { $last: '$data' }, lastData: { $first: '$data' },
+          } },
+        ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec(),
+        // Distinct reporting minutes per machine — running time is only ever
+        // credited for time the machine ACTUALLY reported (silence is never
+        // uptime, matching the Signal-Lost rule).
+        Telemetry.aggregate([
+          { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+          { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute' } } } } },
+          { $group: { _id: '$_id.m', minutes: { $sum: 1 } } },
+        ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec(),
+      ]);
+      return { tele, minutes };
+    }),
     DowntimeEvent.find({
       machineId: { $in: refs },
       startedAt: { $lte: endD },
@@ -98,7 +109,10 @@ export async function computeActivity(
     }).select({ machineId: 1, type: 1, startedAt: 1, endedAt: 1 }).maxTimeMS(20000).lean(),
   ]);
 
-  const teleBy = new Map<string, TeleRow>((tele as TeleRow[]).map((t) => [t._id, t]));
+  const teleBy = new Map<string, TeleRow>(((teleAgg as { tele: TeleRow[] }).tele).map((t) => [t._id, t]));
+  const minutesBy = new Map<string, number>(
+    ((teleAgg as { minutes: { _id: string; minutes: number }[] }).minutes).map((m) => [m._id, m.minutes]),
+  );
 
   // Production over the range = counter delta between first and last reading.
   // Key selection is shared (utils/production) with the event engine + client.
@@ -135,16 +149,20 @@ export async function computeActivity(
       downBy.get(ref) ?? (m.machineId ? downBy.get(m.machineId) : undefined) ?? { idle: 0, stopped: 0, offline: 0 };
     const downMs = down.idle + down.stopped + down.offline;
     const readings = t?.readings || 0;
-    // Time not covered by a downtime span counts as running only if the machine
-    // actually reported in the range — silence with no spans is "no data", not uptime.
-    // Known ceiling: a machine that reported briefly and then went silent while its
-    // status stayed "running" (so no offline span was recorded) still gets full
-    // credit — running time is only as truthful as the reported status timeline.
-    const runningMs = readings > 0 ? Math.max(0, windowMs - downMs) : 0;
+    // Running time = time the machine ACTUALLY reported, minus recorded downtime.
+    // Silence is never credited as uptime (a machine that reported one hour and
+    // then went dark gets one hour, not the whole window) — same truth model as
+    // the Signal-Lost status rule.
+    const aliasMinutes = m.machineId && m.machineId !== ref ? (minutesBy.get(m.machineId) || 0) : 0;
+    const reportedMs = Math.min(windowMs, ((minutesBy.get(ref) || 0) + aliasMinutes) * 60_000);
+    const runningMs = readings > 0 ? Math.max(0, reportedMs - downMs) : 0;
+    // Dominant state: silent, span-less time counts toward offline so a
+    // mostly-dark machine never ranks as "running".
+    const silentMs = Math.max(0, windowMs - reportedMs - down.offline);
     let status = 'offline';
     if (readings > 0 || downMs > 0) {
       const buckets: [string, number][] = [
-        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline],
+        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline + silentMs],
       ];
       buckets.sort((a, b) => b[1] - a[1]);
       status = buckets[0][0];
