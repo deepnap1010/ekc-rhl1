@@ -26,6 +26,7 @@ r.patch('/auth/me', auth.updateMe); // self-service profile edit (name / email /
 // Dashboard
 r.get('/dashboard/overview', authorize('dashboard'), dash.overview);
 r.get('/dashboard/production', authorize('dashboard'), dash.production);
+r.get('/dashboard/rankings', authorize('dashboard'), dash.rankings); // per-machine performance over a range
 
 // Machines (read-only) — identified by code
 r.get('/machines', authorize('machines'), machine.listMachines);

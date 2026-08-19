@@ -5,6 +5,9 @@ import type {
   LoginResponse,
   User,
   DashboardOverview,
+  RankingRow,
+  MachineEventRow,
+  EventsSummary,
   ProductionByType,
   Machine,
   MachineSummary,
@@ -51,8 +54,15 @@ export const authApi = {
 };
 
 export const dashboardApi = {
-  overview: () => get<DashboardOverview>('/dashboard/overview'),
+  overview: (params?: { machineId?: string; from?: string; to?: string }) =>
+    get<DashboardOverview>('/dashboard/overview', params),
   production: () => get<ProductionByType[]>('/dashboard/production'),
+  rankings: (params?: { from?: string; to?: string }) => get<RankingRow[]>('/dashboard/rankings', params),
+};
+
+export const eventsApi = {
+  list: (params?: Params) => get<MachineEventRow[]>('/events', params),
+  summary: (params?: Params) => get<EventsSummary>('/events/summary', params),
 };
 
 export const machineApi = {

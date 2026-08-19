@@ -1,29 +1,66 @@
 // client/src/pages/Dashboard.tsx — fleet ANALYSIS console (aggregate insights, not re-lists)
+// Every metric derives from ONE shared filter selection (machine / shift / date
+// range, store/filters). "All machines" shows fleet analytics + performance
+// rankings; picking a machine scopes every panel to it. Range KPIs (production,
+// runtime, downtime, availability) are reconstructed server-side from telemetry
+// + downtime spans — never fabricated; OEE stays honest ("needs signals").
 import { useState, useMemo, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
   ShieldCheck, Radio, Bell, AlertTriangle, CheckCircle2,
-  Database, Gauge, Lock, Clock, ArrowUpRight,
+  Database, Gauge, Clock, ArrowUpRight,
   Cpu, Play, Pause, CircleSlash, Power,
   Sparkles, Wrench, TrendingUp, Zap,
+  Factory, Timer, CalendarClock, Trophy, TrendingDown, RotateCcw,
 } from 'lucide-react';
-import { dashboardApi } from '../api/endpoints';
+import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
 import AnalyticsModal from '../components/AnalyticsModal';
 import { Donut, Legend } from '../components/charts';
 import { fmtNum, fmtDuration, fmtTime } from '../lib/format';
+import { prettyType } from '../lib/format';
 import { useDashboardLive } from '../hooks/useLive';
+import { useFilters, resolveRange, shiftApplies, DATE_PRESETS } from '../store/filters';
+import { useSettings } from '../lib/settings';
+import type { RankingRow } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', INDIGO = '#6366F1', VIOLET = '#8B5CF6';
 
 export default function Dashboard() {
   const live = useDashboardLive();
+  const settings = useSettings();
+  const f = useFilters();
+
+  // Shared filter selection → one concrete window every query below uses.
+  const range = resolveRange(f, settings.shifts);
+  const fromISO = range?.from.toISOString();
+  const toISO = range?.to.toISOString();
+
   const { data: ov } = useQuery({
-    queryKey: ['dashboard', 'overview'],
-    queryFn: () => dashboardApi.overview().then((r) => r.data),
+    queryKey: ['dashboard', 'overview', f.machineId, fromISO, toISO],
+    queryFn: () => dashboardApi.overview({
+      machineId: f.machineId || undefined, from: fromISO, to: toISO,
+    }).then((r) => r.data),
     refetchInterval: 10000,
+    placeholderData: keepPreviousData,
+  });
+
+  // Machine selector options — the real machine dataset, not a hard-coded list.
+  const { data: machineList } = useQuery({
+    queryKey: ['machines', 'selector'],
+    queryFn: () => machineApi.list({ limit: 200, sort: 'name' }).then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  // Performance rankings — fleet view only (a single machine has no ranking).
+  const { data: rankData } = useQuery({
+    queryKey: ['dashboard', 'rankings', fromISO, toISO],
+    queryFn: () => dashboardApi.rankings({ from: fromISO, to: toISO }).then((r) => r.data),
+    enabled: !f.machineId,
+    refetchInterval: 60000,
+    placeholderData: keepPreviousData,
   });
 
   const fleet     = ov?.fleet     || { total: 0, running: 0, idle: 0, stopped: 0, offline: 0 };
@@ -31,8 +68,18 @@ export default function Dashboard() {
   const alerts    = ov?.alerts    || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
   const signals   = ov?.signals   || { named: 0, io: 0, registers: 0, mapped: 0, total: 0, mappedPct: 0 };
   const reporting = ov?.reporting || { reporting: 0, live: 0, total: 0 };
-  const caps      = ov?.capabilities || { live: [], blocked: [], liveCount: 0, total: 0 };
+  const win       = ov?.window;
   const [drill, setDrill] = useState<string | null>(null);
+
+  const selectedMachine = f.machineId
+    ? (machineList || []).find((m) => (m.code || m.machineId) === f.machineId)
+    : null;
+  const scopeLabel = f.machineId
+    ? `${String(f.machineId).toUpperCase()}`
+    : 'All machines';
+  const windowLabel = f.shiftName && shiftApplies(f.preset)
+    ? `${f.shiftName} · ${DATE_PRESETS.find((p) => p.value === f.preset)?.label}`
+    : DATE_PRESETS.find((p) => p.value === f.preset)?.label || '';
 
   // Operational status mix (from machine.status) — the at-a-glance fleet state.
   const statusSeg = [
@@ -42,21 +89,25 @@ export default function Dashboard() {
     { key: 'offline', label: 'Offline', value: fleet.offline || 0, color: SLATE },
   ].filter((s) => s.value > 0);
 
-  // Freshest reading across the whole fleet — "last updated" for the dashboard.
+  // Freshest reading across the selection — "last updated" for the dashboard.
   const lastReading = useMemo(() => {
     const ts = (ov?.machines || []).map((m) => m.lastSeenAt).filter(Boolean).map((t) => new Date(t as string).getTime());
     return ts.length ? Math.max(...ts) : null;
   }, [ov]);
   const lastIsLive = lastReading != null && (Date.now() - lastReading) <= 120_000;
 
+  const rankings = (rankData || []) as RankingRow[];
+  const top10 = rankings.slice(0, 10);
+  const bottom10 = rankings.length > 10 ? rankings.slice(-10).reverse() : [];
+
   return (
     <div>
       <PageHeader
-        title="Dashboard" subtitle="Fleet data analysis & insights" live={Object.keys(live).length}
+        title="Dashboard" subtitle={`${scopeLabel} · ${windowLabel}`} live={Object.keys(live).length}
         right={(
           <div className="flex items-center gap-2">
             {lastReading && (
-              <span className={`inline-flex items-center gap-1 text-[11px] font-bold ring-1 rounded-md px-2 py-0.5 ${lastIsLive ? 'text-running bg-running/10 ring-running/20' : 'text-stopped bg-stopped/10 ring-stopped/20'}`} title="Most recent reading across the fleet">
+              <span className={`inline-flex items-center gap-1 text-[11px] font-bold ring-1 rounded-md px-2 py-0.5 ${lastIsLive ? 'text-running bg-running/10 ring-running/20' : 'text-stopped bg-stopped/10 ring-stopped/20'}`} title="Most recent reading across the selection">
                 <Clock size={11} /> {fmtTime(lastReading)}
               </span>
             )}
@@ -70,13 +121,82 @@ export default function Dashboard() {
       />
 
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
-        {/* Operational status — the live fleet state at a glance */}
+        {/* Shared filters — every metric below derives from this one selection */}
+        <div className="panel p-3 flex items-center gap-2 flex-wrap">
+          <select
+            value={f.machineId}
+            onChange={(e) => f.set({ machineId: e.target.value })}
+            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[240px] ${f.machineId ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+            title="Scope the dashboard to one machine"
+          >
+            <option value="">All Machines</option>
+            {(machineList || []).map((m) => {
+              const code = m.code || m.machineId || m._id;
+              return <option key={code} value={code}>{String(code).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+            })}
+          </select>
+
+          <select
+            value={f.preset}
+            onChange={(e) => f.set({ preset: e.target.value as typeof f.preset })}
+            className="rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none cursor-pointer hover:border-accent/40 transition-colors"
+          >
+            {DATE_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+          </select>
+
+          {f.preset === 'custom' && (
+            <>
+              <input type="datetime-local" value={f.customFrom} onChange={(e) => f.set({ customFrom: e.target.value })}
+                className="rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none focus:border-accent" />
+              <span className="text-steel text-xs">→</span>
+              <input type="datetime-local" value={f.customTo} onChange={(e) => f.set({ customTo: e.target.value })}
+                className="rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none focus:border-accent" />
+            </>
+          )}
+
+          <select
+            value={shiftApplies(f.preset) ? f.shiftName : ''}
+            onChange={(e) => f.set({ shiftName: e.target.value })}
+            disabled={!shiftApplies(f.preset)}
+            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 disabled:opacity-45 disabled:cursor-not-allowed ${f.shiftName && shiftApplies(f.preset) ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+            title={shiftApplies(f.preset) ? 'Scope to a shift window' : 'Shift filtering applies to Today / Yesterday'}
+          >
+            <option value="">All Shifts</option>
+            {settings.shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+          </select>
+
+          {(f.machineId || f.shiftName || f.preset !== 'today') && (
+            <button onClick={f.reset} title="Reset filters"
+              className="w-9 h-9 flex items-center justify-center rounded-xl border border-line text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0">
+              <RotateCcw size={14} />
+            </button>
+          )}
+
+          {f.preset === 'custom' && !range && (
+            <span className="text-[11px] text-amber-600">Pick a valid start & end to apply the range.</span>
+          )}
+        </div>
+
+        {/* Operational status — the live state of the selection at a glance */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          <StatusTile label="Total Machines" value={fmtNum(fleet.total || 0)} color={INDIGO} icon={Cpu} tint="rgba(99,102,241,0.06)" />
+          <StatusTile label={f.machineId ? 'Machines (selected)' : 'Total Machines'} value={fmtNum(fleet.total || 0)} color={INDIGO} icon={Cpu} tint="rgba(99,102,241,0.06)" />
           <StatusTile label="Running" value={fmtNum(fleet.running || 0)} color={TEAL} icon={Play} tint="rgba(13,148,136,0.07)" />
           <StatusTile label="Idle" value={fmtNum(fleet.idle || 0)} color={AMBER} icon={Pause} tint="rgba(217,119,6,0.06)" />
           <StatusTile label="Stopped" value={fmtNum(fleet.stopped || 0)} color={fleet.stopped ? RED : STEEL} icon={CircleSlash} tint="rgba(220,38,38,0.06)" />
           <StatusTile label="Offline" value={fmtNum(fleet.offline || 0)} color={fleet.offline ? STEEL : TEAL} icon={Power} tint="rgba(100,116,139,0.06)" />
+        </div>
+
+        {/* Window KPIs — real reconstructed figures for the selected range */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <Kpi label="Production" value={win ? `${fmtNum(win.production)} pcs` : '—'}
+            sub={win ? `${win.reported} of ${win.machines} reported` : 'No data in range'} color={TEAL} icon={Factory} />
+          <Kpi label="Runtime" value={win ? fmtDuration(win.runningMs) : '—'}
+            sub={win ? `across ${win.machines} machine${win.machines === 1 ? '' : 's'}` : undefined} color={TEAL} icon={Timer} />
+          <Kpi label="Downtime" value={win ? fmtDuration(win.downtimeMs) : '—'}
+            sub={win ? `idle ${fmtDuration(win.idleMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
+          <Kpi label="Availability" value={win ? `${win.availabilityPct}%` : '—'}
+            sub="running ÷ window" color={win && win.availabilityPct >= 75 ? TEAL : win && win.availabilityPct >= 50 ? AMBER : RED} icon={CalendarClock} />
+          <Kpi label="OEE" value="—" sub="needs cycle + quality signals" color={STEEL} icon={Gauge} />
         </div>
 
         {/* Analytical KPIs */}
@@ -85,16 +205,16 @@ export default function Dashboard() {
           <Kpi label="Signal Coverage" value={`${signals.mappedPct}%`} sub={`${fmtNum(signals.mapped)} of ${fmtNum(signals.total)} mapped`} color={INDIGO} icon={Database} />
           <Kpi label="Reporting"     value={`${reporting.reporting}/${reporting.total}`} sub={`${reporting.live} live now`} color={TEAL} icon={Radio} />
           <Kpi label="Active Alerts" value={fmtNum(alerts.total)} sub={`${alerts.critical} crit · ${alerts.warning} warn`} color={alerts.critical ? RED : alerts.warning ? AMBER : TEAL} icon={AlertTriangle} />
-          <Kpi label="Downtime (24h)" value={fmtDuration(ov?.downtime?.totalMs)} sub={`${ov?.downtime?.events || 0} events`} color={AMBER} icon={Clock} />
+          <Kpi label="Downtime events" value={fmtNum(ov?.downtime?.events || 0)} sub={`${fmtDuration(ov?.downtime?.totalMs)} in window`} color={AMBER} icon={Clock} />
         </div>
 
-        {/* Status + health + alerts — equal-size cards, each drills into per-machine detail */}
+        {/* Status + health + alerts — each drills into per-machine detail */}
         <div className="grid lg:grid-cols-3 gap-5">
-          <Panel title="Machine Status" subtitle={`${fleet.total} machines · ${fleet.running} running now`} icon={Cpu} onClick={() => setDrill('status')}>
+          <Panel title="Machine Status" subtitle={`${fleet.total} machine${fleet.total === 1 ? '' : 's'} · ${fleet.running} running now`} icon={Cpu} onClick={() => setDrill('status')}>
             <div className="flex items-center gap-4">
               <Donut segments={statusSeg} size={128} thickness={16} emptyColor={SLATE}>
                 <span className="data text-2xl font-bold text-primary leading-none">{fmtNum(fleet.total || 0)}</span>
-                <span className="label mt-1">machines</span>
+                <span className="label mt-1">machine{fleet.total === 1 ? '' : 's'}</span>
               </Donut>
               <div className="flex-1 min-w-0">
                 {statusSeg.length === 0
@@ -110,10 +230,10 @@ export default function Dashboard() {
               { label: 'Warning', value: health.warning, color: AMBER },
               { label: 'Critical', value: health.critical, color: RED },
               { label: 'Offline', value: health.offline, color: SLATE },
-            ]} unit="machines" />
+            ]} unit={fleet.total === 1 ? 'machine' : 'machines'} />
           </Panel>
 
-          <Panel title="Alert Composition" subtitle={`${alerts.total} active across the fleet`} icon={AlertTriangle} onClick={() => setDrill('alerts')}>
+          <Panel title="Alert Composition" subtitle={`${alerts.total} active in scope`} icon={AlertTriangle} onClick={() => setDrill('alerts')}>
             <CategoryBars data={[
               { label: 'Sensor faults', value: alerts.byCategory.fault || 0, color: RED },
               { label: 'Out of range', value: alerts.byCategory.range || 0, color: RED },
@@ -124,30 +244,28 @@ export default function Dashboard() {
           </Panel>
         </div>
 
-        {/* Instrumentation maturity */}
-        <Panel title="Monitoring Capabilities" subtitle={`${caps.liveCount} of ${caps.total} instrumented · ${caps.blocked.length} awaiting signals`} icon={Gauge} onClick={() => setDrill('capabilities')}>
-          <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
-            <div>
-              <div className="label mb-2 text-running">Live now ({caps.liveCount})</div>
-              <div className="space-y-1.5">
-                {caps.live.map((c) => (
-                  <div key={c} className="flex items-center gap-2 text-sm text-primary"><CheckCircle2 size={14} className="text-running shrink-0" />{c}</div>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="label mb-2 text-steel">Blocked — needs signal ({caps.blocked.length})</div>
-              <div className="space-y-1.5">
-                {caps.blocked.map((c) => (
-                  <div key={c.name} className="flex items-start gap-2 text-sm">
-                    <Lock size={13} className="text-steel/50 shrink-0 mt-0.5" />
-                    <span><span className="text-steel">{c.name}</span> <span className="text-[11px] text-steel/60">· needs {c.needs}</span></span>
-                  </div>
-                ))}
-              </div>
+        {/* Performance rankings — fleet view only; click a row to select it */}
+        {!f.machineId && (
+          <div className="grid lg:grid-cols-2 gap-5">
+            <RankPanel title="Top performers" icon={Trophy} color={TEAL} rows={top10}
+              onPick={(code) => f.set({ machineId: code })} />
+            <RankPanel title="Needs attention" icon={TrendingDown} color={RED} rows={bottom10.length ? bottom10 : [...rankings].reverse().slice(0, Math.min(10, rankings.length))}
+              onPick={(code) => f.set({ machineId: code })} />
+          </div>
+        )}
+
+        {/* Selected-machine shortcut row */}
+        {f.machineId && (
+          <div className="panel p-4 flex items-center gap-3 flex-wrap">
+            <span className="text-sm text-steel">Viewing analytics for</span>
+            <span className="data text-sm font-bold text-primary">{scopeLabel}</span>
+            {selectedMachine?.type && <span className="pill bg-accent/10 text-accent !text-[10px]">{prettyType(selectedMachine.type)}</span>}
+            <div className="ml-auto flex items-center gap-2">
+              <Link to={`/machines/${f.machineId}`} className="text-xs text-accent hover:underline inline-flex items-center gap-1">Open machine <ArrowUpRight size={12} /></Link>
+              <Link to={`/machines/${f.machineId}?tab=history`} className="text-xs text-accent hover:underline inline-flex items-center gap-1">View history <ArrowUpRight size={12} /></Link>
             </div>
           </div>
-        </Panel>
+        )}
 
         {/* AI Insights — teaser for the upcoming prediction layer */}
         <div className="panel p-5" style={{ background: 'rgba(99,102,241,0.05)' }}>
@@ -177,6 +295,46 @@ export default function Dashboard() {
 }
 
 // ── building blocks ──────────────────────────────────────────────────────────
+// Performance ranking table — availability-based (the only officially derivable
+// performance metric; OEE inputs don't exist and are never fabricated).
+function RankPanel({ title, icon, color, rows, onPick }: { title: string; icon: LucideIcon; color: string; rows: RankingRow[]; onPick: (code: string) => void }): JSX.Element {
+  return (
+    <Panel title={title} subtitle="availability over the selected window · click to inspect" icon={icon}>
+      {rows.length === 0 ? (
+        <div className="text-sm text-steel py-6 text-center">No activity in the selected range.</div>
+      ) : (
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr className="text-steel">
+                <th className="text-left label px-2 py-1.5">#</th>
+                <th className="text-left label px-2 py-1.5">Machine</th>
+                <th className="text-right label px-2 py-1.5">Avail.</th>
+                <th className="text-right label px-2 py-1.5">Production</th>
+                <th className="text-right label px-2 py-1.5">Runtime</th>
+                <th className="text-right label px-2 py-1.5">Downtime</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.code} onClick={() => onPick(r.code)}
+                  className="border-t border-line hover:bg-base/60 cursor-pointer">
+                  <td className="px-2 py-2 data text-xs text-steel">{i + 1}</td>
+                  <td className="px-2 py-2 data text-xs font-semibold text-primary">{String(r.code).toUpperCase()}</td>
+                  <td className="px-2 py-2 data text-xs text-right font-semibold" style={{ color: r.availabilityPct >= 75 ? '#0D9488' : r.availabilityPct >= 50 ? '#D97706' : color }}>{r.availabilityPct}%</td>
+                  <td className="px-2 py-2 data text-xs text-right">{r.production != null ? fmtNum(r.production) : <span className="text-steel/50">—</span>}</td>
+                  <td className="px-2 py-2 data text-xs text-right">{fmtDuration(r.runningMs)}</td>
+                  <td className="px-2 py-2 data text-xs text-right">{r.downtimeMs ? fmtDuration(r.downtimeMs) : '0m'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // Blurred placeholder values — real predictions land when the AI layer ships.
 function AiTile({ icon: Icon, color, title, line, value }: { icon: LucideIcon; color: string; title: string; line: string; value: string }): JSX.Element {
   return (
@@ -267,4 +425,3 @@ function CategoryBars({ data }: { data: { label: string; value: number; color: s
     </div>
   );
 }
-

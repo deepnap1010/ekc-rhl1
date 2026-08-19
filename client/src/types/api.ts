@@ -382,7 +382,53 @@ export interface OvMachine {
   health: OvMachineHealth;
 }
 export interface OvCapabilityBlocked { name: string; needs: string }
+// Range KPIs reconstructed for the dashboard's selected window (real figures
+// from telemetry + downtime spans; oee stays null — inputs don't exist).
+export interface DashboardWindow {
+  from: string; to: string; windowMs: number;
+  machines: number; reported: number;
+  production: number;
+  runningMs: number; idleMs: number; stoppedMs: number; offlineMs: number; downtimeMs: number;
+  availabilityPct: number;
+  oee: number | null;
+}
+
+// One machine's performance row over a range (dashboard rankings).
+export interface RankingRow {
+  code: string; name: string; type: string | null; status: string; live: boolean;
+  production: number | null;
+  runningMs: number; downtimeMs: number; idleMs: number;
+  availabilityPct: number;
+}
+
+// Operational event (machine_events) — state sessions + production events.
+export interface MachineEventRow {
+  _id: string;
+  machineId: string;
+  kind: 'state' | 'production';
+  state?: 'running' | 'idle' | 'stopped' | 'offline';
+  prevState?: string | null;
+  paramKey?: string;
+  prevValue?: number;
+  newValue?: number;
+  delta?: number;
+  startedAt: string;
+  endedAt?: string | null;
+  durationMs?: number;
+  meta?: Record<string, unknown>;
+}
+
+export interface EventsSummary {
+  from: string; to: string;
+  sessions: { running: number; idle: number; stopped: number; offline: number };
+  durations: { runningMs: number; idleMs: number; stoppedMs: number; offlineMs: number };
+  production: { events: number; pieces: number };
+  totalEvents: number;
+}
+
 export interface DashboardOverview {
+  filters?: { machineId: string | null; from: string | null; to: string | null };
+  window?: DashboardWindow;
   fleet: { total: number; running: number; idle: number; stopped: number; offline: number };
   health: { healthy: number; warning: number; critical: number; offline: number; avgScore: number };
   reporting: { reporting: number; live: number; total: number };

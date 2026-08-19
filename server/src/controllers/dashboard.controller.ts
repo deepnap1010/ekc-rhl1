@@ -6,10 +6,11 @@ import { Telemetry }     from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { User }          from '../models/User.js';
 import { Role }          from '../models/Role.js';
-import { ok, asyncHandler } from '../utils/http.js';
+import { ok, fail, asyncHandler } from '../utils/http.js';
 import { getFleetSnapshot } from '../services/fleet.service.js';
 import { machineScope } from '../utils/scope.js';
 import { cached } from '../utils/cache.js';
+import { computeActivity } from '../services/activity.service.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 
@@ -32,28 +33,55 @@ const CAPABILITIES = {
 // GET /dashboard/overview — the fleet ANALYSIS layer: aggregates, ratios,
 // distributions, instrumentation gap analysis. All derived from REAL data.
 export const overview = asyncHandler(async (req, res) => {
+  const q = req.query as Record<string, string | undefined>;
+  const parseD = (s?: string): Date | null => {
+    if (!s) return null;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  // Optional filters: ?machineId=&from=&to= — every applicable metric below
+  // derives from the SAME filtered dataset (machine + range), per-scope enforced.
+  const fromD = parseD(q.from);
+  const toD = parseD(q.to);
+  const rangeActive = !!(fromD && toD && fromD < toD);
+
   const since24h = new Date(Date.now() - 24 * 3600 * 1000);
   const since7d  = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  const downFrom = rangeActive ? (fromD as Date) : since24h;
+  const downTo   = rangeActive ? (toD as Date)   : new Date();
+  const volFrom  = rangeActive ? (fromD as Date) : since7d;
+  const volTo    = rangeActive ? (toD as Date)   : new Date();
 
   // Row-level scope: a restricted user sees a dashboard built only from their machines.
   const scope = machineScope(req.user as ScopedUser | undefined);
-  const sm = scope ? { machineId: { $in: scope } } : null;
 
-  // The two heavy hitters (per-machine fleet snapshot + 7-day telemetry scan) are
-  // cached per-scope for 30s: all clients polling the dashboard share ONE Atlas
-  // computation instead of each recomputing on every poll. Scope in the key keeps a
-  // restricted user from ever seeing another scope's data.
-  const scopeKey = JSON.stringify(sm || 'all');
-  const [snapshot, statusAgg, downAgg, employeeCount, activity, teamByRole, rolesCount, superAdmins] = await Promise.all([
+  // Explicit machine — resolve its code/machineId aliases; must be inside scope.
+  let only: string[] | null = null;
+  if (q.machineId) {
+    if (scope && !scope.includes(q.machineId)) return fail(res, 403, 'Machine not in your scope');
+    const mdoc = (await Machine.findOne({ $or: [{ code: q.machineId }, { machineId: q.machineId }] })
+      .select({ code: 1, machineId: 1 }).lean()) as { code?: string; machineId?: string } | null;
+    only = mdoc ? ([mdoc.code, mdoc.machineId].filter(Boolean) as string[]) : [q.machineId];
+  }
+  const refs = only ?? scope;                                   // telemetry/downtime machineId refs
+  const sm = refs ? { machineId: { $in: refs } } : null;
+  const machineMatch = refs ? { $or: [{ code: { $in: refs } }, { machineId: { $in: refs } }] } : null;
+
+  // The heavy hitters (fleet snapshot, telemetry volume scan, range activity) are
+  // cached for 30s keyed by scope+filters: all clients polling the dashboard share
+  // ONE Atlas computation, and a restricted user never sees another scope's data.
+  const scopeKey = JSON.stringify(scope || 'all');
+  const filterKey = scopeKey + ':' + JSON.stringify(only) + ':' + volFrom.toISOString() + ':' + volTo.toISOString();
+  const [snapshot, statusAgg, downAgg, employeeCount, activity, teamByRole, rolesCount, superAdmins, act] = await Promise.all([
     cached('snap:' + scopeKey, 30_000, () => getFleetSnapshot(scope)),
-    Machine.aggregate([...(sm ? [{ $match: sm }] : []), { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    Machine.aggregate([...(machineMatch ? [{ $match: machineMatch }] : []), { $group: { _id: '$status', count: { $sum: 1 } } }]),
     DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: since24h }, ...(sm || {}) } },
+      { $match: { startedAt: { $gte: downFrom, $lte: downTo }, ...(sm || {}) } },
       { $group: { _id: null, totalMs: { $sum: num('$durationMs') }, count: { $sum: 1 } } },
     ]),
     User.countDocuments({ active: true }),
-    cached('vol7d:' + scopeKey, 30_000, () => Telemetry.aggregate([
-      { $match: { timestamp: { $gte: since7d }, ...(sm || {}) } },
+    cached('vol:' + filterKey, 30_000, () => Telemetry.aggregate([
+      { $match: { timestamp: { $gte: volFrom, $lte: volTo }, ...(sm || {}) } },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }, readings: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]).option({ maxTimeMS: 20000, allowDiskUse: true }).exec()),
@@ -65,7 +93,15 @@ export const overview = asyncHandler(async (req, res) => {
     ]),
     Role.estimatedDocumentCount(),
     User.countDocuments({ active: true, isSuperAdmin: true }),
+    // Window activity — production/runtime/downtime for the selected range
+    // (default: last 24h), from the same shared engine as /machines/activity
+    // and /dashboard/rankings so the three surfaces always agree.
+    computeActivity(scope, rangeActive ? (fromD as Date) : since24h, rangeActive ? (toD as Date) : new Date(), only),
   ]);
+
+  // Machine filter applies to the snapshot-derived sections too (health, signals,
+  // composition, machine list) so no stale fleet-wide value survives filtering.
+  const snapRows = only ? snapshot.filter((m) => (only as string[]).includes(m.machineId)) : snapshot;
 
   const byRole = (teamByRole as { role?: string; count: number }[])
     .map((t) => ({ role: t.role || 'Unassigned', count: t.count }))
@@ -80,7 +116,7 @@ export const overview = asyncHandler(async (req, res) => {
   const byClass: Record<string, { class: string; count: number; alerts: number }> = {};
   let named = 0, io = 0, registers = 0, scoreSum = 0, reporting = 0, live = 0, totalReadings = 0;
 
-  for (const m of snapshot) {
+  for (const m of snapRows) {
     health[m.health.status] = (health[m.health.status] || 0) + 1;
     scoreSum += m.health.score;
     named += m.namedCount || 0; io += m.ioCount || 0; registers += m.registers || 0;
@@ -98,24 +134,46 @@ export const overview = asyncHandler(async (req, res) => {
 
   const totalSignals = named + io + registers;
   const mapped = named + io;
-  const avgScore = snapshot.length ? Math.round(scoreSum / snapshot.length) : 0;
+  const avgScore = snapRows.length ? Math.round(scoreSum / snapRows.length) : 0;
   const alertTotal = Object.values(byCategory).reduce((s, n) => s + n, 0);
   const critical = byCategory.fault + byCategory.range;
   const warning  = byCategory.deviation + byCategory.stale;
   const byTypeArr = Object.values(byType).sort((a, b) => b.readings - a.readings);
   const dt = (downAgg as { totalMs: number; count: number }[])[0];
 
-  const machines = snapshot.map((m) => ({
+  const machines = snapRows.map((m) => ({
     machineId: m.machineId, name: m.name, type: m.type, class: m.class, status: m.status,
     lastSeenAt: m.lastSeenAt, readings: m.readings || 0,
     namedCount: m.namedCount || 0, ioCount: m.ioCount || 0, registers: m.registers || 0, faultCount: m.faultCount || 0,
     health: { score: m.health.score, status: m.health.status, freshness: m.health.freshness, counts: m.health.counts, alerts: m.health.alerts },
   }));
 
+  // Window KPIs — real, reconstructed figures for the selected range. OEE stays
+  // null: its inputs (cycle time, good/reject counts) don't exist in the data,
+  // and we never fabricate metrics.
+  const wRows = act.rows;
+  const wRunning = wRows.reduce((s, r) => s + r.runningMs, 0);
+  const wIdle    = wRows.reduce((s, r) => s + r.idleMs, 0);
+  const wStopped = wRows.reduce((s, r) => s + r.stoppedMs, 0);
+  const wOffline = wRows.reduce((s, r) => s + r.offlineMs, 0);
+  const wProd    = wRows.reduce((s, r) => s + (r.production ?? 0), 0);
+  const windowBlock = {
+    from: act.from.toISOString(), to: act.to.toISOString(), windowMs: act.windowMs,
+    machines: wRows.length,
+    reported: wRows.filter((r) => r.live).length,
+    production: wProd,
+    runningMs: wRunning, idleMs: wIdle, stoppedMs: wStopped, offlineMs: wOffline,
+    downtimeMs: wStopped + wOffline,
+    availabilityPct: act.windowMs && wRows.length ? Math.round((wRunning / (act.windowMs * wRows.length)) * 100) : 0,
+    oee: null,
+  };
+
   return ok(res, {
+    filters: { machineId: q.machineId || null, from: rangeActive ? (fromD as Date).toISOString() : null, to: rangeActive ? (toD as Date).toISOString() : null },
+    window: windowBlock,
     fleet,
     health: { ...health, avgScore },
-    reporting: { reporting, live, total: snapshot.length },
+    reporting: { reporting, live, total: snapRows.length },
     alerts: { total: alertTotal, critical, warning, info: byCategory.offline + byCategory.other, byCategory },
     signals: { named, io, registers, mapped, total: totalSignals, mappedPct: pct(mapped, totalSignals) },
     volume: { totalReadings, perDay: (activity as { _id: string; readings: number }[]).map((a) => ({ day: a._id, readings: a.readings })), byType: byTypeArr },
@@ -157,4 +215,39 @@ export const production = asyncHandler(async (req, res) => {
     machines:   r.machines,
     running:    r.running,
   })));
+});
+
+// GET /dashboard/rankings?from&to — per-machine performance over a range, from
+// the shared activity engine. "Performance" here = availability (running time /
+// window) with production as the tiebreak — the only officially derivable
+// metrics; OEE is never fabricated. The client slices top/bottom N.
+export const rankings = asyncHandler(async (req, res) => {
+  const q = req.query as Record<string, string | undefined>;
+  const parseD = (s?: string): Date | null => {
+    if (!s) return null;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const toD = parseD(q.to) || new Date();
+  const fromD = parseD(q.from) || new Date(toD.getTime() - 24 * 3600 * 1000);
+  if (fromD >= toD) return fail(res, 400, 'from must be before to');
+
+  const scope = machineScope(req.user as ScopedUser | undefined);
+  const act = await computeActivity(scope, fromD, toD);
+
+  const rows = act.rows
+    .map((r) => ({
+      code: r.code, name: r.name, type: r.type, status: r.status, live: r.live,
+      production: r.production,
+      runningMs: r.runningMs,
+      downtimeMs: r.stoppedMs + r.offlineMs,
+      idleMs: r.idleMs,
+      availabilityPct: act.windowMs ? Math.round((r.runningMs / act.windowMs) * 100) : 0,
+    }))
+    .sort((a, b) =>
+      (b.availabilityPct - a.availabilityPct)
+      || ((b.production ?? -1) - (a.production ?? -1))
+      || a.code.localeCompare(b.code));
+
+  return ok(res, rows, { from: act.from.toISOString(), to: act.to.toISOString(), windowMs: act.windowMs });
 });
