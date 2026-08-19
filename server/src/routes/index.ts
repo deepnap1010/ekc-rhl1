@@ -9,6 +9,7 @@ import * as rbac from '../controllers/rbac.controller.js';
 import * as downtime from '../controllers/downtime.controller.js';
 import * as reports from '../controllers/reports.controller.js';
 import * as alerts from '../controllers/alerts.controller.js';
+import * as events from '../controllers/events.controller.js';
 
 const r = Router();
 
@@ -35,6 +36,10 @@ r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);
 r.get('/machines/:code/history', authorize('history'), machine.machineHistory);
 r.get('/machines/:code/downtime', authorize('downtime'), downtime.machineDowntime);
+
+// Operational events — state sessions + production events (read-only feed)
+r.get('/events', authorize('history'), events.listEvents);
+r.get('/events/summary', authorize('history'), events.eventsSummary);
 
 // Downtime
 r.get('/downtime', authorize('downtime'), downtime.listDowntime);

@@ -8,6 +8,7 @@
 import { Machine } from '../models/Machine.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { errMessage } from '../utils/http.js';
+import { ensureEventSeed, recordState, recordProduction } from './event.service.js';
 
 const SWEEP_MS = 30_000; // re-evaluate every 30s
 
@@ -59,12 +60,18 @@ async function evaluate(ref: string, state: State, now: Date): Promise<void> {
 
 export async function sweepDowntime(): Promise<void> {
   try {
+    await ensureEventSeed();
     const machines = await Machine.find({}).lean();
     const now = new Date();
     for (const m of machines) {
       const ref = m.code || m.machineId || String(m._id);
       if (!ref) continue;
-      await evaluate(ref, machineState(m), now);
+      const state = machineState(m);
+      await evaluate(ref, state, now);
+      // Same sweep, same state source → the operational event log can never
+      // disagree with downtime_reports. Event errors are swallowed inside.
+      await recordState(ref, state === 'up' ? 'running' : state, now);
+      await recordProduction(ref, (m as { currentParameters?: Record<string, unknown> }).currentParameters, now);
     }
   } catch (err) {
     console.error('[downtime] sweep error:', errMessage(err));

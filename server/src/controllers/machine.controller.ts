@@ -14,6 +14,7 @@ import { normalizeData, rankNamed } from '../utils/normalize.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { cached } from '../utils/cache.js';
+import { pickProductionKey } from '../utils/production.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -200,24 +201,19 @@ export const machineActivity = asyncHandler(async (req, res) => {
   const teleBy = new Map<string, TeleRow>((tele as TeleRow[]).map((t) => [t._id, t]));
 
   // Production over the range = the counter's delta between the first and last
-  // reading. Key priority mirrors the client's headline logic: a real workpiece /
-  // production counter always beats a generic "count" (never e.g. a cycle count).
-  const PROD_PATTERNS = [/workpiece/, /production|output|piece/, /\bcount\b/];
-  const normKey = (k: string): string => k.toLowerCase().replace(/[._/\-]+/g, ' ');
+  // reading. Key selection lives in utils/production (shared with the event
+  // engine, mirrored by the client's headline logic).
   function productionOf(t?: TeleRow): { key: string; production: number } | null {
     if (!t?.lastData) return null;
     const last = flattenData(t.lastData);
     const first = flattenData(t.firstData || {});
-    for (const re of PROD_PATTERNS) {
-      const key = Object.keys(last).find((k) => re.test(normKey(k)) && Number.isFinite(Number(last[k])));
-      if (!key) continue;
-      const end = Number(last[key]);
-      const start = Number(first[key]);
-      // Counter reset mid-range (delta negative) → best effort: the end value.
-      const delta = Number.isFinite(start) ? end - start : 0;
-      return { key, production: delta >= 0 ? delta : end };
-    }
-    return null;
+    const key = pickProductionKey(last);
+    if (!key) return null;
+    const end = Number(last[key]);
+    const start = Number(first[key]);
+    // Counter reset mid-range (delta negative) → best effort: the end value.
+    const delta = Number.isFinite(start) ? end - start : 0;
+    return { key, production: delta >= 0 ? delta : end };
   }
 
   const downBy = new Map<string, { idle: number; stopped: number; offline: number }>();
