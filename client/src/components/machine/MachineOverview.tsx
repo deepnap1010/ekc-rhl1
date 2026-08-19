@@ -169,10 +169,11 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
                   return (
                     <button key={p.key} type="button" title="Click to view trend"
                       onClick={() => openMetric([{ key: p.key, label: prettyKey(p.key), stat: st }], prettyKey(p.key))}
-                      className="group relative text-left rounded-lg border border-line bg-base px-3 py-2 hover:border-accent/50 hover:bg-accent/5 transition-colors">
+                      className="group relative min-w-0 overflow-hidden text-left rounded-lg border border-line bg-base px-3 py-2 hover:border-accent/50 hover:bg-accent/5 transition-colors">
                       <LineChart size={12} className="absolute top-2 right-2 text-accent opacity-0 group-hover:opacity-100 transition-opacity" />
                       <div className="text-[10px] text-steel uppercase tracking-wide truncate" title={prettyKey(p.key)}>{prettyKey(p.key)}</div>
-                      <div className={`data text-lg font-bold ${p.fault ? 'text-stopped' : 'text-primary'}`}>{p.fault ? 'FAULT' : fmtMetric(p.value)}</div>
+                      {/* long values (bit arrays etc.) must clip inside the tile — full value on hover */}
+                      <div className={`data text-lg font-bold truncate ${p.fault ? 'text-stopped' : 'text-primary'}`} title={p.fault ? 'FAULT' : String(fmtMetric(p.value))}>{p.fault ? 'FAULT' : fmtMetric(p.value)}</div>
                       {(st?.spark?.length ?? 0) > 1 && !p.fault && <div className="mt-1 -mx-0.5"><Sparkline data={st.spark} width={160} height={24} /></div>}
                     </button>
                   );
