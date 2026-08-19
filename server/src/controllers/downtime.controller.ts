@@ -146,8 +146,11 @@ export const downtimeSummary = asyncHandler(async (req, res) => {
 export const machineDowntime = asyncHandler(async (req, res) => {
   const scope = machineScope(req.user as ScopeUser);
   if (scope && !scope.includes(req.params.code)) return fail(res, 403, 'You are not assigned to this machine');
-  const { page = 1, limit = 20, from, to } = req.query as Record<string, string | undefined>;
+  const { page = 1, limit = 20, from, to, type, status } = req.query as Record<string, string | undefined>;
   const q: FilterQuery<IDowntimeEvent> = { machineId: req.params.code };
+  if (type && type !== 'all') q.type = type as IDowntimeEvent['type'];
+  if (status === 'open') q.endedAt = null;
+  else if (status === 'closed') q.endedAt = { $ne: null };
   if (from || to) {
     const range: { $gte?: Date; $lte?: Date } = {};
     if (from) range.$gte = new Date(from);

@@ -146,21 +146,65 @@ function PgBtn({ disabled, onClick, children }: { disabled?: boolean; onClick: (
 }
 
 // ─── Downtime ────────────────────────────────────────────────────────────────
+const DT_TYPES = ['all', 'idle', 'stopped', 'offline'];
+const DT_STATUS = ['all', 'open', 'closed'];
+
 function DowntimeTab({ code }: { code?: string }) {
   const [page, setPage] = useState(1);
+  const [type, setType] = useState('all');
+  const [status, setStatus] = useState('all');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const { data, isLoading } = useQuery({
-    queryKey: ['machine-downtime', code, page],
-    queryFn: () => downtimeApi.list({ machineId: code, page, limit: 20 }),
+    queryKey: ['machine-downtime', code, page, type, status, from, to],
+    queryFn: () => downtimeApi.list({
+      machineId: code, page, limit: 20,
+      type: type !== 'all' ? type : undefined,
+      status: status !== 'all' ? status : undefined,
+      from: from ? new Date(from).toISOString() : undefined,
+      to: to ? new Date(to).toISOString() : undefined,
+    }),
     placeholderData: keepPreviousData,
   });
   const events = data?.data || [];
   const total = data?.meta?.total || 0;
   const pageCount = Math.max(1, Math.ceil(total / 20));
 
+  const chip = (active: boolean) =>
+    `px-2.5 py-1.5 rounded-lg text-xs capitalize transition-colors ${active ? 'bg-accent/15 text-accent font-medium' : 'text-steel hover:bg-base'}`;
+
   if (isLoading) return <Spinner />;
 
   return (
     <div className="space-y-4 max-w-4xl">
+      {/* Filters — type, open/closed, date range */}
+      <div className="panel p-3 flex flex-wrap items-center gap-3">
+        <span className="flex items-center gap-1">
+          <span className="label mr-1">Type:</span>
+          {DT_TYPES.map((t) => (
+            <button key={t} onClick={() => { setType(t); setPage(1); }} className={chip(type === t)}>{t}</button>
+          ))}
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="label mr-1">Status:</span>
+          {DT_STATUS.map((s) => (
+            <button key={s} onClick={() => { setStatus(s); setPage(1); }} className={chip(status === s)}>{s}</button>
+          ))}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <input type="datetime-local" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }}
+            className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-xs text-primary outline-none focus:border-accent" />
+          <span className="text-steel text-xs">→</span>
+          <input type="datetime-local" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }}
+            className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-xs text-primary outline-none focus:border-accent" />
+        </span>
+        {(type !== 'all' || status !== 'all' || from || to) && (
+          <button onClick={() => { setType('all'); setStatus('all'); setFrom(''); setTo(''); setPage(1); }}
+            className="text-xs text-steel hover:text-accent transition-colors">Reset</button>
+        )}
+        <span className="ml-auto text-xs text-steel">{fmtNum(total)} event{total === 1 ? '' : 's'}</span>
+      </div>
+
       <div className="panel overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-base border-b border-line">
@@ -168,7 +212,7 @@ function DowntimeTab({ code }: { code?: string }) {
           </thead>
           <tbody>
             {events.length === 0 ? (
-              <tr><td colSpan={5} className="text-center text-steel py-10">No downtime events recorded</td></tr>
+              <tr><td colSpan={5} className="text-center text-steel py-10">No downtime events match the filters</td></tr>
             ) : events.map((e) => (
               <tr key={e._id} className="border-t border-line hover:bg-base/60">
                 <td className="px-4 py-3">
