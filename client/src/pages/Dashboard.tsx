@@ -13,7 +13,7 @@ import {
   Gauge, Clock, ArrowUpRight,
   Cpu, Play, Pause, CircleSlash, Power,
   Sparkles, Wrench, TrendingUp, Zap,
-  Factory, Timer, CalendarClock, Trophy, TrendingDown, RotateCcw,
+  Factory, Timer, Trophy, TrendingDown, RotateCcw,
 } from 'lucide-react';
 import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
@@ -187,15 +187,13 @@ export default function Dashboard() {
         </div>
 
         {/* Window KPIs — real reconstructed figures for the selected range */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <Kpi label="Production" value={win ? `${fmtNum(win.production)} pcs` : '—'}
             sub={win ? `${win.reported} of ${win.machines} reported` : 'No data in range'} color={TEAL} icon={Factory} />
           <Kpi label="Runtime" value={win ? fmtDuration(win.runningMs) : '—'}
             sub={win ? `across ${win.machines} machine${win.machines === 1 ? '' : 's'}` : undefined} color={TEAL} icon={Timer} />
           <Kpi label="Downtime" value={win ? fmtDuration(win.downtimeMs) : '—'}
             sub={win ? `idle ${fmtDuration(win.idleMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
-          <Kpi label="Availability" value={win ? `${win.availabilityPct}%` : '—'}
-            sub="running ÷ window" color={win && win.availabilityPct >= 75 ? TEAL : win && win.availabilityPct >= 50 ? AMBER : RED} icon={CalendarClock} />
         </div>
 
         {/* Analytical KPIs */}
