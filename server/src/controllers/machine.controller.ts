@@ -171,13 +171,16 @@ export const machineActivity = asyncHandler(async (req, res) => {
     // payloads let us report the production counter's delta for the range (read-only).
     Telemetry.aggregate([
       { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
-      { $sort: { machineId: 1, timestamp: 1 } },
+      // Sort DESC so the {machineId:1, timestamp:-1} index backs the sort — an
+      // ascending sort forced a blocking in-memory sort that blew the 32MB limit
+      // on a 24h range. Newest-first: $first = latest reading, $last = earliest.
+      { $sort: { machineId: 1, timestamp: -1 } },
       { $group: {
         _id: '$machineId', readings: { $sum: 1 },
-        firstSeen: { $first: '$timestamp' }, lastSeen: { $last: '$timestamp' },
-        firstData: { $first: '$data' }, lastData: { $last: '$data' },
+        firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
+        firstData: { $last: '$data' }, lastData: { $first: '$data' },
       } },
-    ]).option({ maxTimeMS: 20000 }),
+    ]).option({ allowDiskUse: true, maxTimeMS: 20000 }),
     // Downtime spans overlapping the range (open spans have endedAt null).
     DowntimeEvent.find({
       machineId: { $in: refs },

@@ -14,6 +14,9 @@ import { notFound, errorHandler } from './middleware/error.js';
 
 export function createApp(): Express {
   const app = express();
+  // Behind Apache reverse proxy (1 hop) — trust its X-Forwarded-* so req.ip and the
+  // auth rate-limiter see the real client IP, not Apache's 127.0.0.1.
+  app.set('trust proxy', 1);
 
   // CSP disabled so the bundled SPA (its scripts/styles/fonts) loads when this server
   // also serves the client (single-service deploy). Helmet's other protections stay on.
