@@ -169,9 +169,11 @@ export default function MetricTrendModal({ machineId, machineTitle, title, unit,
 
 function StatTile({ label, value, accent, big }: { label: string; value: ReactNode; accent: string; big?: boolean }): JSX.Element {
   return (
-    <div className="rounded-lg border border-line bg-surface px-3 py-2 text-center">
+    <div className="rounded-lg border border-line bg-surface px-3 py-2 text-center min-w-0">
       <div className="text-[10px] text-steel uppercase tracking-wide truncate">{label}</div>
-      <div className={`data font-bold mt-0.5 truncate ${big ? 'text-lg' : 'text-sm'}`} style={{ color: accent }}>{value}</div>
+      {/* The drill-down is where values are READ — wrap fully, never clip
+          (bitmask integers etc. can be very long). */}
+      <div className={`data font-bold mt-0.5 break-all leading-tight ${big ? 'text-base' : 'text-sm'}`} style={{ color: accent }}>{value}</div>
     </div>
   );
 }
