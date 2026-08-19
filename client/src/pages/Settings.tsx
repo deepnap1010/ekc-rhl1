@@ -419,17 +419,27 @@ function CompanySection({ s }: { s: Settings }) {
         <div className="mt-3"><ServerNote>Plants come from the company structure. To add or rename a plant in the live data, an administrator updates it on the server.</ServerNote></div>
       </Section>
 
-      <Section title="Shift timings" desc="Used for shift-based reporting and quiet hours." icon={Clock}>
+      <Section title="Shift timings" desc="Fully dynamic — add, rename or remove shifts; the Machines page filters by them." icon={Clock}>
         <div className="space-y-2">
           {s.shifts.map((sh, i) => (
             <div key={i} className="flex items-center gap-3 flex-wrap">
-              <span className="text-sm font-medium text-primary w-20">{sh.name}</span>
+              <input value={sh.name} onChange={(e) => patchSettings((d) => { d.shifts[i].name = e.target.value; })}
+                placeholder={`Shift ${i + 1}`}
+                className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm font-medium text-primary outline-none focus:border-accent w-32" />
               <input type="time" value={sh.start} onChange={(e) => patchSettings((d) => { d.shifts[i].start = e.target.value; })} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
               <ArrowRight size={14} className="text-steel" />
               <input type="time" value={sh.end} onChange={(e) => patchSettings((d) => { d.shifts[i].end = e.target.value; })} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+              <button onClick={() => patchSettings((d) => { d.shifts.splice(i, 1); })} title="Remove shift"
+                className="text-steel/50 hover:text-stopped transition-colors" disabled={s.shifts.length <= 1}>
+                <X size={15} />
+              </button>
             </div>
           ))}
         </div>
+        <button onClick={() => patchSettings((d) => { d.shifts.push({ name: `Shift ${d.shifts.length + 1}`, start: '06:00', end: '14:00' }); })}
+          className="mt-3 flex items-center gap-1.5 text-sm text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10 rounded-lg px-3 py-1.5 font-medium transition-colors">
+          <Plus size={14} /> Add shift
+        </button>
       </Section>
 
       <Section title="Organisation" desc="Departments and role access are managed on their own pages." icon={Building2}>

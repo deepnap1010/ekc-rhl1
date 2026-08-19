@@ -8,6 +8,7 @@ import type {
   ProductionByType,
   Machine,
   MachineSummary,
+  MachineActivityRow,
   MachineStats,
   Telemetry,
   DowntimeEvent,
@@ -57,6 +58,7 @@ export const dashboardApi = {
 export const machineApi = {
   list: (params?: Params) => get<Machine[]>('/machines', params),
   summary: () => get<MachineSummary>('/machines/summary'),
+  activity: (params: { from: string; to: string }) => get<MachineActivityRow[]>('/machines/activity', params),
   get: (code: string) => get<Machine>(`/machines/${code}`),
   stats: (code: string, params?: Params) => get<MachineStats>(`/machines/${code}/stats`, params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),

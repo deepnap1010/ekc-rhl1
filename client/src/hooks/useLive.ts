@@ -3,6 +3,21 @@ import { useEffect, useState } from 'react';
 import { getSocket } from '../lib/socket';
 import type { MachineTick, TicksMap, MachineUpdate, Telemetry } from '../types/api';
 
+// Socket events arrive on every ingest (every few seconds); applying each one makes the
+// displayed parameters jitter. Apply at most one update per machine every 10s — the
+// first event lands immediately so pages populate fast.
+const LIVE_APPLY_MS = 10_000;
+
+function throttlePerKey<T>(keyOf: (t: T) => string, apply: (t: T) => void): (t: T) => void {
+  const lastAt = new Map<string, number>();
+  return (t) => {
+    const k = keyOf(t), now = Date.now();
+    if (now - (lastAt.get(k) || 0) < LIVE_APPLY_MS) return;
+    lastAt.set(k, now);
+    apply(t);
+  };
+}
+
 // Dashboard/Machines live feed. Returns a map of machine code -> latest snapshot tick,
 // pushed by the server's change stream on the `machines` collection.
 export function useDashboardLive(): TicksMap {
@@ -10,7 +25,7 @@ export function useDashboardLive(): TicksMap {
   useEffect(() => {
     const s = getSocket();
     s.emit('subscribe:dashboard');
-    const onTick = (t: MachineTick) => setTicks((prev) => ({ ...prev, [t.machineId]: t }));
+    const onTick = throttlePerKey((t: MachineTick) => t.machineId, (t) => setTicks((prev) => ({ ...prev, [t.machineId]: t })));
     s.on('machine:tick', onTick);
     return () => { s.off('machine:tick', onTick); };
   }, []);
@@ -24,7 +39,8 @@ export function useMachineLive(code?: string): MachineUpdate | null {
     if (!code) return;
     const s = getSocket();
     s.emit('subscribe:machine', code);
-    const onUpdate = (m: MachineUpdate) => { if (m.code === code) setMachine(m); };
+    const apply = throttlePerKey(() => code, (m: MachineUpdate) => setMachine(m));
+    const onUpdate = (m: MachineUpdate) => { if (m.code === code) apply(m); };
     s.on('machine:update', onUpdate);
     return () => {
       s.emit('unsubscribe:machine', code);
@@ -41,7 +57,7 @@ export function useMachineTelemetry(code?: string): Telemetry | null {
     if (!code) return;
     const s = getSocket();
     s.emit('subscribe:machine', code);
-    const onNew = (t: Telemetry) => setLatest(t);
+    const onNew = throttlePerKey(() => code, (t: Telemetry) => setLatest(t));
     s.on('telemetry:new', onNew);
     return () => { s.off('telemetry:new', onNew); };
   }, [code]);

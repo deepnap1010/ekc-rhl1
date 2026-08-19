@@ -94,7 +94,7 @@ function rawValueRank(v: MetricValue): number {
 export interface SplitParams {
   important: [string, MetricValue][]; // curated headline signals (process + safety)
   other: [string, MetricValue][];     // named secondary signals + non-zero raw
-  hiddenRaw: number;                  // count of empty (zero) raw registers omitted
+  hiddenRaw: number;                  // count of zero-valued signals omitted as noise
 }
 
 /** Split a parameter map into curated/important, secondary, and hidden-empty-raw. */
@@ -106,12 +106,14 @@ export function splitParams(data?: ParameterMap): SplitParams {
 
   for (const e of Object.entries(data || {})) {
     if (norm(e[0]) === 'status') continue; // shown as the status pill
+    const v = e[1];
+    if (v === null || v === undefined || v === '') { hiddenRaw++; continue; } // no reading — renders as "—", noise
+    if (isNumeric(v) && Number(v) === 0) { hiddenRaw++; continue; } // zero value — noise, don't surface
     const p = paramPriority(e[0]);
     if (p !== Infinity) {
       ranked.push({ e, p });
     } else if (isRawAddress(e[0])) {
-      if (isNumeric(e[1]) && Number(e[1]) === 0) hiddenRaw++; // empty register — noise
-      else raw.push(e);
+      raw.push(e);
     } else {
       named.push(e);
     }
@@ -131,12 +133,13 @@ export function splitParams(data?: ParameterMap): SplitParams {
 }
 
 /**
- * Parameters to show on a compact machine card. Prefers important ones; falls
- * back to the secondary set so the card is never blank.
+ * Parameters to show on a compact machine card: important ones first, then the
+ * secondary set fills the remaining slots — a card with one important signal
+ * still shows the machine's other real readings.
  */
 export function cardParams(data?: ParameterMap, limit = 6): [string, MetricValue][] {
   const { important, other } = splitParams(data);
-  return (important.length ? important : other).slice(0, limit);
+  return [...important, ...other].slice(0, limit);
 }
 
 /** Human label for a key: drop the group prefix (named.inputs., active., …). */

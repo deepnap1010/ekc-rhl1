@@ -43,7 +43,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
   const { data: stats } = useQuery({
     queryKey: ['machine-stats', id],
     queryFn: () => machineApi.stats(id, { window: 200 }).then((r) => r.data),
-    refetchInterval: 15000,
+    refetchInterval: 10000,
     enabled: !!id,
   });
   const statByKey = useMemo(() => Object.fromEntries((stats?.metrics || []).map((m) => [m.key, m])) as Record<string, MetricStat>, [stats]);
@@ -299,7 +299,9 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
 
 // ── derive every dashboard value from the real machine contract ────────────────
 function buildModel(machine: Machine, metrics: NamedMetric[], status: string | undefined, lastSeenAt: string | Date | null | undefined, downtime: DowntimeEvent[] | undefined) {
-  const numericLive = metrics.filter((x) => x.numeric);
+  // Zero readings are noise (dead sensor / unused register) — hide them everywhere,
+  // but never hide a fault: that's information, not noise.
+  const numericLive = metrics.filter((x) => x.numeric && (x.fault || Number(x.value) !== 0));
   const namedCount = machine.latest?.namedCount ?? metrics.length;
   const faultCount = machine.latest?.faultCount ?? metrics.filter((x) => x.fault).length;
 
@@ -316,12 +318,12 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
   const outputs: MachineIO[] = machine.outputs || [];
   const io = { inputs, outputs, activeIn: inputs.filter((i) => i.on).length, activeOut: outputs.filter((o) => o.on).length };
   const hasIO = inputs.length + outputs.length > 0;
-  const registers: MachineRegister[] = machine.registers || [];
+  const registers: MachineRegister[] = (machine.registers || []).filter((r) => !(isNumeric(r.value) && Number(r.value) === 0));
 
   const findVal = (test: (k: string) => boolean): { key: string; value: number } | null => {
     const mm = numericLive.find((x) => !x.fault && test(x.key));
     if (mm) return { key: mm.key, value: Number(mm.value) };
-    const rg = (machine.registers || []).find((r) => test(r.key) && isNumeric(r.value));
+    const rg = registers.find((r) => test(r.key) && isNumeric(r.value));
     return rg ? { key: rg.key, value: Number(rg.value) } : null;
   };
   const pressure = findVal(isPressure);

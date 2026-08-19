@@ -34,7 +34,7 @@ export default function MachineDetail() {
   const { data: machine, isLoading } = useQuery({
     queryKey: ['machine', code],
     queryFn: () => machineApi.get(code as string).then((r) => r.data),
-    refetchInterval: 12000,
+    refetchInterval: 10000,
   });
 
   const live = useMachineLive(machine?.machineId || code);

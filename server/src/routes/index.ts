@@ -29,6 +29,7 @@ r.get('/dashboard/production', authorize('dashboard'), dash.production);
 // Machines (read-only) — identified by code
 r.get('/machines', authorize('machines'), machine.listMachines);
 r.get('/machines/summary', authorize('machines'), machine.machineSummary);
+r.get('/machines/activity', authorize('machines'), machine.machineActivity); // historical range view (read-only)
 r.get('/machines/:code', authorize('machines'), machine.getMachine);
 r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);

@@ -196,6 +196,25 @@ export interface MachineSummary {
   offline: number;
 }
 
+// One row of GET /machines/activity?from&to — a machine's reconstructed state
+// over a historical time range (derived read-only from telemetry + downtime).
+export interface MachineActivityRow {
+  code: string;
+  name: string;
+  type: string | null;
+  status: string;      // dominant state during the range: running | idle | stopped | offline
+  live: boolean;       // machine actually sent telemetry in the range
+  readings: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  runningMs: number;
+  idleMs: number;
+  stoppedMs: number;
+  offlineMs: number;
+  production: number | null;      // production counter delta over the range
+  productionKey: string | null;   // which signal the delta was read from
+}
+
 // ─── Telemetry ─────────────────────────────────────────────────────────────
 export interface Telemetry {
   _id: string;

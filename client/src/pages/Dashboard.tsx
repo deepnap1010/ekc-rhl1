@@ -4,15 +4,16 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
-  ShieldCheck, Activity, Radio, Bell, AlertTriangle, CheckCircle2,
-  Database, Layers, Gauge, Lock, Clock, ArrowUpRight, Users,
+  ShieldCheck, Radio, Bell, AlertTriangle, CheckCircle2,
+  Database, Gauge, Lock, Clock, ArrowUpRight,
   Cpu, Play, Pause, CircleSlash, Power,
+  Sparkles, Wrench, TrendingUp, Zap,
 } from 'lucide-react';
 import { dashboardApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
 import AnalyticsModal from '../components/AnalyticsModal';
 import { Donut, Legend } from '../components/charts';
-import { fmtNum, fmtDuration, fmtTime, prettyType } from '../lib/format';
+import { fmtNum, fmtDuration, fmtTime } from '../lib/format';
 import { useDashboardLive } from '../hooks/useLive';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', INDIGO = '#6366F1', VIOLET = '#8B5CF6';
@@ -31,8 +32,6 @@ export default function Dashboard() {
   const signals   = ov?.signals   || { named: 0, io: 0, registers: 0, mapped: 0, total: 0, mappedPct: 0 };
   const reporting = ov?.reporting || { reporting: 0, live: 0, total: 0 };
   const caps      = ov?.capabilities || { live: [], blocked: [], liveCount: 0, total: 0 };
-  const volume    = ov?.volume    || { totalReadings: 0, perDay: [], byType: [] };
-  const team      = ov?.team      || { employees: 0, superAdmins: 0, roles: 0, byRole: [] };
   const [drill, setDrill] = useState<string | null>(null);
 
   // Operational status mix (from machine.status) — the at-a-glance fleet state.
@@ -81,11 +80,10 @@ export default function Dashboard() {
         </div>
 
         {/* Analytical KPIs */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <Kpi label="Fleet Health"  value={`${health.avgScore}%`} sub={`${health.critical} critical · ${health.warning} warn`} color={health.avgScore >= 80 ? TEAL : health.avgScore >= 50 ? AMBER : RED} icon={ShieldCheck} />
           <Kpi label="Signal Coverage" value={`${signals.mappedPct}%`} sub={`${fmtNum(signals.mapped)} of ${fmtNum(signals.total)} mapped`} color={INDIGO} icon={Database} />
           <Kpi label="Reporting"     value={`${reporting.reporting}/${reporting.total}`} sub={`${reporting.live} live now`} color={TEAL} icon={Radio} />
-          <Kpi label="Capabilities"  value={`${caps.liveCount}/${caps.total}`} sub={`${caps.blocked.length} need signals`} color={VIOLET} icon={Gauge} />
           <Kpi label="Active Alerts" value={fmtNum(alerts.total)} sub={`${alerts.critical} crit · ${alerts.warning} warn`} color={alerts.critical ? RED : alerts.warning ? AMBER : TEAL} icon={AlertTriangle} />
           <Kpi label="Downtime (24h)" value={fmtDuration(ov?.downtime?.totalMs)} sub={`${ov?.downtime?.events || 0} events`} color={AMBER} icon={Clock} />
         </div>
@@ -126,29 +124,6 @@ export default function Dashboard() {
           </Panel>
         </div>
 
-        {/* Signal composition + telemetry volume */}
-        <div className="grid lg:grid-cols-2 gap-5">
-          <Panel title="Signal Composition" subtitle={`${signals.mappedPct}% mapped · ${fmtNum(signals.registers)} raw registers`} icon={Database} onClick={() => setDrill('signals')}>
-            <StackBar segments={[
-              { label: 'Named metrics', value: signals.named, color: TEAL },
-              { label: 'Digital I/O', value: signals.io, color: INDIGO },
-              { label: 'Raw registers', value: signals.registers, color: SLATE },
-            ]} unit="signals" />
-          </Panel>
-
-          <Panel title="Telemetry Volume by Type" subtitle={`${fmtNum(volume.totalReadings)} total readings`} icon={Activity} onClick={() => setDrill('volume')}>
-            <Distribution rows={(volume.byType || []).map((t) => ({ label: prettyType(t.type), value: t.readings }))} total={volume.totalReadings} color={TEAL} unit="readings" />
-          </Panel>
-        </div>
-
-        {/* Fleet composition — full width (type & class side by side) */}
-        <Panel title="Fleet Composition" subtitle={`${fleet.total} machines by type & class`} icon={Layers} onClick={() => setDrill('fleet')}>
-          <div className="grid sm:grid-cols-2 gap-x-8 gap-y-5">
-            <Distribution title="By Type"  rows={(ov?.composition?.byType || []).map((t) => ({ label: prettyType(t.type), value: t.count }))} total={fleet.total} color={INDIGO} />
-            <Distribution title="By Class" rows={(ov?.composition?.byClass || []).map((c) => ({ label: prettyType(c.class), value: c.count, badge: c.alerts }))} total={fleet.total} color={VIOLET} />
-          </div>
-        </Panel>
-
         {/* Instrumentation maturity */}
         <Panel title="Monitoring Capabilities" subtitle={`${caps.liveCount} of ${caps.total} instrumented · ${caps.blocked.length} awaiting signals`} icon={Gauge} onClick={() => setDrill('capabilities')}>
           <div className="grid sm:grid-cols-2 gap-x-8 gap-y-4">
@@ -174,10 +149,26 @@ export default function Dashboard() {
           </div>
         </Panel>
 
-        {/* Team & access */}
-        <Panel title="Team & Access" subtitle={`${team.employees} employees · ${team.roles} roles · ${team.superAdmins} super admin${team.superAdmins === 1 ? '' : 's'}`} icon={Users} onClick={() => setDrill('team')}>
-          <Distribution rows={(team.byRole || []).map((b) => ({ label: b.role, value: b.count }))} total={team.employees} color={VIOLET} unit="employees" />
-        </Panel>
+        {/* AI Insights — teaser for the upcoming prediction layer */}
+        <div className="panel p-5" style={{ background: 'rgba(99,102,241,0.05)' }}>
+          <div className="flex items-start gap-2.5 mb-4">
+            <span className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-white" style={{ background: VIOLET }}><Sparkles size={18} /></span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-sm text-primary">AI Insights</h2>
+                <span className="pill !text-[9px] font-bold tracking-wider" style={{ background: 'rgba(139,92,246,0.12)', color: VIOLET }}>COMING SOON</span>
+              </div>
+              <p className="text-[11px] text-steel mt-0.5">Predictive maintenance, anomaly detection &amp; OEE forecasting — trained on your live telemetry.</p>
+            </div>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <AiTile icon={Wrench} color={AMBER} title="Predictive maintenance" line="Service likely needed on:" value="FURNACE01 · 4 Sep" />
+            <AiTile icon={TrendingUp} color={TEAL} title="OEE forecast" line="Projected next-shift OEE:" value="87%" />
+            <AiTile icon={AlertTriangle} color={RED} title="Anomaly risk" line="Machines trending abnormal:" value="QUENCHFURN02" />
+            <AiTile icon={Zap} color={VIOLET} title="Energy optimization" line="Estimated daily savings:" value="12,400 kWh" />
+          </div>
+          <div className="text-[10px] text-steel/70 mt-3 flex items-center gap-1"><Gauge size={11} /> Insights unlock once enough history is collected across the fleet.</div>
+        </div>
       </div>
 
       {drill && ov && <AnalyticsModal dimension={drill} ov={ov} onClose={() => setDrill(null)} />}
@@ -186,6 +177,19 @@ export default function Dashboard() {
 }
 
 // ── building blocks ──────────────────────────────────────────────────────────
+// Blurred placeholder values — real predictions land when the AI layer ships.
+function AiTile({ icon: Icon, color, title, line, value }: { icon: LucideIcon; color: string; title: string; line: string; value: string }): JSX.Element {
+  return (
+    <div className="card px-4 py-3">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: `${color}18`, color }}><Icon size={13} /></span>
+        <span className="text-sm font-semibold text-primary">{title}</span>
+      </div>
+      <div className="text-xs text-steel">{line} <span className="blur-[3px] select-none font-medium text-primary" aria-hidden>{value}</span></div>
+    </div>
+  );
+}
+
 function Kpi({ label, value, sub, color, icon: Icon }: { label: string; value: ReactNode; sub?: ReactNode; color: string; icon?: LucideIcon }): JSX.Element {
   return (
     <div className="card p-3.5">
@@ -264,23 +268,3 @@ function CategoryBars({ data }: { data: { label: string; value: number; color: s
   );
 }
 
-function Distribution({ title, rows, total, color, unit }: { title?: string; rows: { label: string; value: number; badge?: number }[]; total: number; color: string; unit?: string }): JSX.Element {
-  const max = Math.max(...rows.map((r) => r.value), 1);
-  return (
-    <div>
-      {title && <div className="label mb-2">{title}</div>}
-      <div className="space-y-2.5">
-        {rows.length === 0 ? <div className="text-xs text-steel">No data.</div> : rows.map((r) => (
-          <div key={r.label}>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-steel flex items-center gap-1.5">{r.label}{(r.badge ?? 0) > 0 && <span className="pill bg-idle/10 text-idle !text-[9px]">{r.badge}</span>}</span>
-              <span className="data text-primary font-medium">{fmtNum(r.value)}{total ? <span className="text-steel/60"> · {Math.round((r.value / total) * 100)}%</span> : ''}</span>
-            </div>
-            <div className="h-1.5 bg-line rounded-full overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(r.value / max) * 100}%`, background: color }} /></div>
-          </div>
-        ))}
-      </div>
-      {unit && rows.length > 0 && <div className="text-[10px] text-steel/60 mt-2">{fmtNum(total)} {unit} total</div>}
-    </div>
-  );
-}

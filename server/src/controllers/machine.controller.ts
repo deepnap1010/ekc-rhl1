@@ -6,6 +6,7 @@ import mongoose, { type FilterQuery } from 'mongoose';
 import { Machine }   from '../models/Machine.js';
 import type { IMachine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
+import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { flattenData } from '../utils/flatten.js';
 import { computeStats } from '../utils/metrics.js';
@@ -129,6 +130,139 @@ export const machineSummary = asyncHandler(async (req, res) => {
     summary.total += r.count;
   });
   return ok(res, summary);
+});
+
+// GET /machines/activity?from&to — READ-ONLY historical view: which machines were
+// running / idle / stopped / offline (and which actually reported data) in a time
+// range. Reconstructed entirely from the existing `telemetries` (readings in range)
+// and `downtime_reports` (overlapping spans) collections — nothing is written.
+export const machineActivity = asyncHandler(async (req, res) => {
+  const { from, to } = req.query as Record<string, string | undefined>;
+  const fromD = from ? new Date(from) : null;
+  const toD   = to   ? new Date(to)   : null;
+  if (!fromD || !toD || Number.isNaN(fromD.getTime()) || Number.isNaN(toD.getTime()) || fromD >= toD) {
+    return fail(res, 400, 'A valid from/to range is required (from must be before to)');
+  }
+
+  const scoped = scopeMatch(req.user as ScopeUser);
+
+  // Only elapsed time counts — a "today 00:00–23:59" range picked at 14:00 must not
+  // report the future 10 hours as running time.
+  const endMs = Math.min(toD.getTime(), Date.now());
+  if (endMs <= fromD.getTime()) {
+    return ok(res, [], { from: fromD.toISOString(), to: toD.toISOString(), windowMs: 0 });
+  }
+  const endD = new Date(endMs);
+
+  // Visible machines first; their code/machineId aliases then bound the telemetry and
+  // downtime queries, so both hit their machineId-leading indexes (no collection scan
+  // on a wide range) and alias-keyed rows survive for scoped users.
+  const machines = await Machine.find(scoped || {})
+    .select({ code: 1, machineId: 1, name: 1, machineName: 1, type: 1, machineType: 1 })
+    .lean();
+  const refs = [...new Set(machines.flatMap((raw) => {
+    const m = raw as LeanMachine;
+    return [m.code as string, m.machineId as string].filter(Boolean);
+  }))];
+
+  const [tele, events] = await Promise.all([
+    // One reading-count + first/last reading (timestamp AND payload) per machine over
+    // the range — the $sort rides the {machineId,timestamp} index. The first/last
+    // payloads let us report the production counter's delta for the range (read-only).
+    Telemetry.aggregate([
+      { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+      { $sort: { machineId: 1, timestamp: 1 } },
+      { $group: {
+        _id: '$machineId', readings: { $sum: 1 },
+        firstSeen: { $first: '$timestamp' }, lastSeen: { $last: '$timestamp' },
+        firstData: { $first: '$data' }, lastData: { $last: '$data' },
+      } },
+    ]).option({ maxTimeMS: 20000 }),
+    // Downtime spans overlapping the range (open spans have endedAt null).
+    DowntimeEvent.find({
+      machineId: { $in: refs },
+      startedAt: { $lte: endD },
+      $or: [{ endedAt: null }, { endedAt: { $gte: fromD } }],
+    }).select({ machineId: 1, type: 1, startedAt: 1, endedAt: 1 }).maxTimeMS(20000).lean(),
+  ]);
+
+  type TeleRow = {
+    _id: string; readings: number; firstSeen: Date; lastSeen: Date;
+    firstData?: Record<string, unknown>; lastData?: Record<string, unknown>;
+  };
+  const teleBy = new Map<string, TeleRow>((tele as TeleRow[]).map((t) => [t._id, t]));
+
+  // Production over the range = the counter's delta between the first and last
+  // reading. Key priority mirrors the client's headline logic: a real workpiece /
+  // production counter always beats a generic "count" (never e.g. a cycle count).
+  const PROD_PATTERNS = [/workpiece/, /production|output|piece/, /\bcount\b/];
+  const normKey = (k: string): string => k.toLowerCase().replace(/[._/\-]+/g, ' ');
+  function productionOf(t?: TeleRow): { key: string; production: number } | null {
+    if (!t?.lastData) return null;
+    const last = flattenData(t.lastData);
+    const first = flattenData(t.firstData || {});
+    for (const re of PROD_PATTERNS) {
+      const key = Object.keys(last).find((k) => re.test(normKey(k)) && Number.isFinite(Number(last[k])));
+      if (!key) continue;
+      const end = Number(last[key]);
+      const start = Number(first[key]);
+      // Counter reset mid-range (delta negative) → best effort: the end value.
+      const delta = Number.isFinite(start) ? end - start : 0;
+      return { key, production: delta >= 0 ? delta : end };
+    }
+    return null;
+  }
+
+  const downBy = new Map<string, { idle: number; stopped: number; offline: number }>();
+  for (const e of events) {
+    const start = Math.max(new Date(e.startedAt).getTime(), fromD.getTime());
+    const end   = Math.min(e.endedAt ? new Date(e.endedAt).getTime() : endMs, endMs);
+    if (end <= start) continue;
+    const d = downBy.get(e.machineId) || { idle: 0, stopped: 0, offline: 0 };
+    d[e.type] += end - start;
+    downBy.set(e.machineId, d);
+  }
+
+  const windowMs = endMs - fromD.getTime();
+  const rows = machines.map((raw) => {
+    const m = raw as LeanMachine;
+    const ref = (m.code as string) || (m.machineId as string) || String(m._id);
+    const t = teleBy.get(ref) ?? (m.machineId ? teleBy.get(m.machineId as string) : undefined);
+    const down =
+      downBy.get(ref) ?? (m.machineId ? downBy.get(m.machineId as string) : undefined) ?? { idle: 0, stopped: 0, offline: 0 };
+    const downMs = down.idle + down.stopped + down.offline;
+    const readings = t?.readings || 0;
+    // Time not covered by a downtime span counts as running only if the machine
+    // actually reported in the range — silence with no spans is "no data", not uptime.
+    const runningMs = readings > 0 ? Math.max(0, windowMs - downMs) : 0;
+    let status = 'offline';
+    if (readings > 0 || downMs > 0) {
+      const buckets: [string, number][] = [
+        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline],
+      ];
+      buckets.sort((a, b) => b[1] - a[1]);
+      status = buckets[0][0];
+    }
+    const prod = productionOf(t);
+    return {
+      code: ref,
+      name: (m.name as string) || (m.machineName as string) || ref,
+      type: (m.type as string) || (m.machineType as string) || null,
+      status,                    // dominant state during the range
+      live: readings > 0,        // machine actually sent data in the range
+      readings,
+      firstSeen: t?.firstSeen || null,
+      lastSeen: t?.lastSeen || null,
+      runningMs,
+      idleMs: down.idle,
+      stoppedMs: down.stopped,
+      offlineMs: down.offline,
+      production: prod?.production ?? null,   // counter delta over the range
+      productionKey: prod?.key ?? null,
+    };
+  });
+
+  return ok(res, rows, { from: fromD.toISOString(), to: endD.toISOString(), windowMs });
 });
 
 // Resolve a machine by business `code`, then by the raw `machineId` (the mirror
@@ -294,12 +428,16 @@ export const machineSeries = asyncHandler(async (req, res) => {
 // GET /machines/:code/history — telemetry readings, range + paginated.
 // Backed by the { machineId, timestamp } compound index → fast at 600+ machines.
 export const machineHistory = asyncHandler(async (req, res) => {
-  if (!inUserScope(req.user as ScopeUser, req.params.code)) return fail(res, 403, 'You are not assigned to this machine');
+  // Resolve code/machineId/_id aliases so every link form finds the telemetry rows,
+  // which are keyed by the machine's business ref — not by whatever the URL carried.
+  const m = await findMachine(req.params.code);
+  if (!inUserScope(req.user as ScopeUser, req.params.code, m?.code, m?.machineId)) return fail(res, 403, 'You are not assigned to this machine');
+  const ref = m ? ((m.code as string) || (m.machineId as string) || String(m._id)) : req.params.code;
   const { from, to, page = 1, limit = 50 } = req.query as Record<string, string | undefined>;
   const lim  = Math.min(Number(limit) || 50, 200);
   const skip = (Number(page) - 1) * lim;
 
-  const q: FilterQuery<Record<string, unknown>> = { machineId: req.params.code };
+  const q: FilterQuery<Record<string, unknown>> = { machineId: ref };
   if (from || to) {
     const range: { $gte?: Date; $lte?: Date } = {};
     if (from) range.$gte = new Date(from);

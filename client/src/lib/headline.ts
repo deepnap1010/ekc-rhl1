@@ -38,7 +38,7 @@ function vals(data: ParameterMap, re: RegExp): number[] {
     const n = asNum(v);
     // Match the stripped label, not the group-prefixed key, so a group name like
     // "named.outputs.*" can't be mistaken for an "output"/production metric.
-    if (n !== null && re.test(norm(paramLabel(k)))) out.push(n);
+    if (n !== null && n !== 0 && re.test(norm(paramLabel(k)))) out.push(n);
   }
   return out;
 }
@@ -50,10 +50,14 @@ const firstVal = (data: ParameterMap, re: RegExp): number | null => {
 export function computeHeadline(data?: ParameterMap): Headline | null {
   if (!data || Object.keys(data).length === 0) return null;
 
-  // 1) Production / output — the business KPI
-  const prod = vals(data, /production|output|pieces|\bparts\b|\bcount\b/);
-  if (prod.length) {
-    return { label: 'Production', value: fmtNum(prod.reduce((s, n) => s + n, 0)), unit: 'pcs', tone: 'neutral' };
+  // 1) Production / output — the business KPI. Counters are NOT additive
+  // (cycle count + workpiece count is not production), so pick the single most
+  // specific signal: workpiece beats production/output/pieces beats generic count.
+  const prod = firstVal(data, /workpiece/)
+    ?? firstVal(data, /production|output|pieces/)
+    ?? firstVal(data, /\bparts\b|\bcount\b/);
+  if (prod !== null) {
+    return { label: 'Production', value: fmtNum(prod), unit: 'pcs', tone: 'neutral' };
   }
 
   // 2) Efficiency / OEE
