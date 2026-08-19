@@ -282,16 +282,25 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const [day, setDay] = useState(() => localDay(new Date()));
   const [shiftName, setShiftName] = useState('');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const isCustom = shiftName === '__custom__';
   const shift = settings.shifts.find((s) => s.name === shiftName) || null;
 
-  const base = new Date(`${day}T00:00:00`);
-  const valid = !!day && !Number.isNaN(base.getTime());
-  const win = valid
-    ? (shift ? shiftWindowOn(shift, base) : { from: base, to: new Date(base.getTime() + 24 * 3600 * 1000) })
-    : null;
+  // Window is either a custom [from,to] (datetime pickers) or a day ± shift.
+  let win: { from: Date; to: Date } | null = null;
+  if (isCustom) {
+    const f = new Date(customFrom), t = new Date(customTo);
+    if (customFrom && customTo && !Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime()) && f < t) win = { from: f, to: t };
+  } else {
+    const base = new Date(`${day}T00:00:00`);
+    if (day && !Number.isNaN(base.getTime())) {
+      win = shift ? shiftWindowOn(shift, base) : { from: base, to: new Date(base.getTime() + 24 * 3600 * 1000) };
+    }
+  }
 
   const { data, isLoading } = useQuery({
-    queryKey: ['machine-shift-prod', day, shiftName],
+    queryKey: ['machine-shift-prod', day, shiftName, customFrom, customTo],
     queryFn: () => machineApi.activity({ from: win!.from.toISOString(), to: win!.to.toISOString() }),
     enabled: !!win,
     placeholderData: keepPreviousData,
@@ -312,22 +321,33 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   return (
     <Panel icon={Calendar} title="Production by Shift">
       <div className="flex items-center gap-2 flex-wrap mb-4">
-        <input type="date" value={day} onChange={(e) => setDay(e.target.value)}
-          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
         <select value={shiftName} onChange={(e) => setShiftName(e.target.value)}
           className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent">
           <option value="">Full day</option>
           {settings.shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+          <option value="__custom__">Custom range…</option>
         </select>
+        {isCustom ? (
+          <>
+            <input type="datetime-local" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+              className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+            <span className="text-steel text-xs">→</span>
+            <input type="datetime-local" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+              className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+          </>
+        ) : (
+          <input type="date" value={day} onChange={(e) => setDay(e.target.value)}
+            className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+        )}
       </div>
       {!win ? (
-        <div className="text-sm text-steel py-6 text-center">Pick a date to see production.</div>
+        <div className="text-sm text-steel py-6 text-center">{isCustom ? 'Pick a start and end time.' : 'Pick a date to see production.'}</div>
       ) : isLoading && !row ? (
         <div className="text-sm text-steel py-6 text-center">Loading…</div>
       ) : (
         <>
           <div className="rounded-lg border border-line bg-base px-4 py-3 mb-3">
-            <div className="text-[10px] uppercase tracking-wide text-steel">Production{shift ? ` · ${shift.name}` : ' · Full day'}</div>
+            <div className="text-[10px] uppercase tracking-wide text-steel">Production{isCustom ? ' · Custom' : shift ? ` · ${shift.name}` : ' · Full day'}</div>
             <div className="data text-3xl font-bold text-primary leading-tight">
               {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
             </div>
