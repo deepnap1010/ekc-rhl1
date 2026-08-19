@@ -13,6 +13,7 @@
 import type { MetricValue, ParameterMap } from '../types/api';
 import { fmtNum } from './format';
 import { isRawAddress, paramLabel } from './params';
+import { productionValue } from './production';
 
 export type Tone = 'good' | 'warn' | 'bad' | 'neutral';
 export interface Headline {
@@ -50,12 +51,10 @@ const firstVal = (data: ParameterMap, re: RegExp): number | null => {
 export function computeHeadline(data?: ParameterMap): Headline | null {
   if (!data || Object.keys(data).length === 0) return null;
 
-  // 1) Production / output — the business KPI. Counters are NOT additive
-  // (cycle count + workpiece count is not production), so pick the single most
-  // specific signal: workpiece beats production/output/pieces beats generic count.
-  const prod = firstVal(data, /workpiece/)
-    ?? firstVal(data, /production|output|pieces/)
-    ?? firstVal(data, /\bparts\b|\bcount\b/);
+  // 1) Production / output — the business KPI, via the shared picker
+  // (lib/production): one most-specific counter, never a sum, never a cycle
+  // counter, never a digital I/O bit or raw register.
+  const prod = productionValue(data, { nonZero: true });
   if (prod !== null) {
     return { label: 'Production', value: fmtNum(prod), unit: 'pcs', tone: 'neutral' };
   }

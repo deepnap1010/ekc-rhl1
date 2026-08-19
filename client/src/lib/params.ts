@@ -146,3 +146,21 @@ export function cardParams(data?: ParameterMap, limit = 6): [string, MetricValue
 export function paramLabel(key: string): string {
   return key.replace(/^(named\.(inputs|outputs)\.|active\.|data\.)/i, '');
 }
+
+/**
+ * Deep-flatten a raw parameter payload into dotted keys ({ named: { inputs:
+ * { X: 1 } } } → 'named.inputs.X'), matching the server's flattenData shape —
+ * `currentParameters` arrives raw from ingest/socket and must never hit the
+ * cards unflattened (missed counters, "[object Object]" chips).
+ */
+export function flattenParams(data?: ParameterMap | Record<string, unknown>): ParameterMap {
+  const out: ParameterMap = {};
+  const walk = (o: Record<string, unknown>, prefix: string): void => {
+    for (const [k, v] of Object.entries(o || {})) {
+      if (v && typeof v === 'object' && !Array.isArray(v)) walk(v as Record<string, unknown>, `${prefix}${k}.`);
+      else out[`${prefix}${k}`] = v as MetricValue;
+    }
+  };
+  walk((data || {}) as Record<string, unknown>, '');
+  return out;
+}

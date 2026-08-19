@@ -31,6 +31,7 @@ export function pickProductionKey(flat: Record<string, unknown>): string | null 
     if (IO_GROUP_RE.test(k)) return false;               // digital I/O bits
     const label = stripGroups(k);
     if (isRegisterKey(label)) return false;              // raw PLC addresses
+    if (/cycle/.test(normProdKey(label))) return false;  // a cycle is not a piece
     return isNumericValue(flat[k]);                      // rejects null/''/booleans
   });
   for (const re of PROD_PATTERNS) {

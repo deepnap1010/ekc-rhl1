@@ -10,14 +10,31 @@ import { machineHealth, type HealthResult } from '../utils/health.js';
 
 interface FleetDoc {
   _id: unknown;
+  code?: string;
+  name?: string;
+  type?: string;
   machineId?: string;
   machineName?: string;
   machineType?: string;
   status?: string;
+  lastReadingAt?: string | Date | null;
   lastSeenAt?: string | Date | null;
   updatedAt?: string | Date | null;
   payloadCount?: number;
   _latestRow?: { data?: Record<string, unknown>; timestamp?: string | Date | null };
+}
+
+// Same Signal-Lost convention as the dashboard tiles and the client pill: a
+// non-offline status with no data for 10+ minutes is effectively offline —
+// the machine may be fine, but its signal is gone.
+const NETWORK_LOST_MS = 10 * 60_000;
+function derivedStatus(d: FleetDoc): string {
+  const raw = (d.status || 'offline').toLowerCase();
+  if (raw === 'offline') return raw;
+  const seen = d.lastReadingAt || d.lastSeenAt || d._latestRow?.timestamp || null;
+  if (!seen) return raw;
+  const t = new Date(seen as string | Date).getTime();
+  return !Number.isNaN(t) && Date.now() - t > NETWORK_LOST_MS ? 'offline' : raw;
 }
 
 export interface FleetKeyMetric { key: string; value: unknown; fault: boolean; }
@@ -43,11 +60,14 @@ export interface FleetMachine {
 
 export async function getFleetSnapshot(scope: string[] | null = null): Promise<FleetMachine[]> {
   const pipeline: PipelineStage[] = [
-    ...(scope ? [{ $match: { machineId: { $in: scope } } }] : []),
+    // Alias-aware: machines are keyed by business `code` OR raw `machineId` —
+    // both must match the scope and drive the telemetry lookup, or a code-keyed
+    // machine silently loses its latest reading.
+    ...(scope ? [{ $match: { $or: [{ code: { $in: scope } }, { machineId: { $in: scope } }] } }] : []),
     {
       $lookup: {
         from: 'telemetries',
-        let: { ref: '$machineId' },
+        let: { ref: { $ifNull: ['$code', '$machineId'] } },
         pipeline: [
           { $match: { $expr: { $eq: ['$machineId', '$$ref'] } } },
           { $sort: { timestamp: -1 } },
@@ -65,7 +85,8 @@ export async function getFleetSnapshot(scope: string[] | null = null): Promise<F
 
   return docs.map((d) => {
     const data = d._latestRow?.data || {};
-    const profile = getProfile(d.machineId || '');
+    const ref = d.code || d.machineId || String(d._id);
+    const profile = getProfile(ref);
     const { named, inputs, outputs, registers } = normalizeData(data);
     const health = machineHealth(d, data, profile);
 
@@ -76,13 +97,17 @@ export async function getFleetSnapshot(scope: string[] | null = null): Promise<F
       : io.slice(0, 4).map((m) => ({ key: m.key, value: m.on ? 'ON' : 'OFF', fault: false }));
 
     return {
-      machineId: d.machineId || String(d._id),
-      name: d.machineName || d.machineId || '—',
-      type: d.machineType || null,
+      machineId: ref,
+      name: d.name || d.machineName || ref,
+      type: d.type || d.machineType || null,
       class: profile?.class || null,
       subtitle: profile?.subtitle || null,
-      status: d.status || 'offline',
-      lastSeenAt: d.lastSeenAt || d.updatedAt || null,
+      // Derived at read time — the health engine below still sees the RAW doc
+      // (so the "running but stale" warning keeps firing), but every consumer
+      // of snapshot.status (reports status mix, fleet report, alerts cards)
+      // agrees with the dashboard tiles' Signal-Lost rule.
+      status: derivedStatus(d),
+      lastSeenAt: d.lastReadingAt || d.lastSeenAt || d.updatedAt || null,
       ts: d._latestRow?.timestamp || null,
       readings: d.payloadCount ?? null,
       signals: named.length + inputs.length + outputs.length,

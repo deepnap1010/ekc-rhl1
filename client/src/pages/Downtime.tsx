@@ -1,5 +1,5 @@
 // client/src/pages/Downtime.tsx
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Clock, AlertTriangle, Activity, Pencil, Check } from 'lucide-react';
 import { downtimeApi, machineApi } from '../api/endpoints';
@@ -97,6 +97,12 @@ export default function Downtime() {
     const seen = (summary?.byType || []).map((t) => t.type).filter(Boolean);
     return seen.length ? ['all', ...seen] : TYPES;
   }, [summary]);
+
+  // If a machine/range change removes the selected type's chip, snap back to
+  // "all" — otherwise an invisible filter keeps the table empty.
+  useEffect(() => {
+    if (type !== 'all' && !typeOpts.includes(type)) { setType('all'); setPage(1); }
+  }, [typeOpts, type]);
 
   return (
     <div>

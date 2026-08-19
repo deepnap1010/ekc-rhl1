@@ -16,15 +16,20 @@ type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 const num = (p: string): { $ifNull: [string, number] } => ({ $ifNull: [p, 0] });
 
 // An explicit ?machineId= scopes a report to one machine ("Machine Report").
-// Returns denied=true when the requested machine is outside the user's scope.
-function requestedMachine(
+// The ref is resolved to BOTH its spellings (business `code` + raw `machineId`)
+// so downtime rows keyed by either alias are found and scope checks accept
+// either. Returns denied=true when the machine is outside the user's scope.
+async function requestedMachine(
   q: Record<string, string | undefined>,
   scope: string[] | null
-): { ref: string | null; denied: boolean } {
+): Promise<{ refs: string[] | null; denied: boolean }> {
   const m = q.machineId && q.machineId !== 'all' ? q.machineId : null;
-  if (!m) return { ref: null, denied: false };
-  if (scope && !scope.includes(m)) return { ref: m, denied: true };
-  return { ref: m, denied: false };
+  if (!m) return { refs: null, denied: false };
+  const doc = (await Machine.findOne({ $or: [{ code: m }, { machineId: m }] })
+    .select({ code: 1, machineId: 1 }).lean()) as { code?: string; machineId?: string } | null;
+  const refs = doc ? ([doc.code, doc.machineId].filter(Boolean) as string[]) : [m];
+  if (scope && !refs.some((r) => scope.includes(r))) return { refs, denied: true };
+  return { refs, denied: false };
 }
 
 // A machine row projected for the report (plant is populated to its name).
@@ -53,9 +58,9 @@ const ERROR_LABELS: Record<string, string> = {
 export const overviewReport = asyncHandler(async (req, res) => {
   const scope = machineScope(req.user as ScopedUser | undefined);
   const rq = req.query as Record<string, string | undefined>;
-  const { ref, denied } = requestedMachine(rq, scope);
+  const { refs, denied } = await requestedMachine(rq, scope);
   if (denied) return ok(res, { windowDays: 0, kpis: {}, statusMix: [], errorsByStatus: [], downtimeByMachine: [] });
-  const sm = ref ? { machineId: ref } : (scope ? { machineId: { $in: scope } } : {});
+  const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
   const windowDays = Math.min(Math.max(Number(rq.days) || 30, 1), 365);
   const since = new Date(Date.now() - windowDays * 24 * 3600 * 1000);
 
@@ -74,7 +79,7 @@ export const overviewReport = asyncHandler(async (req, res) => {
 
   // Machine filter applies to the health-snapshot sections too, so a "Machine
   // Report" never shows fleet-wide values.
-  const snapshot = ref ? snapshotAll.filter((m) => m.machineId === ref) : snapshotAll;
+  const snapshot = refs ? snapshotAll.filter((m) => refs.includes(m.machineId)) : snapshotAll;
 
   // Live status mix + categorised errors, from the same health engine the whole app
   // uses — so the donut and the KPI counts always agree with Alerts/Dashboard.
@@ -124,12 +129,12 @@ export const overviewReport = asyncHandler(async (req, res) => {
 export const productionReport = asyncHandler(async (req, res) => {
   const { plant, machineId } = req.query as Record<string, string | undefined>;
   const scope = machineScope(req.user as ScopedUser | undefined);
-  const { ref, denied } = requestedMachine({ machineId }, scope);
+  const { refs, denied } = await requestedMachine({ machineId }, scope);
   if (denied) return ok(res, { byType: [], byPlant: [], machines: [] });
   const match: FilterQuery<IMachine> = {};
   if (plant && plant !== 'all') match.plant = plant;
   const conds: FilterQuery<IMachine>[] = [];
-  if (ref) conds.push({ $or: [{ code: ref }, { machineId: ref }] } as FilterQuery<IMachine>);
+  if (refs) conds.push({ $or: [{ code: { $in: refs } }, { machineId: { $in: refs } }] } as FilterQuery<IMachine>);
   if (scope) conds.push({ $or: [{ code: { $in: scope } }, { machineId: { $in: scope } }] } as FilterQuery<IMachine>);
   if (conds.length) match.$and = conds;
 
@@ -186,11 +191,11 @@ export const productionReport = asyncHandler(async (req, res) => {
 export const downtimeReport = asyncHandler(async (req, res) => {
   const { plant, from, to, machineId } = req.query as Record<string, string | undefined>;
   const scope = machineScope(req.user as ScopedUser | undefined);
-  const { ref, denied } = requestedMachine({ machineId }, scope);
+  const { refs, denied } = await requestedMachine({ machineId }, scope);
   if (denied) return ok(res, { totals: { totalEvents: 0, totalMs: 0 }, byType: [], byMachine: [] });
 
   const match: FilterQuery<IDowntimeEvent> = {};
-  if (ref) match.machineId = ref;
+  if (refs) match.machineId = { $in: refs };
   else if (scope) match.machineId = { $in: scope };
   if (from || to) {
     const range: { $gte?: Date; $lte?: Date } = {};
@@ -198,7 +203,7 @@ export const downtimeReport = asyncHandler(async (req, res) => {
     if (to)   range.$lte = new Date(to);
     match.startedAt = range;
   }
-  if (plant && plant !== 'all' && !ref) {
+  if (plant && plant !== 'all' && !refs) {
     const codes = await Machine.find({ plant }).select('code').lean();
     const plantCodes = codes.map((m) => m.code as string);
     match.machineId = { $in: scope ? plantCodes.filter((c) => scope.includes(c)) : plantCodes };
@@ -258,9 +263,9 @@ export const plantsReport = asyncHandler(async (req, res) => {
 // GET /reports/fleet — per-machine performance (health-scored) + per-class rollup.
 export const fleetReport = asyncHandler(async (req, res) => {
   const scope = machineScope(req.user as ScopedUser | undefined);
-  const { ref, denied } = requestedMachine(req.query as Record<string, string | undefined>, scope);
+  const { refs, denied } = await requestedMachine(req.query as Record<string, string | undefined>, scope);
   if (denied) return ok(res, { machines: [], byClass: [], totals: { machines: 0, readings: 0, signals: 0, registers: 0, faults: 0 } });
-  const sm = ref ? { machineId: ref } : (scope ? { machineId: { $in: scope } } : {});
+  const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
 
   const [snapshotAll, downByMachine] = await Promise.all([
     getFleetSnapshot(scope),
@@ -273,7 +278,7 @@ export const fleetReport = asyncHandler(async (req, res) => {
     downByMachine.map((d) => [d._id as string, { events: d.events as number, totalMs: d.totalMs as number }]),
   );
 
-  const snapshot = ref ? snapshotAll.filter((m) => m.machineId === ref) : snapshotAll;
+  const snapshot = refs ? snapshotAll.filter((m) => refs.includes(m.machineId)) : snapshotAll;
   const machines = snapshot.map((m) => {
     const d = dt[m.machineId] || { events: 0, totalMs: 0 };
     return {
@@ -310,9 +315,9 @@ export const fleetReport = asyncHandler(async (req, res) => {
 export const reliabilityReport = asyncHandler(async (req, res) => {
   const scope = machineScope(req.user as ScopedUser | undefined);
   const rq = req.query as Record<string, string | undefined>;
-  const { ref, denied } = requestedMachine(rq, scope);
+  const { refs, denied } = await requestedMachine(rq, scope);
   if (denied) return ok(res, { windowDays: 0, machines: [] });
-  const sm = ref ? { machineId: ref } : (scope ? { machineId: { $in: scope } } : {});
+  const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
   const windowDays = Math.min(Math.max(Number(rq.days) || 30, 1), 365);
   const windowMs = windowDays * 24 * 3600 * 1000;
   const since = new Date(Date.now() - windowMs);

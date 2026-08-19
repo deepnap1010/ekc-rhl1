@@ -18,6 +18,7 @@ import TrendChart from '../components/TrendChart';
 import Sparkline from '../components/Sparkline';
 import PageHeader from '../components/PageHeader';
 import { fmtTime, prettyKey, fmtNum, fmtMetric, fmtDuration, prettyType } from '../lib/format';
+import { effectiveStatus } from '../lib/machineStatus';
 import { isFault, isRegisterKey, isMetaKey } from '../lib/metrics';
 import type { ApiMeta, MetricStat, MetricValue, MachineEventRow } from '../types/api';
 
@@ -406,7 +407,10 @@ function RawArchive(): JSX.Element {
                     <h3 className="font-semibold text-primary truncate">{machine.name || code}</h3>
                     <div className="data text-[11px] text-steel truncate">{String(code).toUpperCase()}{machine.subtitle ? ` · ${machine.subtitle}` : ''}</div>
                   </div>
-                  <StatusPill status={machine.status} />
+                  <StatusPill status={effectiveStatus({
+                    status: machine.status,
+                    lastReadingAt: (machine.latest?.ts || machine.lastSeenAt) ? new Date((machine.latest?.ts || machine.lastSeenAt) as string).toISOString() : null,
+                  })} />
                   <FreshnessPill lastSeenAt={machine.lastSeenAt} />
                 </div>
                 <div className="flex flex-wrap gap-x-6 gap-y-2">

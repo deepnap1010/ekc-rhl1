@@ -8,6 +8,7 @@
 import type { Machine, MachineTick, TicksMap } from '../types/api';
 import { isNumeric } from './format';
 import { effectiveStatus } from './machineStatus';
+import { flattenParams } from './params';
 
 // sourceKeys are tried in priority order — the first regex with a non-zero
 // numeric match wins (so a generic "count" never shadows a real workpiece/production counter).
@@ -38,7 +39,8 @@ const codeOf = (m: Machine): string => String(m.code || m.machineId || '').toUpp
 function paramsOf(m: Machine, ticks: TicksMap): Record<string, unknown> {
   const tick: MachineTick | undefined = ticks[m.code || m._id];
   const cp = tick?.currentParameters || m.currentParameters || {};
-  return Object.keys(cp).length ? cp : (m.latestData || {});
+  // Flatten — nested socket payloads must not hide the source counter.
+  return flattenParams(Object.keys(cp).length ? cp : (m.latestData || {}));
 }
 
 /** Extra derived params per machine code, e.g. { BOTTOMMILLING03: { production: 277 } }. */

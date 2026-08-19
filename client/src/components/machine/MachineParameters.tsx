@@ -11,19 +11,19 @@ import { Cpu, Database, Power, Search, Download, Factory, X, Clock } from 'lucid
 import { machineApi } from '../../api/endpoints';
 import Sparkline from '../Sparkline';
 import { FreshnessPill, Spinner } from '../ui';
-import { fmtMetric, fmtTime, prettyKey } from '../../lib/format';
+import { fmtMetric, fmtTime, prettyKey, breachesThreshold } from '../../lib/format';
 import { flattenReading, isFault } from '../../lib/metrics';
 import { paramLabel } from '../../lib/params';
+import { isProductionKey } from '../../lib/production';
 import { useMachineTelemetry } from '../../hooks/useLive';
 import type { Machine, MetricStat, MetricValue } from '../../types/api';
-
-const PROD_RE = /workpiece|production|output|piece|\bcount\b/i;
 
 interface Row {
   key: string;
   label: string;
   value: MetricValue;
   fault: boolean;
+  breach: boolean;               // outside the machine's configured threshold
   kind: 'Analog' | 'Digital' | 'Register';
   isProd: boolean;
   stat?: MetricStat;
@@ -63,14 +63,16 @@ export function MachineParameters({ machine, code, snapshot }: { machine: Machin
   const ts = snapshot ? snapshot.ts : (liveT?.timestamp || machine.lastSeenAt || machine.lastReadingAt);
 
   const rows = useMemo(() => {
+    const thresholds = machine.thresholds || {};
     const { named, registers } = flattenReading(payload as Record<string, unknown>);
     const mk = (key: string, value: MetricValue, kind: Row['kind']): Row => ({
       key,
       label: kind === 'Register' ? paramLabel(key).toUpperCase() : prettyKey(paramLabel(key)),
       value,
       fault: isFault(value),
+      breach: breachesThreshold(key, value, thresholds),
       kind,
-      isProd: PROD_RE.test(paramLabel(key).toLowerCase().replace(/[._/\-]+/g, ' ')),
+      isProd: isProductionKey(key),
       stat: statBy.get(key),
     });
     const namedRows: Row[] = Object.entries(named)
@@ -85,7 +87,7 @@ export function MachineParameters({ machine, code, snapshot }: { machine: Machin
       registers: regRows.filter(match),
       total: namedRows.length + regRows.length,
     };
-  }, [payload, statBy, q]);
+  }, [payload, statBy, q, machine]);
 
   const exportCsv = () => {
     const all = [...rows.analog, ...rows.digital, ...rows.registers];
@@ -202,14 +204,15 @@ function ParamGroup({ title, icon: Icon, rows, muted, showStats }: {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.key} className="border-t border-line hover:bg-base/60">
+              <tr key={r.key} className={`border-t border-line hover:bg-base/60 ${r.breach ? 'bg-stopped/5' : ''}`}>
                 <td className="px-4 py-2.5">
                   <span className={`${muted ? 'data text-xs text-steel' : 'text-primary'} inline-flex items-center gap-2`}>
                     {r.label}
                     {r.isProd && <span className="pill bg-running/10 text-running !text-[9px] inline-flex items-center gap-0.5"><Factory size={9} /> production</span>}
+                    {r.breach && <span className="pill bg-stopped/10 text-stopped !text-[9px]">threshold</span>}
                   </span>
                 </td>
-                <td className={`px-4 py-2.5 data text-right font-semibold ${r.fault ? 'text-stopped' : muted ? 'text-steel' : 'text-primary'}`}>
+                <td className={`px-4 py-2.5 data text-right font-semibold ${r.fault || r.breach ? 'text-stopped' : muted ? 'text-steel' : 'text-primary'}`}>
                   {r.fault ? 'FAULT' : fmtMetric(r.value)}
                 </td>
                 {showStats && <td className="px-4 py-2.5 data text-xs text-right text-steel hidden sm:table-cell">{r.stat ? fmtMetric(r.stat.min) : '—'}</td>}

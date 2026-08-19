@@ -9,7 +9,8 @@ import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtDuration, prettyType, fmtTime, isNumeric } from '../lib/format';
-import { paramLabel, isRawAddress } from '../lib/params';
+import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
+import { productionValue } from '../lib/production';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
@@ -119,11 +120,15 @@ export default function Machines() {
   // Sort comparators. Machines missing the metric sink to the bottom in both directions.
   const paramsOf = (m: Machine) => {
     const cp = live[m.code || m._id]?.currentParameters || m.currentParameters || {};
-    return (Object.keys(cp).length ? cp : m.latestData || {}) as Record<string, unknown>;
+    // currentParameters arrives raw/nested from ingest + socket — flatten so
+    // dotted signals (named.*, active.*) are actually seen.
+    return flattenParams(Object.keys(cp).length ? cp : m.latestData || {});
   };
+  // ONE most-specific counter via the shared picker — never a sum (cycle +
+  // workpiece is not production), matching the card headline exactly.
   const productionOf = (m: Machine) => {
-    const v = metricVals(paramsOf(m), /production|output|pieces|\bparts\b|\bcount\b/);
-    return v.length ? v.reduce((s, n) => s + n, 0) : (typeof m.totalOutput === 'number' ? m.totalOutput : -1);
+    const v = productionValue(paramsOf(m));
+    return v != null ? v : (typeof m.totalOutput === 'number' ? m.totalOutput : -1);
   };
   const efficiencyOf = (m: Machine) => {
     const v = metricVals(paramsOf(m), /efficiency|oee/);
@@ -380,7 +385,8 @@ interface MachineCardProps {
 function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
-  const own       = Object.keys(cp).length ? cp : (machine.latestData || {});
+  // Flatten — raw/nested socket payloads must not reach the card unflattened.
+  const own       = flattenParams(Object.keys(cp).length ? cp : (machine.latestData || {}));
   const params    = extraParams ? { ...own, ...extraParams } : own;
   const status    = effectiveStatus({ status: liveTick?.status || machine.status, lastReadingAt: liveTick?.lastReadingAt || machine.lastReadingAt });
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
