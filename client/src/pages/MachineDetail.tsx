@@ -12,6 +12,7 @@ import MachineOverview from '../components/machine/MachineOverview';
 import ParametersModal from '../components/machine/MachineParameters';
 import MachineTimeline from '../components/machine/MachineTimeline';
 import { fmtNum, fmtTime, fmtDuration, prettyType } from '../lib/format';
+import { effectiveStatus } from '../lib/machineStatus';
 import { useMachineLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine } from '../types/api';
@@ -55,8 +56,12 @@ export default function MachineDetail() {
   );
 
   const id = machine.machineId || machine.id || code;
-  const status = live?.status || machine.status;
   const lastSeenAt = live?.lastReadingAt || machine.lastSeenAt || machine.lastReadingAt;
+  // Same rule as the cards: 10+ min of silence shows Signal Lost, not a stale status.
+  const status = effectiveStatus({
+    status: live?.status || machine.status,
+    lastReadingAt: lastSeenAt ? new Date(lastSeenAt).toISOString() : null,
+  });
   const title = cfg.displayName || machine.name || id;
   const typeLabel = machine.type && machine.type !== 'UNKNOWN' ? prettyType(machine.type) : 'Unclassified';
 

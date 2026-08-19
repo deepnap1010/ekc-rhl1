@@ -27,6 +27,7 @@ const STATUS_OPTIONS = [
   { value: 'running', label: 'Running' },
   { value: 'idle', label: 'Idle' },
   { value: 'stopped', label: 'Stopped' },
+  { value: 'network', label: 'Signal Lost' },
   { value: 'offline', label: 'Offline' },
 ];
 
@@ -52,7 +53,7 @@ function metricVals(params: Record<string, unknown>, re: RegExp): number[] {
 
 // Card ordering: running+live → running → idle+live → idle → stopped → offline
 // (within each status, machines with fresh data come first).
-const STATUS_RANK: Record<string, number> = { running: 0, idle: 1, stopped: 2, offline: 3 };
+const STATUS_RANK: Record<string, number> = { running: 0, idle: 1, stopped: 2, network: 3, offline: 4 };
 const rank = (status: string, live: boolean) => (STATUS_RANK[status] ?? 3) * 2 + (live ? 0 : 1);
 
 function tallyActivity(rows: MachineActivityRow[]) {

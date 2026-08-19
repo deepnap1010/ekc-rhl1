@@ -77,7 +77,26 @@ export const overview = asyncHandler(async (req, res) => {
   const filterKey = scopeKey + ':' + JSON.stringify(only) + ':' + volFrom.toISOString() + ':' + volTo.toISOString();
   const [snapshot, statusAgg, downAgg, employeeCount, activity, teamByRole, rolesCount, superAdmins, act] = await Promise.all([
     cached('snap:' + scopeKey, 30_000, () => getFleetSnapshot(scope)),
-    Machine.aggregate([...(machineMatch ? [{ $match: machineMatch }] : []), { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    // Fleet counts mirror the client's Signal-Lost rule: a machine whose last
+    // status is running/idle/stopped but that has sent nothing for 10+ minutes
+    // counts under Offline (its pill shows "Signal Lost"), never under Running.
+    Machine.aggregate([
+      ...(machineMatch ? [{ $match: machineMatch }] : []),
+      { $group: {
+        _id: {
+          $cond: [
+            { $and: [
+              { $ne: [{ $toLower: { $ifNull: ['$status', 'offline'] } }, 'offline'] },
+              { $ne: [{ $ifNull: ['$lastReadingAt', { $ifNull: ['$lastSeenAt', null] }] }, null] },
+              { $lt: [{ $ifNull: ['$lastReadingAt', '$lastSeenAt'] }, new Date(nowMin - 10 * 60_000)] },
+            ] },
+            'offline',
+            '$status',
+          ],
+        },
+        count: { $sum: 1 },
+      } },
+    ]),
     // Events OVERLAPPING the window (not just started inside it) — a span that
     // crossed the boundary must count. Duration totals come from the activity
     // engine below (clipped to the window) so the two figures can't contradict.

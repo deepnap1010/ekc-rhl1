@@ -1,16 +1,18 @@
 // client/src/lib/machineStatus.ts
-// Status model — two INDEPENDENT signals, never conflated:
-//   1. Reported status (the pill + the running/idle/stopped/offline counts): the
-//      server/PLC `status` field, trusted as-is. If a machine last reported
-//      "running" we show Running; if the feed reports "disconnected"/"offline",
-//      we show that. We do NOT flip it based on a client-side staleness guess.
-//   2. Data freshness ("Reporting now" KPI + per-card last-seen time): whether the
-//      machine is actively streaming right now, via isStale(). This informs, but
-//      never overrides, the reported status.
+// Status model — the reported server/PLC `status` field, trusted while the
+// machine is actually SENDING (a machine streaming "stopped" shows Stopped).
+// ONE exception (explicit product decision): whatever the last status claimed
+// (running / idle / stopped), if the machine has sent NOTHING for 10+ minutes
+// the SIGNAL is lost — we show "Signal Lost" instead of a misleading stale
+// status + "2h ago". A feed-reported offline stays Offline. Data freshness
+// (the last-seen time / "reporting now" KPI) stays separate via isStale().
 import type { Machine } from '../types/api';
 
 /** Live window for the data-freshness ("reporting now") signal — NOT the status pill. */
 export const STALE_MS = 120_000;
+
+/** Silence threshold after which any machine is shown as Signal Lost. */
+export const NETWORK_LOST_MS = 10 * 60_000;
 
 export function isStale(lastReadingAt?: string | null, now = Date.now()): boolean {
   if (!lastReadingAt) return true;
@@ -18,9 +20,15 @@ export function isStale(lastReadingAt?: string | null, now = Date.now()): boolea
   return Number.isNaN(t) || now - t > STALE_MS;
 }
 
-/** Displayed status = the reported `status` field, trusted (lowercased). */
-export function effectiveStatus(m: Pick<Machine, 'status' | 'lastReadingAt'>): string {
-  return (m.status || 'offline').toLowerCase();
+/** Displayed status: the reported field while data flows — silence 10+ min
+ *  becomes 'network' (Signal Lost), whatever the last status claimed. */
+export function effectiveStatus(m: Pick<Machine, 'status' | 'lastReadingAt'>, now = Date.now()): string {
+  const s = (m.status || 'offline').toLowerCase();
+  if (s !== 'offline' && m.lastReadingAt) {
+    const t = new Date(m.lastReadingAt).getTime();
+    if (!Number.isNaN(t) && now - t > NETWORK_LOST_MS) return 'network';
+  }
+  return s;
 }
 
 export interface StatusTally {

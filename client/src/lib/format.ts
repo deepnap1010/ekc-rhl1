@@ -12,6 +12,9 @@ export const STATUS: Record<string, StatusStyle> = {
   idle:    { label: 'Idle',    color: '#D97706', bg: 'rgba(217,119,6,0.10)' },
   stopped: { label: 'Stopped', color: '#DC2626', bg: 'rgba(220,38,38,0.10)' },
   offline: { label: 'Offline', color: '#64748B', bg: 'rgba(100,116,139,0.10)' },
+  // Derived: last status was running/idle/stopped but nothing has been sent for
+  // 10+ minutes — the signal from the machine's agent/network is gone.
+  network: { label: 'Signal Lost', color: '#7C3AED', bg: 'rgba(124,58,237,0.10)' },
 };
 
 // Any status the factory reports that we don't have a preset for still renders cleanly.

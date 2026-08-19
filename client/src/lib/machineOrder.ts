@@ -1,6 +1,6 @@
 // client/src/lib/machineOrder.ts
 // Deterministic production-flow ordering for machine lists:
-//   cutting machines → SPG machines (numeric) → furnaces → everything else.
+//   cutting → SPG (numeric) → bottom milling → furnaces → everything else.
 // Category detection is a reusable pattern map over code/name/type — NOT
 // scattered string comparisons — so newly added machines slot in automatically.
 export interface Orderable { code?: string; machineId?: string; name?: string; type?: string; machineType?: string }
@@ -8,7 +8,8 @@ export interface Orderable { code?: string; machineId?: string; name?: string; t
 const CATEGORY_PATTERNS: RegExp[] = [
   /cutting/i,           // 0 — cutting machines
   /\bspg[\s_-]?\d*/i,   // 1 — SPG forming machines
-  /furnace|quench/i,    // 2 — heat-treat / quenching furnaces
+  /bottom|milling/i,    // 2 — bottom-milling machines
+  /furnace|quench/i,    // 3 — heat-treat / quenching furnaces
 ];
 
 const refOf = (m: Orderable): string =>
