@@ -55,11 +55,21 @@ export function useMachineTelemetry(code?: string): Telemetry | null {
   const [latest, setLatest] = useState<Telemetry | null>(null);
   useEffect(() => {
     if (!code) return;
+    setLatest(null); // never carry one machine's payload into another machine's view
     const s = getSocket();
     s.emit('subscribe:machine', code);
-    const onNew = throttlePerKey(() => code, (t: Telemetry) => setLatest(t));
+    const apply = throttlePerKey(() => code, (t: Telemetry) => setLatest(t));
+    // 'telemetry:new' is broadcast for EVERY machine (dashboard room) — accept
+    // only this machine's readings, or another machine's signals would render
+    // here as ours.
+    const onNew = (t: Telemetry) => {
+      if (String(t.machineId || '').toUpperCase() === String(code).toUpperCase()) apply(t);
+    };
     s.on('telemetry:new', onNew);
-    return () => { s.off('telemetry:new', onNew); };
+    return () => {
+      s.emit('unsubscribe:machine', code);
+      s.off('telemetry:new', onNew);
+    };
   }, [code]);
   return latest;
 }

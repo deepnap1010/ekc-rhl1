@@ -96,9 +96,11 @@ export default function Dashboard() {
   }, [ov]);
   const lastIsLive = lastReading != null && (Date.now() - lastReading) <= 120_000;
 
-  const rankings = (rankData || []) as RankingRow[];
+  // Carry each machine's TRUE rank; the bottom list never overlaps the top list
+  // (small fleets: whatever isn't in the top 10 — possibly nothing).
+  const rankings = ((rankData || []) as RankingRow[]).map((r, i) => ({ ...r, rank: i + 1 }));
   const top10 = rankings.slice(0, 10);
-  const bottom10 = rankings.length > 10 ? rankings.slice(-10).reverse() : [];
+  const bottom10 = rankings.slice(Math.max(10, rankings.length - 10)).reverse();
 
   return (
     <div>
@@ -249,7 +251,8 @@ export default function Dashboard() {
           <div className="grid lg:grid-cols-2 gap-5">
             <RankPanel title="Top performers" icon={Trophy} color={TEAL} rows={top10}
               onPick={(code) => f.set({ machineId: code })} />
-            <RankPanel title="Needs attention" icon={TrendingDown} color={RED} rows={bottom10.length ? bottom10 : [...rankings].reverse().slice(0, Math.min(10, rankings.length))}
+            <RankPanel title="Needs attention" icon={TrendingDown} color={RED} rows={bottom10}
+              emptyNote="All machines are already listed under Top performers."
               onPick={(code) => f.set({ machineId: code })} />
           </div>
         )}
@@ -297,11 +300,11 @@ export default function Dashboard() {
 // ── building blocks ──────────────────────────────────────────────────────────
 // Performance ranking table — availability-based (the only officially derivable
 // performance metric; OEE inputs don't exist and are never fabricated).
-function RankPanel({ title, icon, color, rows, onPick }: { title: string; icon: LucideIcon; color: string; rows: RankingRow[]; onPick: (code: string) => void }): JSX.Element {
+function RankPanel({ title, icon, color, rows, onPick, emptyNote }: { title: string; icon: LucideIcon; color: string; rows: (RankingRow & { rank: number })[]; onPick: (code: string) => void; emptyNote?: string }): JSX.Element {
   return (
     <Panel title={title} subtitle="availability over the selected window · click to inspect" icon={icon}>
       {rows.length === 0 ? (
-        <div className="text-sm text-steel py-6 text-center">No activity in the selected range.</div>
+        <div className="text-sm text-steel py-6 text-center">{emptyNote || 'No activity in the selected range.'}</div>
       ) : (
         <div className="overflow-x-auto -mx-1">
           <table className="w-full text-sm whitespace-nowrap">
@@ -316,10 +319,10 @@ function RankPanel({ title, icon, color, rows, onPick }: { title: string; icon: 
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
+              {rows.map((r) => (
                 <tr key={r.code} onClick={() => onPick(r.code)}
                   className="border-t border-line hover:bg-base/60 cursor-pointer">
-                  <td className="px-2 py-2 data text-xs text-steel">{i + 1}</td>
+                  <td className="px-2 py-2 data text-xs text-steel">{r.rank}</td>
                   <td className="px-2 py-2 data text-xs font-semibold text-primary">{String(r.code).toUpperCase()}</td>
                   <td className="px-2 py-2 data text-xs text-right font-semibold" style={{ color: r.availabilityPct >= 75 ? '#0D9488' : r.availabilityPct >= 50 ? '#D97706' : color }}>{r.availabilityPct}%</td>
                   <td className="px-2 py-2 data text-xs text-right">{r.production != null ? fmtNum(r.production) : <span className="text-steel/50">—</span>}</td>

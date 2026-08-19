@@ -4,7 +4,7 @@
 // never written. Items that genuinely need a secure backend (password change, 2FA
 // enforcement, audit logs, API keys, scheduled email) are shown honestly as
 // server-managed rather than faked.
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -32,17 +32,28 @@ type SectionId = 'profile' | 'company' | 'alerts' | 'security' | 'production' | 
 // Shifts / products / process stages are SHARED lists (server app_config) so
 // every desktop sees the same values. Edits here save locally as always, and —
 // when the user may update settings — are pushed to the server, debounced so
-// typing a shift name doesn't fire a request per keystroke.
+// typing a shift name doesn't fire a request per keystroke. Only the FIELDS
+// actually edited are sent — an untouched list must never clobber another
+// admin's server-side value with this device's stale local copy.
+type SharedField = 'shifts' | 'products' | 'processStages';
+const pendingShared = new Set<SharedField>();
 let sharedSyncTimer: ReturnType<typeof setTimeout> | undefined;
-function syncSharedConfig(): void {
+function syncSharedConfig(field: SharedField): void {
+  pendingShared.add(field);
   clearTimeout(sharedSyncTimer);
   sharedSyncTimer = setTimeout(() => {
     try {
-      if (!useAuthStore.getState().can('settings', 'update')) return;
+      if (!useAuthStore.getState().can('settings', 'update')) { pendingShared.clear(); return; }
       const s = getSettings();
-      void configApi
-        .update({ shifts: s.shifts, products: s.production.products, processStages: s.production.processStages })
-        .catch(() => { /* offline / denied — local copy still applies on this device */ });
+      const body: { shifts?: Settings['shifts']; products?: string[]; processStages?: string[] } = {};
+      if (pendingShared.has('shifts')) body.shifts = s.shifts;
+      if (pendingShared.has('products')) body.products = s.production.products;
+      if (pendingShared.has('processStages')) body.processStages = s.production.processStages;
+      pendingShared.clear();
+      if (Object.keys(body).length) {
+        void configApi.update(body)
+          .catch(() => { /* offline / denied — local copy still applies on this device */ });
+      }
     } catch { /* ignore */ }
   }, 800);
 }
@@ -61,6 +72,22 @@ export default function Settings() {
   const s = useSettings();
   const t = useT();
   const [section, setSection] = useState<SectionId>('profile');
+
+  // Hydrate the shared lists FROM the server before any edit, so a push from
+  // this device can never overwrite the server with a stale local seed.
+  const { data: shared } = useQuery({
+    queryKey: ['app-config'],
+    queryFn: () => configApi.get().then((r) => r.data),
+    staleTime: 60_000,
+  });
+  useEffect(() => {
+    if (!shared?.stored) return;
+    patchSettings((d) => {
+      d.shifts = shared.shifts;
+      d.production.products = shared.products;
+      d.production.processStages = shared.processStages;
+    });
+  }, [shared]);
 
   return (
     <div>
@@ -441,20 +468,20 @@ function CompanySection({ s }: { s: Settings }) {
         <div className="space-y-2">
           {s.shifts.map((sh, i) => (
             <div key={i} className="flex items-center gap-3 flex-wrap">
-              <input value={sh.name} onChange={(e) => { patchSettings((d) => { d.shifts[i].name = e.target.value; }); syncSharedConfig(); }}
+              <input value={sh.name} onChange={(e) => { patchSettings((d) => { d.shifts[i].name = e.target.value; }); syncSharedConfig('shifts'); }}
                 placeholder={`Shift ${i + 1}`}
                 className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm font-medium text-primary outline-none focus:border-accent w-32" />
-              <input type="time" value={sh.start} onChange={(e) => { patchSettings((d) => { d.shifts[i].start = e.target.value; }); syncSharedConfig(); }} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+              <input type="time" value={sh.start} onChange={(e) => { patchSettings((d) => { d.shifts[i].start = e.target.value; }); syncSharedConfig('shifts'); }} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
               <ArrowRight size={14} className="text-steel" />
-              <input type="time" value={sh.end} onChange={(e) => { patchSettings((d) => { d.shifts[i].end = e.target.value; }); syncSharedConfig(); }} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-              <button onClick={() => { patchSettings((d) => { d.shifts.splice(i, 1); }); syncSharedConfig(); }} title="Remove shift"
+              <input type="time" value={sh.end} onChange={(e) => { patchSettings((d) => { d.shifts[i].end = e.target.value; }); syncSharedConfig('shifts'); }} className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-primary outline-none focus:border-accent" />
+              <button onClick={() => { patchSettings((d) => { d.shifts.splice(i, 1); }); syncSharedConfig('shifts'); }} title="Remove shift"
                 className="text-steel/50 hover:text-stopped transition-colors" disabled={s.shifts.length <= 1}>
                 <X size={15} />
               </button>
             </div>
           ))}
         </div>
-        <button onClick={() => { patchSettings((d) => { d.shifts.push({ name: `Shift ${d.shifts.length + 1}`, start: '06:00', end: '14:00' }); }); syncSharedConfig(); }}
+        <button onClick={() => { patchSettings((d) => { d.shifts.push({ name: `Shift ${d.shifts.length + 1}`, start: '06:00', end: '14:00' }); }); syncSharedConfig('shifts'); }}
           className="mt-3 flex items-center gap-1.5 text-sm text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10 rounded-lg px-3 py-1.5 font-medium transition-colors">
           <Plus size={14} /> Add shift
         </button>
@@ -568,11 +595,11 @@ function ProductionSection({ s }: { s: Settings }) {
   return (
     <>
       <Section title="Product catalog" desc="Cylinder products manufactured across EKC plants." icon={Factory}>
-        <TagEditor tags={s.production.products} onChange={(next) => { patchSettings((d) => { d.production.products = next; }); syncSharedConfig(); }} placeholder="e.g. Type-3 Composite" />
+        <TagEditor tags={s.production.products} onChange={(next) => { patchSettings((d) => { d.production.products = next; }); syncSharedConfig('products'); }} placeholder="e.g. Type-3 Composite" />
       </Section>
 
       <Section title="Process stages" desc="The cylinder manufacturing flow, in order." icon={Factory}>
-        <TagEditor tags={s.production.processStages} onChange={(next) => { patchSettings((d) => { d.production.processStages = next; }); syncSharedConfig(); }} placeholder="e.g. Shot Blasting" />
+        <TagEditor tags={s.production.processStages} onChange={(next) => { patchSettings((d) => { d.production.processStages = next; }); syncSharedConfig('processStages'); }} placeholder="e.g. Shot Blasting" />
       </Section>
 
       <Section title="Standards & compliance" desc="Regulatory standards the products are certified against." icon={Shield}>

@@ -235,7 +235,7 @@ export default function Machines() {
             )}
           </div>
           <button
-            onClick={() => { setSearch(''); setStatus('all'); setSortBy('status'); setFrom(''); setTo(''); }}
+            onClick={() => { setSearch(''); setStatus('all'); setSortBy('process'); setFrom(''); setTo(''); }}
             title="Reset filters"
             className="w-10 h-10 flex items-center justify-center rounded-xl border border-line text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0"
           >

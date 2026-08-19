@@ -43,7 +43,20 @@ export default function MachineParameters({ machine, code }: { machine: Machine;
     return m;
   }, [stats]);
 
-  const payload = (liveT?.data || machine.latestData || machine.currentParameters || {}) as Record<string, unknown>;
+  // Latest payload: live socket reading first, then whatever raw snapshot the
+  // machine doc carries. GET /machines/:code returns the NORMALIZED contract
+  // (metrics/inputs/outputs/registers) rather than latestData for mirror docs —
+  // synthesize the payload from that contract so the table is never falsely empty.
+  const payload = useMemo(() => {
+    const raw = (liveT?.data || machine.latestData || machine.currentParameters || machine.liveParameters || {}) as Record<string, unknown>;
+    if (Object.keys(raw).length) return raw;
+    const out: Record<string, unknown> = {};
+    for (const m of machine.metrics || []) out[m.key] = m.value;
+    for (const io of machine.inputs || []) out[io.key] = io.on ? 1 : 0;
+    for (const io of machine.outputs || []) out[io.key] = io.on ? 1 : 0;
+    for (const r of machine.registers || []) out[r.key] = r.value;
+    return out;
+  }, [liveT, machine]);
   const ts = liveT?.timestamp || machine.lastSeenAt || machine.lastReadingAt;
 
   const rows = useMemo(() => {

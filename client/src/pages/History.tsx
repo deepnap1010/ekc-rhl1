@@ -81,10 +81,13 @@ function EventsArchive(): JSX.Element {
   });
 
   const [kind, state] = type ? type.split(':') : ['', ''];
+  // Default window = last 7 days (minute-rounded for stable query keys) so the
+  // summary counters and the table always cover the SAME range.
+  const nowMin = Math.floor(Date.now() / 60_000) * 60_000;
   const params = {
     machineId: machineId || undefined,
-    from: from ? new Date(from).toISOString() : undefined,
-    to: to ? new Date(to).toISOString() : undefined,
+    from: from ? new Date(from).toISOString() : new Date(nowMin - 7 * 24 * 3600_000).toISOString(),
+    to: to ? new Date(to).toISOString() : new Date(nowMin).toISOString(),
     kind: kind || undefined,
     state: state || undefined,
   };

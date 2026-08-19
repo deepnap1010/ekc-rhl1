@@ -11,6 +11,7 @@ import { Telemetry } from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
+import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
 
 export interface ActivityRow {
@@ -108,7 +109,9 @@ export async function computeActivity(
     const key = pickProductionKey(last);
     if (!key) return null;
     const end = Number(last[key]);
-    const start = Number(first[key]);
+    // A null/'' first reading must NOT coerce to 0 (that would report the full
+    // counter value as "production in range").
+    const start = isNumericValue(first[key]) ? Number(first[key]) : Number.NaN;
     // Counter reset mid-range (delta negative) → best effort: the end value.
     const delta = Number.isFinite(start) ? end - start : 0;
     return { key, production: delta >= 0 ? delta : end };
@@ -134,6 +137,9 @@ export async function computeActivity(
     const readings = t?.readings || 0;
     // Time not covered by a downtime span counts as running only if the machine
     // actually reported in the range — silence with no spans is "no data", not uptime.
+    // Known ceiling: a machine that reported briefly and then went silent while its
+    // status stayed "running" (so no offline span was recorded) still gets full
+    // credit — running time is only as truthful as the reported status timeline.
     const runningMs = readings > 0 ? Math.max(0, windowMs - downMs) : 0;
     let status = 'offline';
     if (readings > 0 || downMs > 0) {

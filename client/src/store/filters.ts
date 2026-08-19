@@ -65,7 +65,10 @@ export function resolveRange(
   const shift = f.shiftName && shiftApplies(f.preset) ? shifts.find((s) => s.name === f.shiftName) : null;
   if (f.preset === 'today') {
     if (shift) return shiftWindowOn(shift, dayStart(0));
-    return { from: dayStart(0), to: nowRounded() };
+    const from = dayStart(0);
+    // First minute after midnight: nowRounded() == from — keep to strictly after from.
+    const to = new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000));
+    return { from, to };
   }
   if (f.preset === 'yesterday') {
     if (shift) return shiftWindowOn(shift, dayStart(-1));

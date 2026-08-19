@@ -51,7 +51,9 @@ export default function Downtime() {
   }, [win, customFrom, customTo]);
   const from = range.from;
   const to = range.to;
-  const winLabel = win === 'custom' ? 'custom range' : win === 'all' ? 'all time' : `last ${win.replace('d', '')} days`;
+  // A half-filled custom range must NOT silently run an unbounded all-time query.
+  const customReady = win !== 'custom' || (!!from && !!to);
+  const winLabel = win === 'custom' ? (customReady ? 'custom range' : 'pick start & end') : win === 'all' ? 'all time' : `last ${win.replace('d', '')} days`;
 
   const ackMut = useMutation({
     mutationFn: ({ id, acknowledged }: { id: string; acknowledged: boolean }) =>
@@ -64,6 +66,7 @@ export default function Downtime() {
     queryFn: () => downtimeApi.summary({ from, to, machineId: machineId || undefined }).then((r) => r.data),
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
+    enabled: customReady,
   });
 
   const { data, isLoading, isFetching } = useQuery({
@@ -80,6 +83,7 @@ export default function Downtime() {
     }),
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
+    enabled: customReady,
   });
 
   const events = data?.data || [];

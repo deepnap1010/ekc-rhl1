@@ -58,7 +58,17 @@ async function evaluate(ref: string, state: State, now: Date): Promise<void> {
   await DowntimeEvent.create({ machineId: ref, type: state, startedAt: now, endedAt: null, durationMs: 0 });
 }
 
+// Reentrancy guard: a sweep that outlasts SWEEP_MS (slow Atlas round trips at
+// scale) must not overlap the next tick — overlapping sweeps could double-write
+// production events and open duplicate state sessions.
+// ponytail: single-process guard; a brief multi-instance overlap during a
+// deploy can still double-observe one counter tick — move dedup into the DB
+// (unique transition key) if the app is ever scaled to multiple instances.
+let sweeping = false;
+
 export async function sweepDowntime(): Promise<void> {
+  if (sweeping) return;
+  sweeping = true;
   try {
     await ensureEventSeed();
     const machines = await Machine.find({}).lean();
@@ -75,6 +85,8 @@ export async function sweepDowntime(): Promise<void> {
     }
   } catch (err) {
     console.error('[downtime] sweep error:', errMessage(err));
+  } finally {
+    sweeping = false;
   }
 }
 

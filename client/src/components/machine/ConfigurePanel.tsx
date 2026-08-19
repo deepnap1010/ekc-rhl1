@@ -26,8 +26,14 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
   const [cfg, setCfg] = useState<MachineConfig>(() => getConfig(id));
   const [saved, setSaved] = useState(false);
   // Shared config — products / stages / shifts come from the server (same on
-  // every desktop), not from hard-coded frontend arrays.
+  // every desktop), not from hard-coded frontend arrays. A value saved earlier
+  // that's no longer in the shared list stays selectable (never silently blank).
   const { products, processStages, shifts } = useAppConfig();
+  const stageOpts = cfg.stage && !processStages.includes(cfg.stage) ? [cfg.stage, ...processStages] : processStages;
+  const productOpts = cfg.product && !products.includes(cfg.product) ? [cfg.product, ...products] : products;
+  const shiftOpts = cfg.shift && !shifts.some((sh) => sh.name === cfg.shift)
+    ? [{ name: cfg.shift, start: '', end: '' }, ...shifts]
+    : shifts;
 
   const { data: users } = useQuery({
     queryKey: ['users', 'config'],
@@ -96,7 +102,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           <Field label="Process stage">
             <select className="input" value={cfg.stage || ''} onChange={(e) => set({ stage: e.target.value })}>
               <option value="">Auto ({typeLabel})</option>
-              {processStages.map((s) => <option key={s} value={s}>{s}</option>)}
+              {stageOpts.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </Field>
         </div>
@@ -108,7 +114,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           <Field label="Cylinder type / product">
             <select className="input" value={cfg.product || ''} onChange={(e) => set({ product: e.target.value })}>
               <option value="">—</option>
-              {products.map((p) => <option key={p} value={p}>{p}</option>)}
+              {productOpts.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </Field>
           <Field label="Cylinder spec / size">
@@ -132,7 +138,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           <Field label="Shift">
             <select className="input" value={cfg.shift || ''} onChange={(e) => set({ shift: e.target.value })}>
               <option value="">—</option>
-              {shifts.map((s) => <option key={s.name} value={s.name}>{s.name} · {s.start}–{s.end}</option>)}
+              {shiftOpts.map((s) => <option key={s.name} value={s.name}>{s.start ? `${s.name} · ${s.start}–${s.end}` : s.name}</option>)}
             </select>
           </Field>
           <Field label="Supervisor">

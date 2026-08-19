@@ -13,14 +13,15 @@ const DEFAULTS = {
     { name: 'Shift C', start: '22:00', end: '06:00' },
     { name: 'General', start: '09:00', end: '18:00' },
   ] as IShift[],
+  // EXACTLY the client's historical seed lists (lib/machineConfig.ts) — values
+  // operators saved per-machine must keep resolving to an option.
   products: [
-    'CNG', 'Industrial Gas', 'Medical Oxygen', 'CO2', 'Hydrogen',
-    'Jumbo / Cascade', 'Type-2 Composite', 'Type-3 Composite', 'Type-4 Composite',
+    'CNG', 'Industrial Gas', 'Medical Oxygen', 'Fire Suppression', 'Hydrogen',
+    'Breathing Air', 'Aluminium', 'Jumbo', 'Type-4 Composite',
   ],
   processStages: [
-    'Billet Heating', 'Bottom Forming / Milling', 'Drawing / Piercing', 'Neck Forming / Spinning',
-    'Heat Treatment (Quench + Temper)', 'Hydraulic Pressing', 'Cutting / Machining',
-    'Internal Shot Blasting', 'Testing / Inspection', 'Finishing / Painting', 'Other',
+    'Billet Heating', 'Bottom Forming / Milling', 'Heat Treatment (Hardening + Tempering)',
+    'Quenching', 'Machining', 'Neck Forming / Threading', 'Hydrostatic Testing', 'Inspection & Marking', 'Other',
   ],
 };
 

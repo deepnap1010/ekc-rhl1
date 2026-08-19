@@ -45,12 +45,15 @@ export const overview = asyncHandler(async (req, res) => {
   const toD = parseD(q.to);
   const rangeActive = !!(fromD && toD && fromD < toD);
 
-  const since24h = new Date(Date.now() - 24 * 3600 * 1000);
-  const since7d  = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  // Default edges are rounded to the MINUTE so cache keys repeat between polls
+  // (per-request Date.now() would defeat the 30s cache and grow it unboundedly).
+  const nowMin   = Math.floor(Date.now() / 60_000) * 60_000;
+  const since24h = new Date(nowMin - 24 * 3600 * 1000);
+  const since7d  = new Date(nowMin - 7 * 24 * 3600 * 1000);
   const downFrom = rangeActive ? (fromD as Date) : since24h;
-  const downTo   = rangeActive ? (toD as Date)   : new Date();
+  const downTo   = rangeActive ? (toD as Date)   : new Date(nowMin);
   const volFrom  = rangeActive ? (fromD as Date) : since7d;
-  const volTo    = rangeActive ? (toD as Date)   : new Date();
+  const volTo    = rangeActive ? (toD as Date)   : new Date(nowMin);
 
   // Row-level scope: a restricted user sees a dashboard built only from their machines.
   const scope = machineScope(req.user as ScopedUser | undefined);
@@ -75,9 +78,16 @@ export const overview = asyncHandler(async (req, res) => {
   const [snapshot, statusAgg, downAgg, employeeCount, activity, teamByRole, rolesCount, superAdmins, act] = await Promise.all([
     cached('snap:' + scopeKey, 30_000, () => getFleetSnapshot(scope)),
     Machine.aggregate([...(machineMatch ? [{ $match: machineMatch }] : []), { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    // Events OVERLAPPING the window (not just started inside it) — a span that
+    // crossed the boundary must count. Duration totals come from the activity
+    // engine below (clipped to the window) so the two figures can't contradict.
     DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: downFrom, $lte: downTo }, ...(sm || {}) } },
-      { $group: { _id: null, totalMs: { $sum: num('$durationMs') }, count: { $sum: 1 } } },
+      { $match: {
+        startedAt: { $lte: downTo },
+        $or: [{ endedAt: null }, { endedAt: { $gte: downFrom } }],
+        ...(sm || {}),
+      } },
+      { $group: { _id: null, count: { $sum: 1 } } },
     ]),
     User.countDocuments({ active: true }),
     cached('vol:' + filterKey, 30_000, () => Telemetry.aggregate([
@@ -96,7 +106,7 @@ export const overview = asyncHandler(async (req, res) => {
     // Window activity — production/runtime/downtime for the selected range
     // (default: last 24h), from the same shared engine as /machines/activity
     // and /dashboard/rankings so the three surfaces always agree.
-    computeActivity(scope, rangeActive ? (fromD as Date) : since24h, rangeActive ? (toD as Date) : new Date(), only),
+    computeActivity(scope, rangeActive ? (fromD as Date) : since24h, rangeActive ? (toD as Date) : new Date(nowMin), only),
   ]);
 
   // Machine filter applies to the snapshot-derived sections too (health, signals,
@@ -139,7 +149,7 @@ export const overview = asyncHandler(async (req, res) => {
   const critical = byCategory.fault + byCategory.range;
   const warning  = byCategory.deviation + byCategory.stale;
   const byTypeArr = Object.values(byType).sort((a, b) => b.readings - a.readings);
-  const dt = (downAgg as { totalMs: number; count: number }[])[0];
+  const dt = (downAgg as { count: number }[])[0];
 
   const machines = snapRows.map((m) => ({
     machineId: m.machineId, name: m.name, type: m.type, class: m.class, status: m.status,
@@ -177,7 +187,9 @@ export const overview = asyncHandler(async (req, res) => {
     alerts: { total: alertTotal, critical, warning, info: byCategory.offline + byCategory.other, byCategory },
     signals: { named, io, registers, mapped, total: totalSignals, mappedPct: pct(mapped, totalSignals) },
     volume: { totalReadings, perDay: (activity as { _id: string; readings: number }[]).map((a) => ({ day: a._id, readings: a.readings })), byType: byTypeArr },
-    downtime: { totalMs: dt?.totalMs || 0, events: dt?.count || 0 },
+    // Duration is the activity engine's window-clipped total — same source as
+    // the window KPI block, so the two downtime figures always agree.
+    downtime: { totalMs: windowBlock.downtimeMs + windowBlock.idleMs, events: dt?.count || 0 },
     composition: {
       byType:  byTypeArr.map((t) => ({ type: t.type, count: t.count })),
       byClass: Object.values(byClass).sort((a, b) => b.count - a.count),
