@@ -3,20 +3,21 @@
 // Status · View parameters. One row per minute, and only minutes where the
 // production counter or status actually changed (server /machines/:code/timeline
 // does the bucketing + dedup, so the browser never receives telemetry spam).
-// "View parameters" fetches that minute's full reading on demand.
+// "View parameters" opens the shared, searchable parameters module scoped to
+// that minute's reading.
 import { useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Download, Eye, X } from 'lucide-react';
+import { Download, Eye } from 'lucide-react';
 import { machineApi } from '../../api/endpoints';
 import { StatusPill, Spinner } from '../ui';
-import { fmtNum, fmtMetric, fmtTime, prettyKey } from '../../lib/format';
-import { isFault, isRegisterKey, isMetaKey } from '../../lib/metrics';
-import type { TimelineRow, MetricValue } from '../../types/api';
+import ParametersModal from './MachineParameters';
+import { fmtNum, fmtTime } from '../../lib/format';
+import type { Machine, TimelineRow } from '../../types/api';
 
-export default function MachineTimeline({ code }: { code: string }): JSX.Element {
+export default function MachineTimeline({ machine, code }: { machine: Machine; code: string }): JSX.Element {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [inspect, setInspect] = useState<TimelineRow | null>(null);
+  const [inspectAt, setInspectAt] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['machine-timeline', code, from, to],
@@ -27,7 +28,7 @@ export default function MachineTimeline({ code }: { code: string }): JSX.Element
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
   });
-  const rows = data?.data || [];
+  const rows: TimelineRow[] = data?.data || [];
 
   const exportCsv = () => {
     if (!rows.length) return;
@@ -92,7 +93,7 @@ export default function MachineTimeline({ code }: { code: string }): JSX.Element
                     {r.status ? <StatusPill status={r.status} /> : <span className="text-steel/50 text-xs">—</span>}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button onClick={() => setInspect(r)}
+                    <button onClick={() => setInspectAt(r.ts)}
                       className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-line text-xs text-steel hover:border-accent hover:text-accent transition-colors">
                       <Eye size={12} /> View parameters
                     </button>
@@ -104,72 +105,9 @@ export default function MachineTimeline({ code }: { code: string }): JSX.Element
         )}
       </div>
 
-      {inspect && <ReadingModal code={code} row={inspect} onClose={() => setInspect(null)} />}
-    </div>
-  );
-}
-
-// The full reading behind one timeline row — fetched on demand (the timeline
-// itself stays light), rendered as the usual named/registers signal grid.
-function ReadingModal({ code, row, onClose }: { code: string; row: TimelineRow; onClose: () => void }): JSX.Element {
-  const ts = new Date(row.ts);
-  const { data, isLoading } = useQuery({
-    queryKey: ['timeline-reading', code, row.ts],
-    queryFn: () => machineApi.history(code, {
-      from: new Date(ts.getTime() - 60_000).toISOString(),
-      to: new Date(ts.getTime() + 60_000).toISOString(),
-      limit: 1,
-    }),
-  });
-  const reading = data?.data?.[0];
-  const entries = Object.entries((reading?.data || {}) as Record<string, MetricValue>).filter(([k]) => !isMetaKey(k));
-  const named = entries.filter(([k]) => !isRegisterKey(k));
-  const registers = entries.filter(([k]) => isRegisterKey(k));
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="card p-5 w-full max-w-3xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 mb-4">
-          <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-sm text-primary">Parameters · {fmtTime(row.ts)}</h3>
-            <div className="text-[11px] text-steel flex items-center gap-2 mt-0.5">
-              {row.production != null && <span>production <span className="data font-semibold text-primary">{fmtNum(row.production)}</span></span>}
-              {row.status && <StatusPill status={row.status} />}
-            </div>
-          </div>
-          <button onClick={onClose} className="text-steel hover:text-primary transition-colors"><X size={18} /></button>
-        </div>
-        {isLoading ? (
-          <div className="py-8"><Spinner label="Loading reading" /></div>
-        ) : !reading ? (
-          <div className="py-8 text-center text-steel text-sm">Reading not found for this minute.</div>
-        ) : (
-          <div className="space-y-4">
-            <Grid title="Named signals" entries={named} />
-            <Grid title="Raw registers" entries={registers} muted />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Grid({ title, entries, muted }: { title: string; entries: [string, MetricValue][]; muted?: boolean }): JSX.Element | null {
-  if (!entries.length) return null;
-  return (
-    <div>
-      <div className="label mb-1.5">{title} <span className="text-steel/50">({entries.length})</span></div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
-        {entries.map(([k, v]) => {
-          const fault = isFault(v);
-          return (
-            <div key={k} className={`rounded-md border px-2 py-1.5 min-w-0 ${fault ? 'border-stopped/30 bg-stopped/5' : 'border-line bg-base'}`}>
-              <div className="data text-[10px] text-steel truncate" title={prettyKey(k)}>{prettyKey(k)}</div>
-              <div className={`data text-sm font-semibold truncate ${fault ? 'text-stopped' : muted ? 'text-steel' : 'text-primary'}`}>{fault ? 'FAULT' : fmtMetric(v)}</div>
-            </div>
-          );
-        })}
-      </div>
+      {inspectAt && (
+        <ParametersModal machine={machine} code={code} at={inspectAt} onClose={() => setInspectAt(null)} />
+      )}
     </div>
   );
 }

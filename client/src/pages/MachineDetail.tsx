@@ -1,32 +1,27 @@
 // client/src/pages/MachineDetail.tsx
-import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
-  ArrowLeft, Download, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal,
-  Cpu, Database,
+  ArrowLeft, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal, Cpu,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../api/endpoints';
 import { StatusPill, Spinner, FreshnessPill } from '../components/ui';
-import TrendChart from '../components/TrendChart';
 import ConfigurePanel from '../components/machine/ConfigurePanel';
 import MachineOverview from '../components/machine/MachineOverview';
-import MachineParameters from '../components/machine/MachineParameters';
+import ParametersModal from '../components/machine/MachineParameters';
 import MachineTimeline from '../components/machine/MachineTimeline';
-import { fmtNum, fmtMetric, fmtTime, fmtDuration, prettyKey, prettyType } from '../lib/format';
-import { isFault, rankNamedKeys, flattenReading } from '../lib/metrics';
+import { fmtNum, fmtTime, fmtDuration, prettyType } from '../lib/format';
 import { useMachineLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey } from '../lib/machineConfig';
-import type { Machine, MetricValue } from '../types/api';
+import type { Machine } from '../types/api';
 
 const TABS = [
-  { key: 'overview',   label: 'Overview',   icon: Activity },
-  { key: 'parameters', label: 'Parameters', icon: Cpu },        // full live signal view (raw telemetry's home)
-  { key: 'history',    label: 'History',    icon: HistoryIcon }, // minute-level change log (production + status)
-  { key: 'telemetry',  label: 'Telemetry',  icon: Database },    // raw reading log (archive + CSV)
-  { key: 'downtime',   label: 'Downtime',   icon: Clock },
-  { key: 'specs',      label: 'Specs',      icon: FileText },
-  { key: 'configure',  label: 'Configure',  icon: SlidersHorizontal },
+  { key: 'overview',  label: 'Overview',  icon: Activity },
+  { key: 'history',   label: 'History',   icon: HistoryIcon }, // minute-level change log (production + status)
+  { key: 'downtime',  label: 'Downtime',  icon: Clock },
+  { key: 'specs',     label: 'Specs',     icon: FileText },
+  { key: 'configure', label: 'Configure', icon: SlidersHorizontal },
 ];
 
 export default function MachineDetail() {
@@ -34,7 +29,14 @@ export default function MachineDetail() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get('tab');
-  const [tab, setTab] = useState(TABS.some((t) => t.key === initialTab) ? (initialTab as string) : 'overview');
+  // Parameters is a MODAL, not a tab — ?tab=parameters deep links (machine
+  // cards) open it over the Overview; the retired raw-log tab maps to History.
+  const [tab, setTab] = useState(
+    TABS.some((t) => t.key === initialTab) ? (initialTab as string)
+      : initialTab === 'telemetry' ? 'history'
+      : 'overview'
+  );
+  const [paramsOpen, setParamsOpen] = useState(initialTab === 'parameters');
 
   const { data: machine, isLoading } = useQuery({
     queryKey: ['machine', code],
@@ -83,168 +85,32 @@ export default function MachineDetail() {
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs + the Parameters module trigger */}
       <div className="border-b border-line bg-surface px-4 sm:px-6">
-        <div className="flex gap-0 overflow-x-auto">
+        <div className="flex gap-0 overflow-x-auto items-center">
           {TABS.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`flex items-center gap-1.5 px-4 py-3 text-sm transition-colors whitespace-nowrap ${tab === t.key ? 'tab-active' : 'tab-inactive'}`}>
               <t.icon size={15} />{t.label}
             </button>
           ))}
+          <button onClick={() => setParamsOpen(true)}
+            className="ml-auto my-1.5 shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/20 bg-accent/5 text-accent text-sm font-medium hover:bg-accent/10 transition-colors whitespace-nowrap">
+            <Cpu size={14} /> Parameters
+          </button>
         </div>
       </div>
 
       <div className="px-4 sm:px-6 py-6">
         {tab === 'overview'   && <MachineOverview key={`ov-${id}`} machine={machine} status={status} lastSeenAt={lastSeenAt} onTab={setTab} />}
-        {tab === 'parameters' && <MachineParameters key={`pa-${id}`} machine={machine} code={String(id)} />}
-        {tab === 'history'    && <MachineTimeline key={`tl-${id}`} code={String(id)} />}
-        {tab === 'telemetry'  && <HistoryTab key={`hi-${id}`} code={id} />}
-        {tab === 'downtime'   && <DowntimeTab key={`dt-${id}`} code={id} />}
+        {tab === 'history'   && <MachineTimeline key={`tl-${id}`} machine={machine} code={String(id)} />}
+        {tab === 'downtime'  && <DowntimeTab key={`dt-${id}`} code={id} />}
         {tab === 'specs'     && <SpecsTab machine={machine} status={status} lastSeenAt={lastSeenAt} />}
         {tab === 'configure' && <ConfigurePanel key={`cf-${id}`} machine={machine} />}
       </div>
-    </div>
-  );
-}
 
-// ─── History ─────────────────────────────────────────────────────────────────
-const PAGE_SIZE = 20;
-
-function HistoryTab({ code }: { code?: string }) {
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [page, setPage] = useState(1);
-  const [cols, setCols] = useState<string[] | null>(null);
-  const [exporting, setExporting] = useState(false);
-
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['machine-history', code, from, to, page],
-    queryFn: () => machineApi.history(code as string, { from: from || undefined, to: to || undefined, page, limit: PAGE_SIZE }),
-    refetchInterval: 12000,
-    placeholderData: keepPreviousData,
-  });
-
-  const total = data?.meta?.total || 0;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  // Flatten each raw reading so nested I/O (data.named.*) and raw PLC dumps
-  // (data.active.*) surface as plottable columns. Registers stay excluded.
-  const records = useMemo(
-    () => (data?.data || []).map((r) => ({ ...r, data: flattenReading(r.data as Record<string, unknown>).named })),
-    [data],
-  );
-
-  const available = useMemo(() => {
-    const set = new Set<string>();
-    records.forEach((r) => Object.keys(r.data).forEach((k) => set.add(k)));
-    return rankNamedKeys(records, [...set]).slice(0, 60);
-  }, [records]);
-
-  useEffect(() => {
-    if (cols === null && available.length) setCols(available.slice(0, 8));
-  }, [available, cols]);
-  const selected = cols || available.slice(0, 8);
-
-  const toggleCol = (k: string) => setCols((prev) => {
-    const cur = prev || available.slice(0, 8);
-    return cur.includes(k) ? cur.filter((c) => c !== k) : [...cur, k];
-  });
-
-  const exportCsv = async () => {
-    setExporting(true);
-    try {
-      const res = await machineApi.history(code as string, { from: from || undefined, to: to || undefined, page: 1, limit: 200 });
-      const rows = (res?.data || []).map((r) => ({ ...r, data: flattenReading(r.data as Record<string, unknown>).named }));
-      const header = ['Timestamp', ...selected.map(prettyKey)].join(',');
-      const body = rows.map((r) => [
-        new Date(r.timestamp).toISOString(),
-        ...selected.map((k) => csvCell(r.data?.[k])),
-      ].join(','));
-      const blob = new Blob([[header, ...body].join('\n')], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `${code}_history.csv`; a.click();
-      URL.revokeObjectURL(url);
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  return (
-    <div className="space-y-5 max-w-6xl">
-      {/* Filters */}
-      <div className="panel p-4 flex flex-wrap gap-3 items-end">
-        <div>
-          <label className="label block mb-1.5">From</label>
-          <input type="datetime-local" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }}
-            className="bg-raised border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent text-primary" />
-        </div>
-        <div>
-          <label className="label block mb-1.5">To</label>
-          <input type="datetime-local" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }}
-            className="bg-raised border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent text-primary" />
-        </div>
-        {(from || to) && (
-          <button onClick={() => { setFrom(''); setTo(''); setPage(1); }} className="text-xs text-steel hover:text-primary px-2 py-2">Clear</button>
-        )}
-        <button onClick={exportCsv} disabled={exporting || !records.length}
-          className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-2 rounded-lg hover:bg-accent/20 ml-auto disabled:opacity-50">
-          <Download size={14} /> {exporting ? 'Exporting…' : 'Export CSV'}
-        </button>
-      </div>
-
-      {/* Column picker */}
-      {available.length > 0 && (
-        <div className="panel p-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="label mr-1">Columns:</span>
-            {available.map((k) => {
-              const on = selected.includes(k);
-              return (
-                <button key={k} onClick={() => toggleCol(k)}
-                  className={`px-2.5 py-1 rounded-md text-[11px] border transition-colors ${on ? 'bg-accent/10 text-accent border-accent/30' : 'bg-base text-steel border-line hover:border-steel'}`}>
-                  {prettyKey(k)}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Multi-line metric trends */}
-      <TrendChart code={code} from={from} to={to} keys={selected} />
-
-      {/* Table */}
-      {isLoading ? <Spinner /> : (
-        <>
-          <div className={`panel overflow-x-auto transition-opacity ${isFetching ? 'opacity-70' : ''}`}>
-            <table className="w-full text-sm whitespace-nowrap">
-              <thead className="bg-base border-b border-line">
-                <tr>
-                  <th className="text-left label px-4 py-3 sticky left-0 bg-base">Timestamp</th>
-                  {selected.map((k) => <th key={k} className="text-right label px-4 py-3">{prettyKey(k)}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {records.length === 0 ? (
-                  <tr><td colSpan={selected.length + 1} className="text-center text-steel py-10">No readings found{from || to ? ' in this range' : ''}</td></tr>
-                ) : records.map((r) => (
-                  <tr key={r._id} className="border-t border-line hover:bg-base/60">
-                    <td className="px-4 py-2.5 data text-xs sticky left-0 bg-surface">{fmtTime(r.timestamp)}</td>
-                    {selected.map((k) => {
-                      const v = r.data?.[k];
-                      const fault = isFault(v);
-                      return <td key={k} className={`px-4 py-2.5 data text-xs text-right ${fault ? 'text-stopped font-medium' : ''}`}>{fault ? 'FAULT' : fmtMetric(v)}</td>;
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <Pagination page={page} pageCount={pageCount} total={total} onPage={setPage} />
-        </>
+      {paramsOpen && (
+        <ParametersModal machine={machine} code={String(id)} onClose={() => setParamsOpen(false)} />
       )}
     </div>
   );
@@ -353,10 +219,4 @@ function InfoRow({ label, value, mono }: { label: string; value: ReactNode; mono
       <span className={`text-xs font-medium text-primary text-right ${mono ? 'data' : ''}`}>{value}</span>
     </div>
   );
-}
-
-function csvCell(v: MetricValue): string {
-  if (v === null || v === undefined) return '';
-  const s = String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }

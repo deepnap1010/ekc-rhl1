@@ -176,16 +176,34 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   const endD = new Date(Math.min(toD.getTime(), Date.now()));
 
   // Latest reading per minute — the sort rides {machineId, timestamp:-1}.
-  const agg = (await Telemetry.aggregate([
-    { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
-    { $sort: { machineId: 1, timestamp: -1 } },
-    { $group: {
-      _id: { $dateTrunc: { date: '$timestamp', unit: 'minute' } },
-      ts: { $first: '$timestamp' },
-      data: { $first: '$data' },
-    } },
-    { $sort: { _id: 1 } },
-  ]).option({ allowDiskUse: true, maxTimeMS: 20000 })) as { _id: Date; ts: Date; data?: Record<string, unknown> }[];
+  // Downtime spans give each row a status even when the payload carries none
+  // (many machines don't send a status key) — same source as the status pills.
+  const [agg, spans] = await Promise.all([
+    Telemetry.aggregate([
+      { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+      { $sort: { machineId: 1, timestamp: -1 } },
+      { $group: {
+        _id: { $dateTrunc: { date: '$timestamp', unit: 'minute' } },
+        ts: { $first: '$timestamp' },
+        data: { $first: '$data' },
+        docStatus: { $first: '$status' },
+      } },
+      { $sort: { _id: 1 } },
+    ]).option({ allowDiskUse: true, maxTimeMS: 20000 }) as Promise<{ _id: Date; ts: Date; data?: Record<string, unknown>; docStatus?: string }[]>,
+    DowntimeEvent.find({
+      machineId: { $in: refs },
+      startedAt: { $lte: endD },
+      $or: [{ endedAt: null }, { endedAt: { $gte: fromD } }],
+    }).select({ type: 1, startedAt: 1, endedAt: 1 }).sort({ startedAt: 1 }).maxTimeMS(20000).lean(),
+  ]);
+  const statusAt = (t: number): string => {
+    for (const s of spans) {
+      const st = new Date(s.startedAt).getTime();
+      const en = s.endedAt ? new Date(s.endedAt).getTime() : Number.POSITIVE_INFINITY;
+      if (t >= st && t <= en) return s.type;
+    }
+    return 'running'; // it reported this minute and no downtime span covers it
+  };
 
   // One production-counter key for the whole range (newest payload that has one),
   // via the shared picker — same key the event engine and activity view use.
@@ -199,8 +217,9 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   for (const r of agg) {
     const flat = flattenData(r.data || {});
     const production = prodKey && isNumericValue(flat[prodKey]) ? Number(flat[prodKey]) : null;
-    const rawStatus = flat.status;
-    const status = typeof rawStatus === 'string' && rawStatus.trim() ? rawStatus.trim().toLowerCase() : null;
+    // Status priority: payload status → telemetry doc status → downtime spans.
+    const rawStatus = [flat.status, r.docStatus].find((v) => typeof v === 'string' && (v as string).trim());
+    const status = rawStatus ? String(rawStatus).trim().toLowerCase() : statusAt(new Date(r.ts).getTime());
     if (rows.length && production === prevProd && status === prevStatus) continue;
     rows.push({ ts: r.ts, production, status });
     prevProd = production;

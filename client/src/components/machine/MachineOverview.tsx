@@ -266,7 +266,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           unit={drill.unit}
           entries={drill.entries}
           onClose={() => setDrill(null)}
-          onOpenHistory={onTab ? () => { setDrill(null); onTab('telemetry'); } : undefined}
+          onOpenHistory={onTab ? () => { setDrill(null); onTab('history'); } : undefined}
         />
       )}
     </div>

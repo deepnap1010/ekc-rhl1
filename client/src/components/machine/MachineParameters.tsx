@@ -1,16 +1,17 @@
 // client/src/components/machine/MachineParameters.tsx
-// The dedicated parameter view (spec: "View Parameters") — every signal the
-// machine ACTUALLY sends, live: named/analog signals, digital I/O, raw PLC
-// registers. Values come from the latest payload (socket-updated), stats
-// (min/avg/max + trend) from /stats. Machines expose different parameter sets —
-// we render exactly what each one reports, never empty placeholder fields.
+// THE parameters module — one searchable, grouped view of every signal the
+// machine sends (analog / digital I/O / raw registers), used in two modes:
+//   live      — current values (socket-updated), opened from the machine page
+//   snapshot  — one specific minute's reading, opened from a History row
+// Always presented as a MODAL (ParametersModal); machines expose different
+// parameter sets and we render exactly what each one reports.
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Cpu, Database, Power, Search, Download, Factory } from 'lucide-react';
+import { Cpu, Database, Power, Search, Download, Factory, X, Clock } from 'lucide-react';
 import { machineApi } from '../../api/endpoints';
 import Sparkline from '../Sparkline';
-import { FreshnessPill } from '../ui';
-import { fmtMetric, prettyKey } from '../../lib/format';
+import { FreshnessPill, Spinner } from '../ui';
+import { fmtMetric, fmtTime, prettyKey } from '../../lib/format';
 import { flattenReading, isFault } from '../../lib/metrics';
 import { paramLabel } from '../../lib/params';
 import { useMachineTelemetry } from '../../hooks/useLive';
@@ -28,14 +29,16 @@ interface Row {
   stat?: MetricStat;
 }
 
-export default function MachineParameters({ machine, code }: { machine: Machine; code: string }): JSX.Element {
-  const liveT = useMachineTelemetry(code);
+interface Snapshot { ts: string | Date; data: Record<string, unknown> }
+
+export function MachineParameters({ machine, code, snapshot }: { machine: Machine; code: string; snapshot?: Snapshot }): JSX.Element {
+  const liveT = useMachineTelemetry(snapshot ? undefined : code);
   const [q, setQ] = useState('');
 
   const { data: stats } = useQuery({
     queryKey: ['machine-stats', code],
     queryFn: () => machineApi.stats(code, { window: 200 }).then((r) => r.data),
-    refetchInterval: 20000,
+    refetchInterval: snapshot ? false : 20000,
   });
   const statBy = useMemo(() => {
     const m = new Map<string, MetricStat>();
@@ -43,11 +46,11 @@ export default function MachineParameters({ machine, code }: { machine: Machine;
     return m;
   }, [stats]);
 
-  // Latest payload: live socket reading first, then whatever raw snapshot the
-  // machine doc carries. GET /machines/:code returns the NORMALIZED contract
-  // (metrics/inputs/outputs/registers) rather than latestData for mirror docs —
-  // synthesize the payload from that contract so the table is never falsely empty.
+  // Snapshot mode pins the payload to that reading; live mode prefers the
+  // socket, then the machine doc, then the normalized contract arrays (mirror
+  // docs return metrics/inputs/outputs/registers instead of latestData).
   const payload = useMemo(() => {
+    if (snapshot) return snapshot.data;
     const raw = (liveT?.data || machine.latestData || machine.currentParameters || machine.liveParameters || {}) as Record<string, unknown>;
     if (Object.keys(raw).length) return raw;
     const out: Record<string, unknown> = {};
@@ -56,11 +59,11 @@ export default function MachineParameters({ machine, code }: { machine: Machine;
     for (const io of machine.outputs || []) out[io.key] = io.on ? 1 : 0;
     for (const r of machine.registers || []) out[r.key] = r.value;
     return out;
-  }, [liveT, machine]);
-  const ts = liveT?.timestamp || machine.lastSeenAt || machine.lastReadingAt;
+  }, [snapshot, liveT, machine]);
+  const ts = snapshot ? snapshot.ts : (liveT?.timestamp || machine.lastSeenAt || machine.lastReadingAt);
 
   const rows = useMemo(() => {
-    const { named, registers } = flattenReading(payload);
+    const { named, registers } = flattenReading(payload as Record<string, unknown>);
     const mk = (key: string, value: MetricValue, kind: Row['kind']): Row => ({
       key,
       label: kind === 'Register' ? paramLabel(key).toUpperCase() : prettyKey(paramLabel(key)),
@@ -101,32 +104,75 @@ export default function MachineParameters({ machine, code }: { machine: Machine;
 
   if (!rows.total) {
     return (
-      <div className="panel p-10 text-center text-steel text-sm">
-        No parameters reported yet — this view fills in as soon as the machine sends data.
+      <div className="p-10 text-center text-steel text-sm">
+        {snapshot ? 'This reading carries no parameters.' : 'No parameters reported yet — this view fills in as soon as the machine sends data.'}
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      {/* Toolbar */}
-      <div className="panel p-3 flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-1 min-w-[200px] bg-base border border-line rounded-xl px-3 py-2">
+    <div className="space-y-4">
+      {/* Toolbar — search-by-filter + freshness/snapshot time + CSV */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-1 min-w-[180px] bg-base border border-line rounded-xl px-3 py-2">
           <Search size={14} className="text-steel shrink-0" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search parameters…"
-            className="bg-transparent outline-none text-sm text-primary w-full" />
+            className="bg-transparent outline-none text-sm text-primary w-full" autoFocus />
         </div>
-        <FreshnessPill lastSeenAt={ts} />
+        {snapshot
+          ? <span className="inline-flex items-center gap-1.5 pill bg-accent/10 text-accent !text-[10px]"><Clock size={11} /> {fmtTime(snapshot.ts)}</span>
+          : <FreshnessPill lastSeenAt={ts} />}
         <span className="text-xs text-steel">{rows.total} signals</span>
         <button onClick={exportCsv}
           className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20">
-          <Download size={14} /> Export CSV
+          <Download size={14} /> CSV
         </button>
       </div>
 
-      <ParamGroup title="Analog & process signals" icon={Cpu} rows={rows.analog} showStats />
+      <ParamGroup title="Analog & process signals" icon={Cpu} rows={rows.analog} showStats={!snapshot} />
       <ParamGroup title="Digital I/O" icon={Power} rows={rows.digital} />
-      <ParamGroup title="Raw PLC registers" icon={Database} rows={rows.registers} muted showStats />
+      <ParamGroup title="Raw PLC registers" icon={Database} rows={rows.registers} muted showStats={!snapshot} />
+    </div>
+  );
+}
+
+// The modal shell. `at` set → fetch that minute's reading (snapshot mode);
+// omitted → live parameters.
+export default function ParametersModal({ machine, code, at, onClose }: { machine: Machine; code: string; at?: string; onClose: () => void }): JSX.Element {
+  const ts = at ? new Date(at) : null;
+  const { data, isLoading } = useQuery({
+    queryKey: ['timeline-reading', code, at],
+    queryFn: () => machineApi.history(code, {
+      from: new Date((ts as Date).getTime() - 60_000).toISOString(),
+      to: new Date((ts as Date).getTime() + 60_000).toISOString(),
+      limit: 1,
+    }),
+    enabled: !!at,
+  });
+  const reading = data?.data?.[0];
+  const snapshot = at
+    ? (reading ? { ts: reading.timestamp, data: (reading.data || {}) as Record<string, unknown> } : null)
+    : undefined;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="card p-5 w-full max-w-4xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 mb-4">
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-sm text-primary truncate">
+              {String(machine.code || machine.machineId || code).toUpperCase()} · Parameters{at ? ' — snapshot' : ' — live'}
+            </h3>
+          </div>
+          <button onClick={onClose} className="text-steel hover:text-primary transition-colors shrink-0"><X size={18} /></button>
+        </div>
+        {at && isLoading ? (
+          <div className="py-10"><Spinner label="Loading reading" /></div>
+        ) : at && !snapshot ? (
+          <div className="py-10 text-center text-steel text-sm">Reading not found for this minute.</div>
+        ) : (
+          <MachineParameters machine={machine} code={code} snapshot={snapshot || undefined} />
+        )}
+      </div>
     </div>
   );
 }
