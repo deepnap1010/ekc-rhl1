@@ -186,14 +186,20 @@ export default function Dashboard() {
           <StatusTile label="Offline" value={fmtNum(fleet.offline || 0)} color={fleet.offline ? STEEL : TEAL} icon={Power} tint="rgba(100,116,139,0.06)" />
         </div>
 
-        {/* Window KPIs — real reconstructed figures for the selected range */}
-        <div className="grid grid-cols-3 gap-3">
+        {/* Window KPIs — real reconstructed figures for the selected range.
+            Downtime = idle + stopped + signal-lost; idle & stopped also shown
+            as their own cards. */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <Kpi label="Production" value={win ? `${fmtNum(win.production)} pcs` : '—'}
             sub={win ? `${win.reported} of ${win.machines} reported` : 'No data in range'} color={TEAL} icon={Factory} />
           <Kpi label="Runtime" value={win ? fmtDuration(win.runningMs) : '—'}
             sub={win ? `across ${win.machines} machine${win.machines === 1 ? '' : 's'}` : undefined} color={TEAL} icon={Timer} />
+          <Kpi label="Idle Time" value={win ? fmtDuration(win.idleMs) : '—'}
+            sub="no activity, still connected" color={win?.idleMs ? AMBER : STEEL} icon={Pause} />
+          <Kpi label="Stopped Time" value={win ? fmtDuration(win.stoppedMs) : '—'}
+            sub="not operational" color={win?.stoppedMs ? RED : STEEL} icon={CircleSlash} />
           <Kpi label="Downtime" value={win ? fmtDuration(win.downtimeMs) : '—'}
-            sub={win ? `incl. idle ${fmtDuration(win.idleMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
+            sub={win ? `idle + stopped + signal lost ${fmtDuration(win.offlineMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
         </div>
 
         {/* Analytical KPIs */}
