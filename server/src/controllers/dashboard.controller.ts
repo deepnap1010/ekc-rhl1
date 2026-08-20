@@ -192,7 +192,9 @@ export const overview = asyncHandler(async (req, res) => {
     reported: wRows.filter((r) => r.live).length,
     production: wProd,
     runningMs: wRunning, idleMs: wIdle, stoppedMs: wStopped, offlineMs: wOffline,
-    downtimeMs: wStopped + wOffline,
+    // Downtime = ALL non-productive time (idle + stopped + offline) — idle is
+    // still reported separately as the breakdown.
+    downtimeMs: wIdle + wStopped + wOffline,
     availabilityPct: act.windowMs && wRows.length ? Math.round((wRunning / (act.windowMs * wRows.length)) * 100) : 0,
     oee: null,
   };
@@ -207,8 +209,8 @@ export const overview = asyncHandler(async (req, res) => {
     signals: { named, io, registers, mapped, total: totalSignals, mappedPct: pct(mapped, totalSignals) },
     volume: { totalReadings, perDay: (activity as { _id: string; readings: number }[]).map((a) => ({ day: a._id, readings: a.readings })), byType: byTypeArr },
     // Duration is the activity engine's window-clipped total — same source as
-    // the window KPI block, so the two downtime figures always agree.
-    downtime: { totalMs: windowBlock.downtimeMs + windowBlock.idleMs, events: dt?.count || 0 },
+    // the window KPI block (downtimeMs already includes idle).
+    downtime: { totalMs: windowBlock.downtimeMs, events: dt?.count || 0 },
     composition: {
       byType:  byTypeArr.map((t) => ({ type: t.type, count: t.count })),
       byClass: Object.values(byClass).sort((a, b) => b.count - a.count),
@@ -271,7 +273,7 @@ export const rankings = asyncHandler(async (req, res) => {
       code: r.code, name: r.name, type: r.type, status: r.status, live: r.live,
       production: r.production,
       runningMs: r.runningMs,
-      downtimeMs: r.stoppedMs + r.offlineMs,
+      downtimeMs: r.idleMs + r.stoppedMs + r.offlineMs, // idle counts as downtime
       idleMs: r.idleMs,
       availabilityPct: act.windowMs ? Math.round((r.runningMs / act.windowMs) * 100) : 0,
     }))

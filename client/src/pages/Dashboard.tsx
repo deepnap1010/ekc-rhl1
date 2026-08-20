@@ -193,7 +193,7 @@ export default function Dashboard() {
           <Kpi label="Runtime" value={win ? fmtDuration(win.runningMs) : '—'}
             sub={win ? `across ${win.machines} machine${win.machines === 1 ? '' : 's'}` : undefined} color={TEAL} icon={Timer} />
           <Kpi label="Downtime" value={win ? fmtDuration(win.downtimeMs) : '—'}
-            sub={win ? `idle ${fmtDuration(win.idleMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
+            sub={win ? `incl. idle ${fmtDuration(win.idleMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
         </div>
 
         {/* Analytical KPIs */}
