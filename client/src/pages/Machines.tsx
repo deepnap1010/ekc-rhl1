@@ -377,11 +377,14 @@ function Kpi({ label, value, sub, color, icon: Icon }: { label: string; value: n
 }
 
 function ActStat({ label, ms, color }: { label: string; ms?: number; color: string }) {
+  // Compact single-line duration ("13h44m") — four tiles share a card row, so
+  // a spaced "13h 44m" wrapped onto two lines and looked broken.
+  const compact = ms != null ? fmtDuration(ms).replace(/\s+/g, '') : '—';
   return (
-    <div className="rounded-md bg-base border border-line px-2 py-1.5 text-center">
-      <div className="text-[9px] text-steel uppercase tracking-wide truncate">{label}</div>
-      <div className="data text-xs font-semibold" style={{ color: ms != null ? color : undefined }}>
-        {ms != null ? fmtDuration(ms) : '—'}
+    <div className="rounded-md bg-base border border-line px-1 py-1.5 text-center min-w-0">
+      <div className="text-[9px] text-steel uppercase tracking-wide truncate" title={label}>{label}</div>
+      <div className="data text-xs font-semibold whitespace-nowrap truncate" title={ms != null ? fmtDuration(ms) : undefined} style={{ color: ms != null ? color : undefined }}>
+        {compact}
       </div>
     </div>
   );
