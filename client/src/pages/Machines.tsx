@@ -93,12 +93,15 @@ export default function Machines() {
     enabled: rangeActive,
   });
 
-  // Rolling 24h uptime/downtime/idle per machine — shown on every card. The `to`
-  // edge is rounded to the minute so the query key stays stable between renders.
+  // TODAY's activity per machine (midnight → now) — one window drives the whole
+  // card: uptime/idle/stopped/downtime tiles AND the "today +N pcs" production
+  // line. The `to` edge is rounded to the minute for stable query keys.
   const dayTo = Math.floor(Date.now() / 60_000) * 60_000;
+  const todayStart = new Date(dayTo);
+  todayStart.setHours(0, 0, 0, 0);
   const { data: dayAct } = useQuery({
-    queryKey: ['machine-activity-24h', dayTo],
-    queryFn: () => machineApi.activity({ from: new Date(dayTo - 24 * 3600 * 1000).toISOString(), to: new Date(dayTo).toISOString() }),
+    queryKey: ['machine-activity-today', dayTo],
+    queryFn: () => machineApi.activity({ from: todayStart.toISOString(), to: new Date(dayTo).toISOString() }),
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
   });
@@ -552,14 +555,22 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
             {hero.unit && <span className="text-sm font-medium text-steel">{hero.unit}</span>}
           </div>
           {hero.sub && <div className="text-[10px] text-steel mt-0.5 truncate">{hero.sub}</div>}
+          {/* The number a supervisor actually scans for: production made TODAY */}
+          {activity && activity.production != null && (
+            <div className="text-[10px] mt-1">
+              <span className="text-steel">today </span>
+              <span className={`data font-bold ${activity.production > 0 ? 'text-running' : 'text-steel'}`}>+{fmtNum(activity.production)}</span>
+              <span className="text-steel"> pcs</span>
+            </div>
+          )}
         </div>
         {trend && trend.spark.length > 1 && (
           <div className="w-28 h-12 shrink-0 self-center"><Sparkline data={trend.spark} height={48} color={TEAL} /></div>
         )}
       </div>
 
-      {/* Rolling 24h — full breakdown: uptime, idle, stopped, and the downtime
-          TOTAL (idle + stopped + signal-lost). */}
+      {/* TODAY's breakdown: uptime, idle, stopped, and the downtime TOTAL
+          (idle + stopped + signal-lost). */}
       <div className="mt-auto grid grid-cols-4 gap-1.5">
         <ActStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
         <ActStat label="Idle" ms={activity?.idleMs} color={AMBER} />

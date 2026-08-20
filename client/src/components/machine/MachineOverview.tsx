@@ -57,14 +57,16 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
     enabled: !!id,
   });
 
-  // Rolling-24h activity from the SHARED engine — the same source (and the same
-  // query key, so react-query shares the fetch) as the machine cards. Runtime is
-  // credited only for time the machine actually reported; a silent night with a
-  // stale "running" status is no longer 23h of fake runtime / 99% efficiency.
+  // TODAY's activity from the SHARED engine — the same window and query key as
+  // the machine cards, so react-query shares one fetch and every surface tells
+  // the same story. Runtime is credited only for time the machine actually
+  // reported (silence is never uptime).
   const dayTo = Math.floor(Date.now() / 60_000) * 60_000;
+  const todayStart = new Date(dayTo);
+  todayStart.setHours(0, 0, 0, 0);
   const { data: dayAct } = useQuery({
-    queryKey: ['machine-activity-24h', dayTo],
-    queryFn: () => machineApi.activity({ from: new Date(dayTo - 24 * 3600 * 1000).toISOString(), to: new Date(dayTo).toISOString() }),
+    queryKey: ['machine-activity-today', dayTo],
+    queryFn: () => machineApi.activity({ from: todayStart.toISOString(), to: new Date(dayTo).toISOString() }),
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
   });
