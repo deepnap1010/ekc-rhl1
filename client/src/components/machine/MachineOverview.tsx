@@ -248,9 +248,11 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
       {/* Row 2 — equal-height pair */}
       <div className="grid lg:grid-cols-2 gap-4">
         <Panel icon={BarChart3} title="Production & Runtime">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
             <MiniStat label="Runtime" value={fmtDuration(m.runtimeMs)} color="#059669" />
-            <MiniStat label="Downtime" value={fmtDuration(m.downMs)} color="#DC2626" />
+            <MiniStat label="Idle" value={fmtDuration(m.idleMs)} color="#D97706" />
+            <MiniStat label="Stopped" value={fmtDuration(m.stoppedMs)} color="#DC2626" />
+            <MiniStat label="Downtime" value={fmtDuration(m.downMs)} color="#991B1B" />
             <MiniStat label="Payloads" value={fmtNum(machine.telemetryCount || 0)} color="#2563EB" />
             <MiniStat label="Efficiency" value={`${m.efficiency}%`} color="#7C3AED" />
           </div>
@@ -372,10 +374,11 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
               ? <div className="text-[10px] text-steel mt-0.5">via linked machine {borrowedFrom}</div>
               : row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <MiniStat label="Runtime" value={fmtDuration(row?.runningMs || 0)} color="#059669" />
-            <MiniStat label="Downtime" value={fmtDuration((row?.stoppedMs || 0) + (row?.offlineMs || 0))} color="#DC2626" />
             <MiniStat label="Idle" value={fmtDuration(row?.idleMs || 0)} color="#D97706" />
+            <MiniStat label="Stopped" value={fmtDuration(row?.stoppedMs || 0)} color="#DC2626" />
+            <MiniStat label="Downtime" value={fmtDuration((row?.idleMs || 0) + (row?.stoppedMs || 0) + (row?.offlineMs || 0))} color="#991B1B" />
           </div>
           <div className="text-[10px] text-steel/60 mt-3">
             {fmtNum(row?.readings || 0)} readings · {fmtTime(win.from)} → {fmtTime(win.to)}
@@ -428,6 +431,8 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
   // downtime — never window-minus-spans, which credited silent hours as runtime.
   const openDowntime = (downtime || []).filter((e) => !e.endedAt).length;
   const runtimeMs = actRow?.runningMs ?? 0;
+  const idleMs = actRow?.idleMs ?? 0;
+  const stoppedMs = actRow?.stoppedMs ?? 0;
   const downMs = actRow ? actRow.idleMs + actRow.stoppedMs + actRow.offlineMs : 0;
   const accounted = runtimeMs + downMs;
   const uptimePct = accounted > 0 ? Math.round((runtimeMs / accounted) * 100) : 0;
@@ -456,7 +461,7 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
     io, hasIO, registers,
     namedCount, faultCount, dataQuality,
     checks, health, healthStatus,
-    runtimeMs, downMs, uptimePct, efficiency, openDowntime,
+    runtimeMs, idleMs, stoppedMs, downMs, uptimePct, efficiency, openDowntime,
     plcType: plcTypeOf(machine),
   };
 }

@@ -528,13 +528,13 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
         )}
       </div>
 
-      {/* Uptime / downtime / idle — rolling 24h, reconstructed from telemetry + downtime */}
-      <div className="mt-auto grid grid-cols-3 gap-1.5">
+      {/* Rolling 24h — full breakdown: uptime, idle, stopped, and the downtime
+          TOTAL (idle + stopped + signal-lost). */}
+      <div className="mt-auto grid grid-cols-4 gap-1.5">
         <ActStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
-        {/* Downtime = ALL non-productive time (idle + stopped + offline); the
-            Idle tile stays as its breakdown. */}
-        <ActStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs + activity.offlineMs : undefined} color={RED} />
         <ActStat label="Idle" ms={activity?.idleMs} color={AMBER} />
+        <ActStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
+        <ActStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs + activity.offlineMs : undefined} color="#991B1B" />
       </div>
 
       {/* Footer — the card is a summary; deep views live behind these links */}
