@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, type LucideIcon } from 'lucide-react';
 import { machineApi } from '../api/endpoints';
 import { StatusPill } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -16,6 +16,7 @@ import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
+import ParametersModal from '../components/machine/MachineParameters';
 import { linkedExtras } from '../lib/linkedMetrics';
 import type { Machine, MachineTick, MachineActivityRow } from '../types/api';
 
@@ -74,6 +75,8 @@ export default function Machines() {
   const [sortBy, setSortBy] = useState('process');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  // Parameters open as a modal RIGHT HERE — no navigation to the machine page.
+  const [paramsFor, setParamsFor] = useState<Machine | null>(null);
   const live = useDashboardLive();
   const rangeActive = !!from && !!to && new Date(from) < new Date(to);
 
@@ -171,6 +174,14 @@ export default function Machines() {
         subtitle={rangeActive ? `${counts.total} machines · ${fmtTime(from)} → ${fmtTime(to)}` : `${counts.total} registered`}
         live={Object.keys(live).length}
       />
+
+      {paramsFor && (
+        <ParametersModal
+          machine={paramsFor}
+          code={String(paramsFor.code || paramsFor.machineId || paramsFor._id)}
+          onClose={() => setParamsFor(null)}
+        />
+      )}
 
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
         {/* KPI tiles */}
@@ -339,7 +350,8 @@ export default function Machines() {
               return (
                 <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
                   extraParams={extras[String(ref).toUpperCase()]}
-                  activity={actBy.get(ref)} />
+                  activity={actBy.get(ref)}
+                  onParams={() => setParamsFor(m)} />
               );
             })}
           </div>
@@ -380,9 +392,10 @@ interface MachineCardProps {
   liveTick?: MachineTick;
   extraParams?: Record<string, number>; // proxy params borrowed from a linked machine
   activity?: MachineActivityRow;        // rolling 24h uptime/downtime/idle
+  onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardProps) {
+function MachineCard({ machine, liveTick, extraParams, activity, onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -528,19 +541,20 @@ function MachineCard({ machine, liveTick, extraParams, activity }: MachineCardPr
         <span className="flex items-center gap-3 shrink-0">
           <span
             role="link" tabIndex={0}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=parameters`); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=parameters`); } }}
-            className="inline-flex items-center gap-0.5 text-steel hover:text-accent font-medium transition-colors cursor-pointer"
-          >
-            Parameters <ArrowRight size={11} />
-          </span>
-          <span
-            role="link" tabIndex={0}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=history`); }}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); nav(`/machines/${id}?tab=history`); } }}
             className="inline-flex items-center gap-0.5 text-accent/80 font-medium group-hover:text-accent transition-colors cursor-pointer"
           >
             View History <ArrowRight size={11} className="transition-transform group-hover:translate-x-0.5" />
+          </span>
+          <span
+            role="button" tabIndex={0}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onParams(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onParams(); } }}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-line text-steel hover:text-accent hover:border-accent/40 font-medium transition-colors cursor-pointer"
+            title="View parameters (opens here)"
+          >
+            <Eye size={11} /> Parameters
           </span>
         </span>
       </div>
