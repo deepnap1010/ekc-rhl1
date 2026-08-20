@@ -22,7 +22,8 @@ const norm = (k: string): string =>
 
 /** Keys that can never be a production counter, whatever they are named. */
 export function excludedFromProduction(key: string): boolean {
-  return isRawAddress(key) || /^named\.(inputs|outputs)\./i.test(key) || /cycle/.test(norm(key));
+  // active.* is the raw S7 register dump — mirrors the server's IO_GROUP_RE.
+  return isRawAddress(key) || /^(named\.(inputs|outputs)|active)\./i.test(key) || /cycle/.test(norm(key));
 }
 
 /** True when this key names a production counter (any tier). */

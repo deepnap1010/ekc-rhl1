@@ -144,9 +144,11 @@ export default function ParametersModal({ machine, code, at, onClose }: { machin
   const ts = at ? new Date(at) : null;
   const { data, isLoading } = useQuery({
     queryKey: ['timeline-reading', code, at],
+    // Window ENDS at the row's timestamp — history returns newest-first, so a
+    // window past ts would fetch the NEXT minute's reading, not this row's.
     queryFn: () => machineApi.history(code, {
-      from: new Date((ts as Date).getTime() - 60_000).toISOString(),
-      to: new Date((ts as Date).getTime() + 60_000).toISOString(),
+      from: new Date((ts as Date).getTime() - 1000).toISOString(),
+      to: new Date((ts as Date).getTime()).toISOString(),
       limit: 1,
     }),
     enabled: !!at,

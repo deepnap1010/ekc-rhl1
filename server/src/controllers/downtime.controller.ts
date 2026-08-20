@@ -8,7 +8,6 @@ import { machineScope } from '../utils/scope.js';
 
 type ScopeUser = { isSuperAdmin?: boolean; assignedMachines?: string[] } | undefined;
 
-const num = { $ifNull: ['$durationMs', 0] };
 const MAX_MS = 20000; // query-time ceiling so one slow scan can't hang a request
 // Only return the columns the table actually renders — keeps payloads small at scale.
 const LIST_FIELDS = 'machineId type startedAt endedAt durationMs reason reportedBy acknowledged acknowledgedBy acknowledgedAt';
@@ -76,12 +75,24 @@ export const downtimeSummary = asyncHandler(async (req, res) => {
 
   const matchStage: FilterQuery<IDowntimeEvent> = {};
   if (machineId && machineId !== 'all') matchStage.machineId = machineId;
+  // Spans OVERLAPPING the window (not just started inside it) — an overnight
+  // span that crosses midnight must still count toward today, and durations are
+  // CLIPPED to the window below so totals match the dashboard's activity engine.
+  const winTo = to ? new Date(to) : new Date();
+  const winFrom = from ? new Date(from) : null;
   if (from || to) {
-    const range: { $gte?: Date; $lte?: Date } = {};
-    if (from) range.$gte = new Date(from);
-    if (to) range.$lte = new Date(to);
-    matchStage.startedAt = range;
+    matchStage.startedAt = { $lte: winTo };
+    if (winFrom) matchStage.$or = [{ endedAt: null }, { endedAt: { $gte: winFrom } }];
   }
+  // Window-clipped duration (open spans run to now).
+  const clipExpr = {
+    $max: [0, {
+      $subtract: [
+        { $min: [{ $ifNull: ['$endedAt', '$$NOW'] }, winTo] },
+        winFrom ? { $max: ['$startedAt', winFrom] } : '$startedAt',
+      ],
+    }],
+  };
   if (plant && plant !== 'all') {
     const codes = await Machine.find({ plant }).select('code').lean();
     matchStage.machineId = { $in: codes.map((m) => m.code) };
@@ -106,13 +117,14 @@ export const downtimeSummary = asyncHandler(async (req, res) => {
   // ($facet fans out in-memory after a single scan, instead of three separate scans).
   const [agg] = await DowntimeEvent.aggregate([
     { $match: matchStage as PipelineStage.Match['$match'] },
+    { $addFields: { _clip: clipExpr } },
     {
       $facet: {
         totals: [{
           $group: {
             _id: null,
             totalEvents: { $sum: 1 },
-            totalMs: { $sum: num },
+            totalMs: { $sum: '$_clip' },
             openEvents: { $sum: { $cond: [{ $eq: ['$endedAt', null] }, 1, 0] } },
             idleEvents: { $sum: { $cond: [{ $eq: ['$type', 'idle'] }, 1, 0] } },
             stoppedEvents: { $sum: { $cond: [{ $eq: ['$type', 'stopped'] }, 1, 0] } },
@@ -120,14 +132,14 @@ export const downtimeSummary = asyncHandler(async (req, res) => {
           },
         }],
         worstMachines: [
-          { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: num } } },
+          { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: '$_clip' } } },
           { $sort: { totalMs: -1 } },
           { $limit: 5 },
         ],
         // Real distribution of types present (e.g. idle / stopped / offline) — drives
         // the frontend's filter chips so no event state is ever silently excluded.
         byType: [
-          { $group: { _id: '$type', events: { $sum: 1 }, totalMs: { $sum: num } } },
+          { $group: { _id: '$type', events: { $sum: 1 }, totalMs: { $sum: '$_clip' } } },
           { $sort: { totalMs: -1 } },
         ],
       },

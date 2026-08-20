@@ -131,31 +131,53 @@ export async function computeActivity(
     return { key, production: delta >= 0 ? delta : end };
   };
 
-  const downBy = new Map<string, { idle: number; stopped: number; offline: number }>();
-  for (const e of events) {
-    const start = Math.max(new Date(e.startedAt).getTime(), fromD.getTime());
-    const end = Math.min(e.endedAt ? new Date(e.endedAt).getTime() : endMs, endMs);
-    if (end <= start) continue;
-    const d = downBy.get(e.machineId) || { idle: 0, stopped: 0, offline: 0 };
-    d[e.type] += end - start;
-    downBy.set(e.machineId, d);
+  // Window-clipped spans per machine (kept span-level: runningMs below needs
+  // per-span overlap with the machine's reporting envelope).
+  type Span = { type: 'idle' | 'stopped' | 'offline'; s: number; e: number };
+  const spansBy = new Map<string, Span[]>();
+  for (const ev of events) {
+    const s = Math.max(new Date(ev.startedAt).getTime(), fromD.getTime());
+    const e = Math.min(ev.endedAt ? new Date(ev.endedAt).getTime() : endMs, endMs);
+    if (e <= s) continue;
+    const arr = spansBy.get(ev.machineId) || [];
+    arr.push({ type: ev.type as Span['type'], s, e });
+    spansBy.set(ev.machineId, arr);
   }
 
   const windowMs = endMs - fromD.getTime();
   const rows: ActivityRow[] = machines.map((m) => {
     const ref = m.code || m.machineId || String(m._id);
     const t = teleBy.get(ref) ?? (m.machineId ? teleBy.get(m.machineId) : undefined);
-    const down =
-      downBy.get(ref) ?? (m.machineId ? downBy.get(m.machineId) : undefined) ?? { idle: 0, stopped: 0, offline: 0 };
+    const spans = [
+      ...(spansBy.get(ref) || []),
+      ...(m.machineId && m.machineId !== ref ? spansBy.get(m.machineId) || [] : []),
+    ];
+    const down = { idle: 0, stopped: 0, offline: 0 };
+    for (const sp of spans) down[sp.type] += sp.e - sp.s;
     const downMs = down.idle + down.stopped + down.offline;
     const readings = t?.readings || 0;
-    // Running time = time the machine ACTUALLY reported, minus recorded downtime.
-    // Silence is never credited as uptime (a machine that reported one hour and
-    // then went dark gets one hour, not the whole window) — same truth model as
-    // the Signal-Lost status rule.
+    // Running time = time the machine ACTUALLY reported, minus downtime — but
+    // only the downtime that OVERLAPS the machine's reporting envelope
+    // [firstSeen, lastSeen]. A silent overnight offline/idle span covers time
+    // that was never in reportedMs; subtracting it too would erase real morning
+    // runtime 1:1 (machines showed "offline" with hundreds of fresh readings).
+    // ponytail: envelope overlap, not per-minute intersection — a silent span
+    // WHOLLY INSIDE the envelope (report, silent-idle midday, report again)
+    // still double-subtracts; refine to reported-minute intersection if that
+    // pattern ever matters.
     const aliasMinutes = m.machineId && m.machineId !== ref ? (minutesBy.get(m.machineId) || 0) : 0;
     const reportedMs = Math.min(windowMs, ((minutesBy.get(ref) || 0) + aliasMinutes) * 60_000);
-    const runningMs = readings > 0 ? Math.max(0, reportedMs - downMs) : 0;
+    let downInEnvelope = 0;
+    const envS = t?.firstSeen ? new Date(t.firstSeen).getTime() : null;
+    const envE = t?.lastSeen ? new Date(t.lastSeen).getTime() : null;
+    if (envS != null && envE != null && envE > envS) {
+      for (const sp of spans) {
+        const os = Math.max(sp.s, envS);
+        const oe = Math.min(sp.e, envE);
+        if (oe > os) downInEnvelope += oe - os;
+      }
+    }
+    const runningMs = readings > 0 ? Math.max(0, reportedMs - downInEnvelope) : 0;
     // Dominant state: silent, span-less time counts toward offline so a
     // mostly-dark machine never ranks as "running".
     const silentMs = Math.max(0, windowMs - reportedMs - down.offline);

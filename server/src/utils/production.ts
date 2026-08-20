@@ -18,7 +18,7 @@
 //     full-counter-value "production" delta when the real value returns).
 import { isRegisterKey, isNumericValue } from './normalize.js';
 
-export const PROD_PATTERNS = [/workpiece/, /production|output|piece/, /\bcount\b/];
+export const PROD_PATTERNS = [/workpiece/, /\bprod\b|production|output|piece/, /\b(parts?|count)\b/];
 
 export const normProdKey = (k: string): string => k.toLowerCase().replace(/[._/\-]+/g, ' ');
 

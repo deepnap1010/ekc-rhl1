@@ -328,8 +328,15 @@ export const reliabilityReport = asyncHandler(async (req, res) => {
   // credited silent days as operating time and inflated availability/MTBF.
   const [act, agg] = await Promise.all([
     computeActivity(scope, since, new Date(), refs),
+    // Events OVERLAPPING the window — same semantics as the duration source
+    // (computeActivity), or a boundary-crossing span contributes duration with
+    // no event and MTTR explodes.
     DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: since }, ...sm } as PipelineStage.Match['$match'] },
+      { $match: {
+        startedAt: { $lte: new Date() },
+        $or: [{ endedAt: null }, { endedAt: { $gte: since } }],
+        ...sm,
+      } as PipelineStage.Match['$match'] },
       { $group: { _id: '$machineId', events: { $sum: 1 } } },
     ]),
   ]);
