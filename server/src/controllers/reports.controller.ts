@@ -9,6 +9,7 @@ import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import type { IDowntimeEvent } from '../models/DowntimeEvent.js';
 import { ok, asyncHandler } from '../utils/http.js';
 import { getFleetSnapshot } from '../services/fleet.service.js';
+import { computeActivity } from '../services/activity.service.js';
 import { machineScope } from '../utils/scope.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
@@ -322,23 +323,31 @@ export const reliabilityReport = asyncHandler(async (req, res) => {
   const windowMs = windowDays * 24 * 3600 * 1000;
   const since = new Date(Date.now() - windowMs);
 
-  const agg = await DowntimeEvent.aggregate([
-    { $match: { startedAt: { $gte: since }, ...sm } as PipelineStage.Match['$match'] },
-    { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') } } },
-    { $sort: { totalMs: -1 } },
+  // Operating time comes from the SHARED activity engine (time the machine
+  // actually reported minus downtime) — never window-minus-spans, which
+  // credited silent days as operating time and inflated availability/MTBF.
+  const [act, agg] = await Promise.all([
+    computeActivity(scope, since, new Date(), refs),
+    DowntimeEvent.aggregate([
+      { $match: { startedAt: { $gte: since }, ...sm } as PipelineStage.Match['$match'] },
+      { $group: { _id: '$machineId', events: { $sum: 1 } } },
+    ]),
   ]);
+  const evBy = new Map<string, number>(agg.map((d) => [d._id as string, d.events as number]));
 
-  const machines = agg.map((d) => {
-    const downtimeMs = Math.min(d.totalMs as number, windowMs);
-    const operatingMs = Math.max(0, windowMs - downtimeMs);
-    const events = d.events as number;
-    return {
-      machineId: d._id as string, events, downtimeMs,
-      availability: Math.round((operatingMs / windowMs) * 1000) / 10,
-      mttrMs: events ? Math.round(downtimeMs / events) : 0,
-      mtbfMs: events ? Math.round(operatingMs / events) : operatingMs,
-    };
-  });
+  const machines = act.rows
+    .filter((r) => r.readings > 0 || r.idleMs + r.stoppedMs + r.offlineMs > 0)
+    .map((r) => {
+      const downtimeMs = r.idleMs + r.stoppedMs + r.offlineMs;
+      const events = evBy.get(r.code) || 0;
+      return {
+        machineId: r.code, events, downtimeMs,
+        availability: act.windowMs ? Math.round((r.runningMs / act.windowMs) * 1000) / 10 : 0,
+        mttrMs: events ? Math.round(downtimeMs / events) : 0,
+        mtbfMs: events ? Math.round(r.runningMs / events) : r.runningMs,
+      };
+    })
+    .sort((a, b) => b.downtimeMs - a.downtimeMs);
 
   return ok(res, { windowDays, machines });
 });

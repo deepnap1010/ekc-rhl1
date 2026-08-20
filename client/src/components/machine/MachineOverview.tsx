@@ -22,7 +22,7 @@ import { useMachineTelemetry } from '../../hooks/useLive';
 import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { LINKS } from '../../lib/linkedMetrics';
-import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent } from '../../types/api';
+import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent, MachineActivityRow } from '../../types/api';
 
 const isZoneTemp = (k: string) => /(^|_)t\d+$/i.test(k);
 const isPressure = (k: string) => /press|(^|[_-])bar$/i.test(k);
@@ -57,13 +57,28 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
     enabled: !!id,
   });
 
+  // Rolling-24h activity from the SHARED engine — the same source (and the same
+  // query key, so react-query shares the fetch) as the machine cards. Runtime is
+  // credited only for time the machine actually reported; a silent night with a
+  // stale "running" status is no longer 23h of fake runtime / 99% efficiency.
+  const dayTo = Math.floor(Date.now() / 60_000) * 60_000;
+  const { data: dayAct } = useQuery({
+    queryKey: ['machine-activity-24h', dayTo],
+    queryFn: () => machineApi.activity({ from: new Date(dayTo - 24 * 3600 * 1000).toISOString(), to: new Date(dayTo).toISOString() }),
+    placeholderData: keepPreviousData,
+    refetchInterval: 60000,
+  });
+  const codes = [machine.code, machine.machineId, machine.id, machine._id]
+    .filter(Boolean).map((c) => String(c).toUpperCase());
+  const actRow = (dayAct?.data || []).find((r) => codes.includes(String(r.code).toUpperCase()));
+
   // Live-merge: a fresh socket reading wins over the polled snapshot's metrics.
   const metrics = useMemo<NamedMetric[]>(
     () => (liveTel?.data ? namedMetrics(liveTel.data) : (machine.metrics || [])),
     [liveTel, machine.metrics],
   );
 
-  const m = useMemo(() => buildModel(machine, metrics, status, lastSeenAt, downtime), [machine, metrics, status, lastSeenAt, downtime]);
+  const m = useMemo(() => buildModel(machine, metrics, status, lastSeenAt, downtime, actRow), [machine, metrics, status, lastSeenAt, downtime, actRow]);
 
   // Average-temperature trend (mean of every zone's spark, index by index).
   const tempSpark = useMemo(() => {
@@ -372,7 +387,7 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
 }
 
 // ── derive every dashboard value from the real machine contract ────────────────
-function buildModel(machine: Machine, metrics: NamedMetric[], status: string | undefined, lastSeenAt: string | Date | null | undefined, downtime: DowntimeEvent[] | undefined) {
+function buildModel(machine: Machine, metrics: NamedMetric[], status: string | undefined, lastSeenAt: string | Date | null | undefined, downtime: DowntimeEvent[] | undefined, actRow?: MachineActivityRow) {
   // Zero readings are noise (dead sensor / unused register) — hide them everywhere,
   // but never hide a fault: that's information, not noise.
   const numericLive = metrics.filter((x) => x.numeric && (x.fault || Number(x.value) !== 0));
@@ -408,19 +423,14 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
   const plcConnected = fr.state === 'live' || fr.state === 'recent';
   const dataQuality = namedCount > 0 ? Math.round(((namedCount - faultCount) / namedCount) * 100) : 100;
 
-  const now = Date.now();
-  const WINDOW = 24 * 3600 * 1000;
-  let downMs = 0; let openDowntime = 0;
-  (downtime || []).forEach((e) => {
-    const start = new Date(e.startedAt).getTime();
-    const end = e.endedAt ? new Date(e.endedAt).getTime() : now;
-    if (!e.endedAt) openDowntime += 1;
-    const s = Math.max(start, now - WINDOW);
-    if (Number.isFinite(s) && end > s) downMs += end - s;
-  });
-  downMs = Math.min(downMs, WINDOW);
-  const runtimeMs = WINDOW - downMs;
-  const uptimePct = Math.round((runtimeMs / WINDOW) * 100);
+  // Runtime / downtime / efficiency come from the SHARED activity engine
+  // (rolling 24h): runtime = time the machine actually reported minus recorded
+  // downtime — never window-minus-spans, which credited silent hours as runtime.
+  const openDowntime = (downtime || []).filter((e) => !e.endedAt).length;
+  const runtimeMs = actRow?.runningMs ?? 0;
+  const downMs = actRow ? actRow.idleMs + actRow.stoppedMs + actRow.offlineMs : 0;
+  const accounted = runtimeMs + downMs;
+  const uptimePct = accounted > 0 ? Math.round((runtimeMs / accounted) * 100) : 0;
   const efficiency = machine.oee != null ? Math.round(machine.oee) : uptimePct;
 
   const checks: { label: string; text: string; color: string }[] = [];
