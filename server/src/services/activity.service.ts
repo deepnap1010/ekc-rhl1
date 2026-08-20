@@ -196,13 +196,16 @@ export async function computeActivity(
       }
     }
     const runningMs = readings > 0 ? Math.max(0, reportedMs - downInEnvelope) : 0;
-    // Dominant state: silent, span-less time counts toward offline so a
-    // mostly-dark machine never ranks as "running".
-    const silentMs = Math.max(0, windowMs - reportedMs - down.offline);
+    // Dominant OBSERVED state — what the machine was doing while we could see
+    // it (reported time + recorded spans). Silence is NOT folded in: a machine
+    // observed running 52m inside a fortnight window must read "running · live
+    // data", not "offline". Darkness still shows through the live flag, the
+    // durations, and availability (runningMs ÷ window) — a dark machine can't
+    // rank high because its runningMs stays tiny.
     let status = 'offline';
     if (readings > 0 || downMs > 0) {
       const buckets: [string, number][] = [
-        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline + silentMs],
+        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline],
       ];
       buckets.sort((a, b) => b[1] - a[1]);
       status = buckets[0][0];

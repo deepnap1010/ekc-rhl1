@@ -8,7 +8,7 @@ import { StatusPill } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtDuration, prettyType, fmtTime, isNumeric } from '../lib/format';
+import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue } from '../lib/production';
 import { processCompare } from '../lib/machineOrder';
@@ -155,17 +155,24 @@ export default function Machines() {
   const extras = linkedExtras(allMachines, live);
 
   const q = search.trim().toLowerCase();
-  const activityRows = (actData?.data || [])
+  // Only machines that actually EXISTED in the range (sent data or had recorded
+  // spans) — a machine registered later must not pad the table with dashes.
+  const rawRangeRows = actData?.data || [];
+  const activeRangeRows = rawRangeRows.filter((r) => r.live || r.runningMs + r.idleMs + r.stoppedMs + r.offlineMs > 0);
+  const inactiveInRange = rawRangeRows.length - activeRangeRows.length;
+  const activityRows = activeRangeRows
     .filter((r) => status === 'all' || r.status === status)
     .filter((r) => !q || r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q) || (r.type || '').toLowerCase().includes(q))
     .slice()
     .sort(sortBy === 'name'
       ? (a, b) => a.code.localeCompare(b.code)
-      : (a, b) => rank(a.status, a.live) - rank(b.status, b.live));
+      : sortBy === 'production'
+        ? (a, b) => (b.production ?? -1) - (a.production ?? -1)
+        : (a, b) => rank(a.status, a.live) - rank(b.status, b.live));
 
   // While the range reconstruction is in flight, keep the live counts up instead of
   // flashing a zero-machine factory.
-  const counts = rangeActive && actData ? tallyActivity(actData.data || []) : statusCounts(allMachines);
+  const counts = rangeActive && actData ? tallyActivity(activeRangeRows) : statusCounts(allMachines);
 
   return (
     <div>
@@ -269,13 +276,15 @@ export default function Machines() {
               <div className="text-sm text-steel">No machines match the current filter in this range.</div>
             </div>
           ) : (
+            <>
             <div className="panel overflow-x-auto">
-              <table className="w-full text-sm min-w-[760px]">
+              <table className="w-full text-sm min-w-[860px]">
                 <thead>
                   <tr className="text-left text-[10px] uppercase tracking-wide text-steel border-b border-line">
                     <th className="px-4 py-3">Machine</th>
                     <th className="px-4 py-3">State in range</th>
                     <th className="px-4 py-3">Data</th>
+                    <th className="px-4 py-3">Production</th>
                     <th className="px-4 py-3">Running</th>
                     <th className="px-4 py-3">Idle</th>
                     <th className="px-4 py-3">Stopped</th>
@@ -315,6 +324,18 @@ export default function Machines() {
                           <span className="text-steel">No data</span>
                         )}
                       </td>
+                      {/* Production made WITHIN the range = counter delta (first→last reading) */}
+                      <td className="px-4 py-3 text-xs">
+                        {r.production != null ? (
+                          <>
+                            <span className="data font-semibold text-running">{fmtNum(r.production)}</span>
+                            <span className="text-steel"> pcs</span>
+                            {r.productionKey && <div className="text-[10px] text-steel/80 truncate max-w-[120px]">{prettyKey(r.productionKey)}</div>}
+                          </>
+                        ) : (
+                          <span className="text-steel">—</span>
+                        )}
+                      </td>
                       {/* fmtDuration rounds to whole minutes — below 30s it would print a confusing "0m" */}
                       <td className="px-4 py-3 data text-xs text-primary">{r.runningMs >= 30_000 ? fmtDuration(r.runningMs) : '—'}</td>
                       <td className="px-4 py-3 data text-xs text-primary">{r.idleMs >= 30_000 ? fmtDuration(r.idleMs) : '—'}</td>
@@ -333,6 +354,12 @@ export default function Machines() {
                 </tbody>
               </table>
             </div>
+            {inactiveInRange > 0 && (
+              <div className="text-[11px] text-steel px-1">
+                {inactiveInRange} machine{inactiveInRange === 1 ? '' : 's'} had no data or activity in this range and {inactiveInRange === 1 ? 'is' : 'are'} hidden.
+              </div>
+            )}
+            </>
           )
         ) : isLoading ? (
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
