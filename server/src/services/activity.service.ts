@@ -73,7 +73,7 @@ export async function computeActivity(
     .lean()) as LeanM[];
   const refs = [...new Set(machines.flatMap((m) => [m.code, m.machineId].filter(Boolean) as string[]))];
 
-  const cacheKey = 'activity2:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
+  const cacheKey = 'activity3:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
     + ':' + fromD.toISOString() + ':' + toD.toISOString();
 
   const [teleAgg, events] = await Promise.all([
@@ -91,13 +91,14 @@ export async function computeActivity(
             firstData: { $last: '$data' }, lastData: { $first: '$data' },
           } },
         ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec(),
-        // Distinct reporting minutes per machine — running time is only ever
-        // credited for time the machine ACTUALLY reported (silence is never
-        // uptime, matching the Signal-Lost rule).
+        // Reporting minutes per machine (the actual minute stamps, not just a
+        // count) — running time is only credited for time the machine ACTUALLY
+        // reported. Gaps between readings up to a small grace are bridged, since
+        // the collector may post only every few minutes / on change.
         Telemetry.aggregate([
           { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
           { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute' } } } } },
-          { $group: { _id: '$_id.m', minutes: { $sum: 1 } } },
+          { $group: { _id: '$_id.m', ts: { $push: '$_id.t' } } },
         ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec(),
       ]);
       return { tele, minutes };
@@ -110,9 +111,23 @@ export async function computeActivity(
   ]);
 
   const teleBy = new Map<string, TeleRow>(((teleAgg as { tele: TeleRow[] }).tele).map((t) => [t._id, t]));
-  const minutesBy = new Map<string, number>(
-    ((teleAgg as { minutes: { _id: string; minutes: number }[] }).minutes).map((m) => [m._id, m.minutes]),
+  const minutesBy = new Map<string, number[]>(
+    ((teleAgg as { minutes: { _id: string; ts: Date[] }[] }).minutes)
+      .map((m) => [m._id, m.ts.map((d) => new Date(d).getTime())]),
   );
+
+  // Coverage of the reporting minute-stamps: consecutive readings up to
+  // GRACE_MS apart bridge as continuous reporting (collectors that post every
+  // 2-5 minutes / on change must not lose runtime), each reading's own minute
+  // always counts, and silence beyond the grace is never credited.
+  const GRACE_MS = 5 * 60_000;
+  const coverageMs = (stamps: number[]): number => {
+    if (!stamps.length) return 0;
+    const s = [...stamps].sort((a, b) => a - b);
+    let cov = 60_000; // the last reading's own minute
+    for (let i = 0; i < s.length - 1; i += 1) cov += Math.min(s[i + 1] - s[i], GRACE_MS);
+    return cov;
+  };
 
   // Production over the range = counter delta between first and last reading.
   // Key selection is shared (utils/production) with the event engine + client.
@@ -165,8 +180,11 @@ export async function computeActivity(
     // WHOLLY INSIDE the envelope (report, silent-idle midday, report again)
     // still double-subtracts; refine to reported-minute intersection if that
     // pattern ever matters.
-    const aliasMinutes = m.machineId && m.machineId !== ref ? (minutesBy.get(m.machineId) || 0) : 0;
-    const reportedMs = Math.min(windowMs, ((minutesBy.get(ref) || 0) + aliasMinutes) * 60_000);
+    const stamps = [
+      ...(minutesBy.get(ref) || []),
+      ...(m.machineId && m.machineId !== ref ? minutesBy.get(m.machineId) || [] : []),
+    ];
+    const reportedMs = Math.min(windowMs, coverageMs(stamps));
     let downInEnvelope = 0;
     const envS = t?.firstSeen ? new Date(t.firstSeen).getTime() : null;
     const envE = t?.lastSeen ? new Date(t.lastSeen).getTime() : null;
