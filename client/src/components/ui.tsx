@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { User as UserIcon, X, type LucideIcon } from 'lucide-react';
-import { statusStyle } from '../lib/format';
+import { statusStyle, fmtDuration } from '../lib/format';
 import { freshness } from '../lib/metrics';
 
 interface StatusPillProps {
@@ -156,6 +156,26 @@ function AvatarLightbox({ src, name, onClose }: { src: string; name?: string | n
       </div>
     </div>,
     document.body,
+  );
+}
+
+interface TimeStatProps {
+  label: string;
+  ms?: number;
+  color: string;
+}
+
+// Compact single-line duration tile ("13h44m") — several of these share one card
+// row, so a spaced "13h 44m" wraps onto two lines and looks broken.
+export function TimeStat({ label, ms, color }: TimeStatProps) {
+  const compact = ms != null ? fmtDuration(ms).replace(/\s+/g, '') : '—';
+  return (
+    <div className="rounded-md bg-base border border-line px-1 py-1.5 text-center min-w-0">
+      <div className="text-[9px] text-steel uppercase tracking-wide truncate" title={label}>{label}</div>
+      <div className="data text-xs font-semibold whitespace-nowrap truncate" title={ms != null ? fmtDuration(ms) : undefined} style={{ color: ms != null ? color : undefined }}>
+        {compact}
+      </div>
+    </div>
   );
 }
 

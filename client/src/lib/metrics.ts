@@ -3,7 +3,7 @@
 // classify/cap server-side, but the History tab + live socket readings receive RAW
 // telemetry, so they need the same rules to pick columns, flag faulty sensor values,
 // and separate named metrics from raw PLC registers.
-import type { MetricValue } from '../types/api';
+import type { MetricValue, MachineActivityRow } from '../types/api';
 
 const REGISTER_RE = /^(IW|QW|IB|QB|MB|MW|MD|SM|SD|D|M|X|Y|T|C|R|L|V|Z|B|W|F|S|I|Q)\d+$/;
 const DB_BLOCK_RE = /^DB\d+\.[A-Z]+\d+(\.\d+)?$/i;
@@ -113,4 +113,38 @@ export function fmtAge(ms: number): string {
   const h = Math.round(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
+}
+
+// ── Range roll-up ───────────────────────────────────────────────────────────
+// Sum a set of reconstructed activity rows (a group, or the whole fleet) into the
+// figures every card on the dashboard reads: output, the time split, and the
+// observed status mix. ONE implementation, so a group's totals and the fleet
+// header can never disagree.
+export interface ActivitySum {
+  machines: number; reported: number;
+  running: number; idle: number; stopped: number; offline: number;   // machine COUNTS by observed state
+  production: number; reportedProduction: number;                     // pcs (and how many machines reported a counter)
+  runningMs: number; idleMs: number; stoppedMs: number; offlineMs: number;
+  downtimeMs: number;                                                 // idle + stopped + signal lost
+  availabilityPct: number;                                            // running time / (window x machines)
+}
+
+export function sumActivity(rows: MachineActivityRow[], windowMs: number): ActivitySum {
+  const s: ActivitySum = {
+    machines: rows.length, reported: 0, running: 0, idle: 0, stopped: 0, offline: 0,
+    production: 0, reportedProduction: 0,
+    runningMs: 0, idleMs: 0, stoppedMs: 0, offlineMs: 0, downtimeMs: 0, availabilityPct: 0,
+  };
+  for (const r of rows) {
+    if (r.live) s.reported += 1;
+    if (r.status === 'running') s.running += 1;
+    else if (r.status === 'idle') s.idle += 1;
+    else if (r.status === 'stopped') s.stopped += 1;
+    else s.offline += 1;
+    if (r.production != null) { s.production += r.production; s.reportedProduction += 1; }
+    s.runningMs += r.runningMs; s.idleMs += r.idleMs; s.stoppedMs += r.stoppedMs; s.offlineMs += r.offlineMs;
+  }
+  s.downtimeMs = s.idleMs + s.stoppedMs + s.offlineMs;
+  s.availabilityPct = windowMs && rows.length ? Math.round((s.runningMs / (windowMs * rows.length)) * 100) : 0;
+  return s;
 }

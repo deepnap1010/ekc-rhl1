@@ -78,3 +78,20 @@ export const prettyKey = (k?: string | null): string =>
     .replace(/\b\w/g, (c) => c.toUpperCase());
 
 export const prettyType = (t?: string | null): string => prettyKey(t || '');
+
+// A picked range printed the way it was picked: whole days read as days (the
+// implied 00:00 / 23:59 edges are noise once someone deliberately skipped the
+// time fields), anything else keeps its timestamps. The year appears only when
+// the two edges disagree on it — otherwise "21 Aug 2025 → 21 Aug 2026" would
+// collapse to one ambiguous date.
+export const fmtRangeLabel = (from: Date, to: Date): string => {
+  const wholeDays = from.getHours() === 0 && from.getMinutes() === 0
+    && to.getHours() === 23 && to.getMinutes() === 59;
+  if (!wholeDays) return `${fmtTime(from)} → ${fmtTime(to)}`;
+  const opts: Intl.DateTimeFormatOptions = {
+    day: '2-digit', month: 'short',
+    ...(from.getFullYear() === to.getFullYear() ? {} : { year: 'numeric' }),
+  };
+  const day = (d: Date): string => d.toLocaleDateString('en-IN', opts);
+  return from.toDateString() === to.toDateString() ? day(from) : `${day(from)} → ${day(to)}`;
+};

@@ -5,15 +5,20 @@
 import { create } from 'zustand';
 import { shiftWindowOn, type ShiftTiming } from '../lib/settings';
 
-export type DatePreset = 'today' | 'yesterday' | '7d' | '30d' | 'custom';
+export type DatePreset = 'today' | 'yesterday' | 'week' | 'prevWeek' | 'month' | 'year' | 'custom';
 
+// The quick presets rendered as buttons (custom lives behind its own popup).
 export const DATE_PRESETS: { value: DatePreset; label: string }[] = [
-  { value: 'today', label: 'Today' },
+  { value: 'today',     label: 'Today' },
   { value: 'yesterday', label: 'Yesterday' },
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
-  { value: 'custom', label: 'Custom range…' },
+  { value: 'week',      label: 'This Week' },
+  { value: 'prevWeek',  label: 'Previous Week' },
+  { value: 'month',     label: 'This Month' },
+  { value: 'year',      label: 'This Year' },
 ];
+
+export const presetLabel = (p: DatePreset): string =>
+  p === 'custom' ? 'Custom range' : (DATE_PRESETS.find((d) => d.value === p)?.label || '');
 
 interface FiltersState {
   machineId: string;   // '' = all machines
@@ -42,6 +47,26 @@ const dayStart = (offsetDays: number): Date => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() + offsetDays);
+  return d;
+};
+
+// Monday-based week start (factory weeks run Mon–Sun here).
+const weekStart = (offsetWeeks: number): Date => {
+  const d = dayStart(0);
+  const back = (d.getDay() + 6) % 7;          // Sun(0) → 6, Mon(1) → 0
+  d.setDate(d.getDate() - back + offsetWeeks * 7);
+  return d;
+};
+
+const monthStart = (): Date => {
+  const d = dayStart(0);
+  d.setDate(1);
+  return d;
+};
+
+const yearStart = (): Date => {
+  const d = monthStart();
+  d.setMonth(0);
   return d;
 };
 
@@ -74,7 +99,8 @@ export function resolveRange(
     if (shift) return shiftWindowOn(shift, dayStart(-1));
     return { from: dayStart(-1), to: dayStart(0) };
   }
-  const days = f.preset === '7d' ? 7 : 30;
-  const to = nowRounded();
-  return { from: new Date(to.getTime() - days * 24 * 3600 * 1000), to };
+  // Completed period → fixed end; running period → up to now.
+  if (f.preset === 'prevWeek') return { from: weekStart(-1), to: weekStart(0) };
+  const from = f.preset === 'week' ? weekStart(0) : f.preset === 'month' ? monthStart() : yearStart();
+  return { from, to: new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000)) };
 }

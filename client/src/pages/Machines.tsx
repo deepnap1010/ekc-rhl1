@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, type LucideIcon } from 'lucide-react';
 import { machineApi } from '../api/endpoints';
-import { StatusPill } from '../components/ui';
+import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
@@ -406,20 +406,6 @@ function Kpi({ label, value, sub, color, icon: Icon }: { label: string; value: n
   );
 }
 
-function ActStat({ label, ms, color }: { label: string; ms?: number; color: string }) {
-  // Compact single-line duration ("13h44m") — four tiles share a card row, so
-  // a spaced "13h 44m" wrapped onto two lines and looked broken.
-  const compact = ms != null ? fmtDuration(ms).replace(/\s+/g, '') : '—';
-  return (
-    <div className="rounded-md bg-base border border-line px-1 py-1.5 text-center min-w-0">
-      <div className="text-[9px] text-steel uppercase tracking-wide truncate" title={label}>{label}</div>
-      <div className="data text-xs font-semibold whitespace-nowrap truncate" title={ms != null ? fmtDuration(ms) : undefined} style={{ color: ms != null ? color : undefined }}>
-        {compact}
-      </div>
-    </div>
-  );
-}
-
 interface MachineCardProps {
   machine: Machine;
   liveTick?: MachineTick;
@@ -572,10 +558,10 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
       {/* TODAY's breakdown: uptime, idle, stopped, and the downtime TOTAL
           (idle + stopped + signal-lost). */}
       <div className="mt-auto grid grid-cols-4 gap-1.5">
-        <ActStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
-        <ActStat label="Idle" ms={activity?.idleMs} color={AMBER} />
-        <ActStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
-        <ActStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs + activity.offlineMs : undefined} color="#991B1B" />
+        <TimeStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
+        <TimeStat label="Idle" ms={activity?.idleMs} color={AMBER} />
+        <TimeStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
+        <TimeStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs + activity.offlineMs : undefined} color="#991B1B" />
       </div>
 
       {/* Footer — the card is a summary; deep views live behind these links */}

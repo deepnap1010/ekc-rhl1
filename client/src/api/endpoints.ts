@@ -2,6 +2,8 @@
 import { api } from './client';
 import type {
   ApiResponse,
+  ApiMeta,
+  ActivityMeta,
   LoginResponse,
   User,
   DashboardOverview,
@@ -38,8 +40,8 @@ import type {
 // without changing any runtime behavior.
 type Params = Record<string, unknown>;
 
-const get = <T>(url: string, params?: Params): Promise<ApiResponse<T>> =>
-  api.get(url, { params }) as unknown as Promise<ApiResponse<T>>;
+const get = <T, M = ApiMeta>(url: string, params?: Params): Promise<ApiResponse<T, M>> =>
+  api.get(url, { params }) as unknown as Promise<ApiResponse<T, M>>;
 const post = <T>(url: string, body?: unknown): Promise<ApiResponse<T>> =>
   api.post(url, body) as unknown as Promise<ApiResponse<T>>;
 const patch = <T>(url: string, body?: unknown): Promise<ApiResponse<T>> =>
@@ -76,7 +78,7 @@ export const configApi = {
 export const machineApi = {
   list: (params?: Params) => get<Machine[]>('/machines', params),
   summary: () => get<MachineSummary>('/machines/summary'),
-  activity: (params: { from: string; to: string }) => get<MachineActivityRow[]>('/machines/activity', params),
+  activity: (params: { from: string; to: string }) => get<MachineActivityRow[], ActivityMeta>('/machines/activity', params),
   get: (code: string) => get<Machine>(`/machines/${code}`),
   stats: (code: string, params?: Params) => get<MachineStats>(`/machines/${code}/stats`, params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),

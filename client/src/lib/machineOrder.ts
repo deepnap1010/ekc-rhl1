@@ -3,7 +3,8 @@
 //   cutting → SPG (numeric) → bottom milling → furnaces → everything else.
 // Category detection is a reusable pattern map over code/name/type — NOT
 // scattered string comparisons — so newly added machines slot in automatically.
-export interface Orderable { code?: string; machineId?: string; name?: string; type?: string; machineType?: string }
+// Nullable fields allowed: activity rows carry `type: string | null`.
+export interface Orderable { code?: string | null; machineId?: string | null; name?: string | null; type?: string | null; machineType?: string | null }
 
 const CATEGORY_PATTERNS: RegExp[] = [
   /cutting/i,           // 0 — cutting machines
@@ -38,4 +39,50 @@ export function processCompare(a: Orderable, b: Orderable): number {
   const na = numOf(ra), nb = numOf(rb);
   if (na !== nb) return na - nb;
   return ra.localeCompare(rb);
+}
+
+// ── Grouping ────────────────────────────────────────────────────────────────
+// A group is a machine FAMILY: the code with its trailing number stripped
+// (CUTTINGMACHINE06 -> CUTTINGMACHINE, SPG-06 -> SPG). Purely derived, so a
+// machine added tomorrow joins its family automatically and an unfamiliar one
+// simply forms a family of its own — no list to maintain.
+export interface MachineGroup { key: string; label: string }
+
+// Words we know how to split so a run-together code reads like a name
+// ("CUTTINGMACHINE" -> "Cutting Machine"). Longest first; unknown stems are
+// shown as-is, which is still correct, just less pretty.
+const WORDS = [
+  'INTERNAL', 'QUENCHING', 'BLASTING', 'HYDRAULIC', 'ASSEMBLY', 'GRINDING', 'EXTERNAL',
+  'CUTTING', 'MILLING', 'WELDING', 'FURNACE', 'MACHINE', 'BOTTOM', 'PRESS', 'LATHE',
+  'DRILL', 'MOULD', 'PUMP', 'SHOT', 'SAW', 'TOP', 'CNC', 'SPG',
+];
+
+// Acronyms (<= 3 chars) keep their caps; longer words become Title Case.
+const titleCase = (w: string): string => (w.length <= 3 ? w : w[0] + w.slice(1).toLowerCase());
+
+export function groupOf(m: Orderable): MachineGroup {
+  const ref = refOf(m);
+  const stem = ref.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '') || ref || 'OTHER';
+  const words: string[] = [];
+  let rest = stem;
+  while (rest) {
+    const hit = WORDS.find((w) => rest.startsWith(w));
+    if (!hit) { words.push(rest); break; }
+    words.push(hit);
+    rest = rest.slice(hit.length);
+  }
+  return { key: stem, label: words.map(titleCase).join(' ') };
+}
+
+/** Bucket machines into families, each already in production-flow order.
+ *  Groups themselves follow the order of their first (flow-ordered) machine. */
+export function groupMachines<T extends Orderable>(rows: T[]): { key: string; label: string; machines: T[] }[] {
+  const by = new Map<string, { key: string; label: string; machines: T[] }>();
+  for (const m of [...rows].sort(processCompare)) {
+    const g = groupOf(m);
+    const hit = by.get(g.key) || { key: g.key, label: g.label, machines: [] as T[] };
+    hit.machines.push(m);
+    by.set(g.key, hit);
+  }
+  return [...by.values()];
 }

@@ -16,10 +16,19 @@ export interface ApiError {
   details?: unknown;
 }
 
-export interface ApiResponse<T> {
+// The range endpoints answer with the window they actually reconstructed (the
+// server clips `to` to now), so a caller can divide by the SAME window the rows
+// came from instead of re-deriving one that may not match yet.
+export interface ActivityMeta {
+  from: string;
+  to: string;
+  windowMs: number;
+}
+
+export interface ApiResponse<T, M = ApiMeta> {
   success: boolean;
   data: T;
-  meta?: ApiMeta;
+  meta?: M;
   error?: ApiError;
 }
 

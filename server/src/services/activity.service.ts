@@ -44,6 +44,11 @@ type TeleRow = {
   firstData?: Record<string, unknown>; lastData?: Record<string, unknown>;
 };
 
+// Consecutive reporting minutes up to this far apart bridge as continuous
+// reporting — collectors post every few minutes / on change, so a 2-minute gap
+// is not downtime. Silence beyond it is never credited as running time.
+const GRACE_MS = 5 * 60_000;
+
 const aliasMatch = (refs: string[]): Record<string, unknown> =>
   ({ $or: [{ code: { $in: refs } }, { machineId: { $in: refs } }] });
 
@@ -73,12 +78,18 @@ export async function computeActivity(
     .lean()) as LeanM[];
   const refs = [...new Set(machines.flatMap((m) => [m.code, m.machineId].filter(Boolean) as string[]))];
 
-  const cacheKey = 'activity3:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
+  const cacheKey = 'activity4:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
     + ':' + fromD.toISOString() + ':' + toD.toISOString();
+  // Month / year windows scan far more telemetry but change far more slowly:
+  // cache them longer and give Atlas more time, so the dashboard's group panels
+  // can ask for them without timing out.
+  const longWindow = endMs - fromD.getTime() > 7 * 24 * 3600 * 1000;
+  const ttlMs = longWindow ? 5 * 60_000 : 30_000;
+  const maxTimeMS = longWindow ? 60_000 : 20_000;
 
   const [teleAgg, events] = await Promise.all([
-    // Cached 30s per (scope, only, window) so polling clients share one scan.
-    cached(cacheKey, 30_000, async () => {
+    // Cached per (scope, only, window) so polling clients share one scan.
+    cached(cacheKey, ttlMs, async () => {
       const [tele, minutes] = await Promise.all([
         // One reading-count + first/last reading (timestamp AND payload) per
         // machine. Sort DESC so {machineId:1, timestamp:-1} backs the sort.
@@ -90,16 +101,28 @@ export async function computeActivity(
             firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
             firstData: { $last: '$data' }, lastData: { $first: '$data' },
           } },
-        ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec(),
-        // Reporting minutes per machine (the actual minute stamps, not just a
-        // count) — running time is only credited for time the machine ACTUALLY
-        // reported. Gaps between readings up to a small grace are bridged, since
-        // the collector may post only every few minutes / on change.
+        ]).option({ allowDiskUse: true, maxTimeMS }).exec(),
+        // Reported COVERAGE per machine, summed in the database: running time is
+        // only credited for time the machine ACTUALLY reported, with gaps up to
+        // GRACE_MS bridged. Summed server-side on purpose — a year-long window
+        // holds ~500k reporting minutes per machine and shipping those stamps to
+        // Node (the previous $push) did not scale past a few days.
         Telemetry.aggregate([
           { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
           { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute' } } } } },
-          { $group: { _id: '$_id.m', ts: { $push: '$_id.t' } } },
-        ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec(),
+          { $setWindowFields: {
+            partitionBy: '$_id.m', sortBy: { '_id.t': 1 },
+            output: { prev: { $shift: { output: '$_id.t', by: -1, default: null } } },
+          } },
+          { $group: {
+            _id: '$_id.m',
+            minutes: { $sum: 1 },
+            coveredMs: { $sum: { $cond: [
+              { $eq: ['$prev', null] }, 0,
+              { $min: [{ $subtract: ['$_id.t', '$prev'] }, GRACE_MS] },
+            ] } },
+          } },
+        ]).option({ allowDiskUse: true, maxTimeMS }).exec(),
       ]);
       return { tele, minutes };
     }),
@@ -111,23 +134,12 @@ export async function computeActivity(
   ]);
 
   const teleBy = new Map<string, TeleRow>(((teleAgg as { tele: TeleRow[] }).tele).map((t) => [t._id, t]));
-  const minutesBy = new Map<string, number[]>(
-    ((teleAgg as { minutes: { _id: string; ts: Date[] }[] }).minutes)
-      .map((m) => [m._id, m.ts.map((d) => new Date(d).getTime())]),
+  // coveredMs is the bridged gap total; the last reading's own minute is added
+  // here, so a machine with a single reading still counts as 1 minute reported.
+  const coverageBy = new Map<string, number>(
+    ((teleAgg as { minutes: { _id: string; minutes: number; coveredMs: number }[] }).minutes)
+      .map((m) => [m._id, m.minutes ? m.coveredMs + 60_000 : 0]),
   );
-
-  // Coverage of the reporting minute-stamps: consecutive readings up to
-  // GRACE_MS apart bridge as continuous reporting (collectors that post every
-  // 2-5 minutes / on change must not lose runtime), each reading's own minute
-  // always counts, and silence beyond the grace is never credited.
-  const GRACE_MS = 5 * 60_000;
-  const coverageMs = (stamps: number[]): number => {
-    if (!stamps.length) return 0;
-    const s = [...stamps].sort((a, b) => a - b);
-    let cov = 60_000; // the last reading's own minute
-    for (let i = 0; i < s.length - 1; i += 1) cov += Math.min(s[i + 1] - s[i], GRACE_MS);
-    return cov;
-  };
 
   // Production over the range = counter delta between first and last reading.
   // Key selection is shared (utils/production) with the event engine + client.
@@ -180,11 +192,12 @@ export async function computeActivity(
     // WHOLLY INSIDE the envelope (report, silent-idle midday, report again)
     // still double-subtracts; refine to reported-minute intersection if that
     // pattern ever matters.
-    const stamps = [
-      ...(minutesBy.get(ref) || []),
-      ...(m.machineId && m.machineId !== ref ? minutesBy.get(m.machineId) || [] : []),
-    ];
-    const reportedMs = Math.min(windowMs, coverageMs(stamps));
+    // Aliases (code + machineId) normally carry the SAME stream — take the
+    // larger coverage, never the sum, so a duplicated stream can't inflate runtime.
+    const reportedMs = Math.min(windowMs, Math.max(
+      coverageBy.get(ref) || 0,
+      m.machineId && m.machineId !== ref ? (coverageBy.get(m.machineId) || 0) : 0,
+    ));
     let downInEnvelope = 0;
     const envS = t?.firstSeen ? new Date(t.firstSeen).getTime() : null;
     const envE = t?.lastSeen ? new Date(t.lastSeen).getTime() : null;

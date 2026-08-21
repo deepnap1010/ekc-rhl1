@@ -1,32 +1,37 @@
 // client/src/pages/Dashboard.tsx — fleet ANALYSIS console (aggregate insights, not re-lists)
-// Every metric derives from ONE shared filter selection (machine / shift / date
-// range, store/filters). "All machines" shows fleet analytics + performance
-// rankings; picking a machine scopes every panel to it. Range KPIs (production,
-// runtime, downtime, availability) are reconstructed server-side from telemetry
-// + downtime spans — never fabricated; OEE stays honest ("needs signals").
+// ONE filter selection (machine / shift / date window, store/filters) drives the
+// whole page. Reading order: filters → machine GROUPS (each family's own totals
+// and machines) → the fleet roll-up those groups sum to → rankings. Every figure
+// is reconstructed server-side from telemetry + downtime spans by the shared
+// activity engine (/machines/activity) — one dataset, so a group's totals and the
+// fleet roll-up can never disagree. OEE stays absent: its inputs don't exist in
+// the data and are never fabricated.
 import { useState, useMemo, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
-  Radio, Bell, AlertTriangle, CheckCircle2,
-  Gauge, Clock, ArrowUpRight,
-  Cpu, Play, Pause, CircleSlash, Power,
+  Bell, AlertTriangle, CheckCircle2,
+  Gauge, Clock, ArrowUpRight, CalendarRange,
+  Boxes,
   Sparkles, Wrench, TrendingUp, Zap,
-  Factory, Timer, Trophy, TrendingDown, RotateCcw,
+  Factory, Trophy, TrendingDown, RotateCcw,
 } from 'lucide-react';
 import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
 import AnalyticsModal from '../components/AnalyticsModal';
+import Modal from '../components/Modal';
+import MachineGroups from '../components/MachineGroups';
 import { Donut, Legend } from '../components/charts';
-import { fmtNum, fmtDuration, fmtTime } from '../lib/format';
+import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
+import { sumActivity } from '../lib/metrics';
 import { useDashboardLive } from '../hooks/useLive';
-import { useFilters, resolveRange, shiftApplies, DATE_PRESETS } from '../store/filters';
+import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS } from '../store/filters';
 import { useAppConfig } from '../hooks/useAppConfig';
-import type { RankingRow } from '../types/api';
+import type { MachineActivityRow } from '../types/api';
 
-const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', INDIGO = '#6366F1', VIOLET = '#8B5CF6';
+const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', VIOLET = '#8B5CF6', DEEP_RED = '#991B1B';
 
 export default function Dashboard() {
   const live = useDashboardLive();
@@ -37,13 +42,32 @@ export default function Dashboard() {
   const range = resolveRange(f, shifts);
   const fromISO = range?.from.toISOString();
   const toISO = range?.to.toISOString();
+  // THE dataset: what every machine did in the window. Drives the output/time
+  // chart, the groups and the rankings — one fetch, one truth.
+  const { data: actData, isFetching: actLoading } = useQuery({
+    queryKey: ['activity', fromISO, toISO],
+    queryFn: () => machineApi.activity({ from: fromISO as string, to: toISO as string }),
+    enabled: !!fromISO && !!toISO,
+    refetchInterval: 15000,
+    placeholderData: keepPreviousData,
+  });
 
+  // The window comes back WITH the rows (the server clips `to` to now), so every
+  // ratio divides by exactly the window its numerator was measured over. Deriving
+  // the length from the filter instead would, for the seconds a new window is
+  // loading, divide freshly-selected windows into the previous window's rows —
+  // availability then reads 0% or several thousand percent.
+  const windowMs = actData?.meta?.windowMs ?? 0;
+  const stale = !!actData?.meta && actData.meta.from !== fromISO;   // previous window still on screen
+
+  // Alerts + the per-machine health detail behind the alert chart. Deliberately
+  // WITHOUT the date window: an alert is a live condition, and passing a month /
+  // year window would make this endpoint re-scan that whole range every poll for
+  // figures this page now reads from the activity dataset above.
   const { data: ov } = useQuery({
-    queryKey: ['dashboard', 'overview', f.machineId, fromISO, toISO],
-    queryFn: () => dashboardApi.overview({
-      machineId: f.machineId || undefined, from: fromISO, to: toISO,
-    }).then((r) => r.data),
-    refetchInterval: 10000,
+    queryKey: ['dashboard', 'overview', f.machineId],
+    queryFn: () => dashboardApi.overview({ machineId: f.machineId || undefined }).then((r) => r.data),
+    refetchInterval: 30000,
     placeholderData: keepPreviousData,
   });
 
@@ -54,49 +78,58 @@ export default function Dashboard() {
     staleTime: 60_000,
   });
 
-  // Performance rankings — fleet view only (a single machine has no ranking).
-  const { data: rankData } = useQuery({
-    queryKey: ['dashboard', 'rankings', fromISO, toISO],
-    queryFn: () => dashboardApi.rankings({ from: fromISO, to: toISO }).then((r) => r.data),
-    enabled: !f.machineId,
-    refetchInterval: 60000,
-    placeholderData: keepPreviousData,
-  });
+  const allRows = useMemo<MachineActivityRow[]>(() => actData?.data || [], [actData]);
+  // A machine selection scopes the whole page (header, chart, groups) to it.
+  const rows = useMemo(
+    () => (f.machineId ? allRows.filter((r) => r.code.toLowerCase() === f.machineId.toLowerCase()) : allRows),
+    [allRows, f.machineId],
+  );
+  const t = useMemo(() => sumActivity(rows, windowMs), [rows, windowMs]);
 
-  const fleet     = ov?.fleet     || { total: 0, running: 0, idle: 0, stopped: 0, offline: 0 };
-  const alerts    = ov?.alerts    || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
-  const reporting = ov?.reporting || { reporting: 0, live: 0, total: 0 };
-  const win       = ov?.window;
+  const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
   const [drill, setDrill] = useState<string | null>(null);
+  const [pickRange, setPickRange] = useState(false);
 
   const selectedMachine = f.machineId
     ? (machineList || []).find((m) => (m.code || m.machineId) === f.machineId)
     : null;
-  const scopeLabel = f.machineId
-    ? `${String(f.machineId).toUpperCase()}`
-    : 'All machines';
-  const windowLabel = f.shiftName && shiftApplies(f.preset)
-    ? `${f.shiftName} · ${DATE_PRESETS.find((p) => p.value === f.preset)?.label}`
-    : DATE_PRESETS.find((p) => p.value === f.preset)?.label || '';
-
-  // Operational status mix (from machine.status) — the at-a-glance fleet state.
-  const statusSeg = [
-    { key: 'running', label: 'Running', value: fleet.running || 0, color: TEAL },
-    { key: 'idle',    label: 'Idle',    value: fleet.idle || 0,    color: AMBER },
-    { key: 'stopped', label: 'Stopped', value: fleet.stopped || 0, color: RED },
-    { key: 'offline', label: 'Offline', value: fleet.offline || 0, color: SLATE },
-  ].filter((s) => s.value > 0);
+  const scopeLabel = f.machineId ? String(f.machineId).toUpperCase() : 'All machines';
+  const windowLabel = f.preset === 'custom' && range
+    ? fmtRangeLabel(range.from, range.to)
+    : f.shiftName && shiftApplies(f.preset)
+      ? `${f.shiftName} · ${presetLabel(f.preset)}`
+      : presetLabel(f.preset);
 
   // Freshest reading across the selection — "last updated" for the dashboard.
   const lastReading = useMemo(() => {
-    const ts = (ov?.machines || []).map((m) => m.lastSeenAt).filter(Boolean).map((t) => new Date(t as string).getTime());
+    const ts = rows.map((r) => r.lastSeen).filter(Boolean).map((x) => new Date(x as string).getTime());
     return ts.length ? Math.max(...ts) : null;
-  }, [ov]);
+  }, [rows]);
   const lastIsLive = lastReading != null && (Date.now() - lastReading) <= 120_000;
 
-  // Carry each machine's TRUE rank; the bottom list never overlaps the top list
-  // (small fleets: whatever isn't in the top 10 — possibly nothing).
-  const rankings = ((rankData || []) as RankingRow[]).map((r, i) => ({ ...r, rank: i + 1 }));
+  // How the window was actually spent — the ONE place these five figures live.
+  const timeSeg = [
+    { key: 'running', label: 'Runtime', value: t.runningMs, color: TEAL },
+    { key: 'idle', label: 'Idle', value: t.idleMs, color: AMBER },
+    { key: 'stopped', label: 'Stopped', value: t.stoppedMs, color: RED },
+    { key: 'offline', label: 'Signal lost', value: t.offlineMs, color: SLATE },
+  ].filter((s) => s.value > 0);
+  const observedMs = t.runningMs + t.downtimeMs;
+
+  // Performance rankings — availability over the window (the only officially
+  // derivable performance metric), computed from the SAME rows as everything else.
+  const rankings = useMemo(() => allRows
+    .map((r) => ({
+      code: r.code,
+      production: r.production,
+      runningMs: r.runningMs,
+      downtimeMs: r.idleMs + r.stoppedMs + r.offlineMs,
+      availabilityPct: windowMs ? Math.round((r.runningMs / windowMs) * 100) : 0,
+    }))
+    .sort((a, b) => (b.availabilityPct - a.availabilityPct)
+      || ((b.production ?? -1) - (a.production ?? -1))
+      || a.code.localeCompare(b.code))
+    .map((r, i) => ({ ...r, rank: i + 1 })), [allRows, windowMs]);
   const top10 = rankings.slice(0, 10);
   const bottom10 = rankings.slice(Math.max(10, rankings.length - 10)).reverse();
 
@@ -121,106 +154,92 @@ export default function Dashboard() {
       />
 
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
-        {/* Shared filters — every metric below derives from this one selection */}
-        <div className="panel p-3 flex items-center gap-2 flex-wrap">
-          <select
-            value={f.machineId}
-            onChange={(e) => f.set({ machineId: e.target.value })}
-            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[240px] ${f.machineId ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
-            title="Scope the dashboard to one machine"
-          >
-            <option value="">All Machines</option>
-            {(machineList || []).map((m) => {
-              const code = m.code || m.machineId || m._id;
-              return <option key={code} value={code}>{String(code).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
-            })}
-          </select>
+        {/* Shared filters — every figure on the page derives from this selection */}
+        <div className="panel p-3 space-y-2.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={f.machineId}
+              onChange={(e) => f.set({ machineId: e.target.value })}
+              className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[240px] ${f.machineId ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+              title="Scope the dashboard to one machine"
+            >
+              <option value="">All Machines</option>
+              {(machineList || []).map((m) => {
+                const code = m.code || m.machineId || m._id;
+                return <option key={code} value={code}>{String(code).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+              })}
+            </select>
 
-          <select
-            value={f.preset}
-            onChange={(e) => f.set({ preset: e.target.value as typeof f.preset })}
-            className="rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none cursor-pointer hover:border-accent/40 transition-colors"
-          >
-            {DATE_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-          </select>
+            <select
+              value={shiftApplies(f.preset) ? f.shiftName : ''}
+              onChange={(e) => f.set({ shiftName: e.target.value })}
+              disabled={!shiftApplies(f.preset)}
+              className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 disabled:opacity-45 disabled:cursor-not-allowed ${f.shiftName && shiftApplies(f.preset) ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+              title={shiftApplies(f.preset) ? 'Scope to a shift window' : 'Shift filtering applies to Today / Yesterday'}
+            >
+              <option value="">All Shifts</option>
+              {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+            </select>
 
-          {f.preset === 'custom' && (
-            <>
-              <input type="datetime-local" value={f.customFrom} onChange={(e) => f.set({ customFrom: e.target.value })}
-                className="rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none focus:border-accent" />
-              <span className="text-steel text-xs">→</span>
-              <input type="datetime-local" value={f.customTo} onChange={(e) => f.set({ customTo: e.target.value })}
-                className="rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none focus:border-accent" />
-            </>
-          )}
+            <span className="ml-auto text-[11px] text-steel">
+              {range ? `${fmtTime(range.from)} → ${fmtTime(range.to)}` : 'Pick a valid start & end to apply the range.'}
+            </span>
+          </div>
 
-          <select
-            value={shiftApplies(f.preset) ? f.shiftName : ''}
-            onChange={(e) => f.set({ shiftName: e.target.value })}
-            disabled={!shiftApplies(f.preset)}
-            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 disabled:opacity-45 disabled:cursor-not-allowed ${f.shiftName && shiftApplies(f.preset) ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
-            title={shiftApplies(f.preset) ? 'Scope to a shift window' : 'Shift filtering applies to Today / Yesterday'}
-          >
-            <option value="">All Shifts</option>
-            {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
-          </select>
-
-          {(f.machineId || f.shiftName || f.preset !== 'today') && (
-            <button onClick={f.reset} title="Reset filters"
-              className="w-9 h-9 flex items-center justify-center rounded-xl border border-line text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0">
-              <RotateCcw size={14} />
-            </button>
-          )}
-
-          {f.preset === 'custom' && !range && (
-            <span className="text-[11px] text-amber-600">Pick a valid start & end to apply the range.</span>
-          )}
+          {/* Date window — buttons, with the custom picker behind a popup */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {DATE_PRESETS.map((p) => (
+              <PresetButton key={p.value} active={f.preset === p.value} onClick={() => f.set({ preset: p.value })}>
+                {p.label}
+              </PresetButton>
+            ))}
+            <PresetButton active={f.preset === 'custom'} onClick={() => setPickRange(true)}>
+              <CalendarRange size={13} /> {f.preset === 'custom' && range ? windowLabel : 'Custom…'}
+            </PresetButton>
+            {(f.machineId || f.shiftName || f.preset !== 'today') && (
+              <button onClick={f.reset} title="Reset filters"
+                className="w-8 h-8 flex items-center justify-center rounded-lg border border-line text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0">
+                <RotateCcw size={13} />
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Operational status — the live state of the selection at a glance */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          <StatusTile label={f.machineId ? 'Machines (selected)' : 'Total Machines'} value={fmtNum(fleet.total || 0)} color={INDIGO} icon={Cpu} tint="rgba(99,102,241,0.06)" />
-          <StatusTile label="Running" value={fmtNum(fleet.running || 0)} color={TEAL} icon={Play} tint="rgba(13,148,136,0.07)" />
-          <StatusTile label="Idle" value={fmtNum(fleet.idle || 0)} color={AMBER} icon={Pause} tint="rgba(217,119,6,0.06)" />
-          <StatusTile label="Stopped" value={fmtNum(fleet.stopped || 0)} color={fleet.stopped ? RED : STEEL} icon={CircleSlash} tint="rgba(220,38,38,0.06)" />
-          <StatusTile label="Offline" value={fmtNum(fleet.offline || 0)} color={fleet.offline ? STEEL : TEAL} icon={Power} tint="rgba(100,116,139,0.06)" />
-        </div>
+        {/* ── By group ────────────────────────────────────────────────────── */}
+        <SectionHead icon={Boxes} title={f.machineId ? scopeLabel : 'Machine groups'}
+          sub={`${t.machines} machine${t.machines === 1 ? '' : 's'} · ${t.reported} reported data · ${windowLabel}${stale ? ' · updating…' : ''}`} />
+        <MachineGroups rows={rows} windowMs={windowMs} windowLabel={windowLabel} loading={actLoading} />
 
-        {/* Window KPIs — real reconstructed figures for the selected range.
-            Downtime = idle + stopped + signal-lost; idle & stopped also shown
-            as their own cards. */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          <Kpi label="Production" value={win ? `${fmtNum(win.production)} pcs` : '—'}
-            sub={win ? `${win.reported} of ${win.machines} reported` : 'No data in range'} color={TEAL} icon={Factory} />
-          <Kpi label="Runtime" value={win ? fmtDuration(win.runningMs) : '—'}
-            sub={win ? `across ${win.machines} machine${win.machines === 1 ? '' : 's'}` : undefined} color={TEAL} icon={Timer} />
-          <Kpi label="Idle Time" value={win ? fmtDuration(win.idleMs) : '—'}
-            sub="no activity, still connected" color={win?.idleMs ? AMBER : STEEL} icon={Pause} />
-          <Kpi label="Stopped Time" value={win ? fmtDuration(win.stoppedMs) : '—'}
-            sub="not operational" color={win?.stoppedMs ? RED : STEEL} icon={CircleSlash} />
-          <Kpi label="Downtime" value={win ? fmtDuration(win.downtimeMs) : '—'}
-            sub={win ? `idle + stopped + signal lost ${fmtDuration(win.offlineMs)}` : undefined} color={win?.downtimeMs ? RED : STEEL} icon={Clock} />
-        </div>
-
-        {/* Analytical KPIs */}
-        <div className="grid grid-cols-3 gap-3">
-          <Kpi label="Reporting"     value={`${reporting.reporting}/${reporting.total}`} sub={`${reporting.live} live now`} color={TEAL} icon={Radio} />
-          <Kpi label="Active Alerts" value={fmtNum(alerts.total)} sub={`${alerts.critical} crit · ${alerts.warning} warn`} color={alerts.critical ? RED : alerts.warning ? AMBER : TEAL} icon={AlertTriangle} />
-          <Kpi label="Downtime events" value={fmtNum(ov?.downtime?.events || 0)} sub={`${fmtDuration(ov?.downtime?.totalMs)} in window`} color={AMBER} icon={Clock} />
-        </div>
-
-        {/* Status + alerts — each drills into per-machine detail */}
+        {/* ── Fleet totals for the same window, under the groups they sum ── */}
         <div className="grid lg:grid-cols-2 gap-5">
-          <Panel title="Machine Status" subtitle={`${fleet.total} machine${fleet.total === 1 ? '' : 's'} · ${fleet.running} running now`} icon={Cpu} onClick={() => setDrill('status')}>
-            <div className="flex items-center gap-4">
-              <Donut segments={statusSeg} size={128} thickness={16} emptyColor={SLATE}>
-                <span className="data text-2xl font-bold text-primary leading-none">{fmtNum(fleet.total || 0)}</span>
-                <span className="label mt-1">machine{fleet.total === 1 ? '' : 's'}</span>
+          {/* Output & time split — production, runtime, idle, stopped, downtime */}
+          <Panel title="Output & time split" subtitle={`how the fleet spent ${windowLabel}`} icon={Factory}>
+            <div className="flex items-center gap-5 flex-wrap">
+              <Donut segments={timeSeg} size={148} thickness={18} emptyColor={SLATE}>
+                <span className="data text-2xl font-bold text-primary leading-none">{t.availabilityPct}%</span>
+                <span className="label mt-1">availability</span>
               </Donut>
-              <div className="flex-1 min-w-0">
-                {statusSeg.length === 0
-                  ? <div className="text-sm text-steel">No machines in scope.</div>
-                  : <Legend rows={statusSeg} total={fleet.total} format={(v) => fmtNum(v)} scroll={false} />}
+              <div className="flex-1 min-w-[210px] space-y-3">
+                <div className="rounded-xl border border-line bg-base px-3.5 py-2.5 flex items-end justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="label">Production</div>
+                    <div className="data text-2xl font-bold leading-none mt-0.5" style={{ color: t.production ? TEAL : STEEL }}>
+                      {fmtNum(t.production)}<span className="text-sm font-medium text-steel"> pcs</span>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-steel text-right shrink-0">
+                    {t.reportedProduction} of {t.machines}<br />counters reporting
+                  </div>
+                </div>
+                {observedMs === 0 ? (
+                  <div className="text-sm text-steel py-2">No activity reconstructed for this window.</div>
+                ) : (
+                  <Legend rows={timeSeg} total={observedMs} format={(v) => fmtDuration(v)} scroll={false} />
+                )}
+                <div className="flex items-center justify-between text-xs pt-2 border-t border-line">
+                  <span className="text-steel">Downtime <span className="text-steel/60">(idle + stopped + signal lost)</span></span>
+                  <span className="data font-bold" style={{ color: t.downtimeMs ? DEEP_RED : STEEL }}>{fmtDuration(t.downtimeMs)}</span>
+                </div>
               </div>
             </div>
           </Panel>
@@ -236,8 +255,9 @@ export default function Dashboard() {
           </Panel>
         </div>
 
+
         {/* Performance rankings — fleet view only; click a row to select it */}
-        {!f.machineId && (
+        {!f.machineId && rankings.length > 0 && (
           <div className="grid lg:grid-cols-2 gap-5">
             <RankPanel title="Top performers" icon={Trophy} color={TEAL} rows={top10}
               onPick={(code) => f.set({ machineId: code })} />
@@ -282,15 +302,110 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {pickRange && (
+        <CustomRangeModal
+          from={f.customFrom} to={f.customTo}
+          onClose={() => setPickRange(false)}
+          onApply={(customFrom, customTo) => { f.set({ preset: 'custom', customFrom, customTo }); setPickRange(false); }}
+        />
+      )}
       {drill && ov && <AnalyticsModal dimension={drill} ov={ov} onClose={() => setDrill(null)} />}
     </div>
   );
 }
 
 // ── building blocks ──────────────────────────────────────────────────────────
+// Custom window picker — a popup, so these inputs never clutter the filter bar.
+// Date and time are SEPARATE, and the time is optional: two dates on their own
+// are a complete range (00:00 of the first day → 23:59 of the last).
+function CustomRangeModal({ from, to, onClose, onApply }: { from: string; to: string; onClose: () => void; onApply: (from: string, to: string) => void }): JSX.Element {
+  const [fromDay, setFromDay] = useState(from.split('T')[0] || '');
+  const [fromTime, setFromTime] = useState(from.split('T')[1] || '');
+  const [toDay, setToDay] = useState(to.split('T')[0] || '');
+  const [toTime, setToTime] = useState(to.split('T')[1] || '');
+
+  // The store keeps datetime-local strings, so re-attach the implied times here.
+  const start = fromDay ? `${fromDay}T${fromTime || '00:00'}` : '';
+  const end = toDay ? `${toDay}T${toTime || '23:59'}` : '';
+  const valid = !!start && !!end && new Date(start) < new Date(end);
+
+  return (
+    <Modal title="Custom date range" subtitle="Every figure on the dashboard uses this window" icon={CalendarRange} onClose={onClose} maxW="max-w-md">
+      <div className="space-y-4">
+        <DayTimeRow label="From" day={fromDay} time={fromTime} onDay={setFromDay} onTime={setFromTime} maxDay={toDay || undefined} />
+        <DayTimeRow label="To" day={toDay} time={toTime} onDay={setToDay} onTime={setToTime} minDay={fromDay || undefined} />
+
+        <div className="rounded-xl border border-line bg-base px-3.5 py-2.5 text-xs">
+          <span className="text-steel">Window · </span>
+          {valid
+            ? <span className="data font-semibold text-primary">{fmtTime(start)} → {fmtTime(end)}</span>
+            : <span className="text-steel/70">pick a start date and an end date</span>}
+          <div className="text-[10px] text-steel/70 mt-0.5">Leave a time empty to cover the whole day.</div>
+        </div>
+
+        {!valid && !!start && !!end && <div className="text-[11px] text-amber-600">The start must come before the end.</div>}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="rounded-xl border border-line px-3.5 py-2 text-sm text-steel hover:text-primary transition-colors">Cancel</button>
+          <button onClick={() => onApply(start, end)} disabled={!valid}
+            className="rounded-xl bg-accent px-3.5 py-2 text-sm font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity">
+            Apply range
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// One edge of the range: the date (required) and the time (optional, clearable).
+function DayTimeRow({ label, day, time, onDay, onTime, minDay, maxDay }: {
+  label: string; day: string; time: string; onDay: (v: string) => void; onTime: (v: string) => void; minDay?: string; maxDay?: string;
+}): JSX.Element {
+  const field = 'rounded-xl border border-line bg-base px-3 py-2 text-sm text-primary outline-none focus:border-accent';
+  return (
+    <div>
+      <div className="label mb-1">{label}</div>
+      <div className="flex items-center gap-2">
+        <input type="date" value={day} min={minDay} max={maxDay} onChange={(e) => onDay(e.target.value)} className={`${field} flex-1`} />
+        <input type="time" value={time} onChange={(e) => onTime(e.target.value)} className={`${field} w-[130px]`} title="Optional" />
+        {time && (
+          <button onClick={() => onTime('')} title="Clear time"
+            className="text-[10px] text-steel hover:text-accent transition-colors shrink-0">clear</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PresetButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }): JSX.Element {
+  return (
+    <button onClick={onClick}
+      className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+        active ? 'border-accent bg-accent text-white' : 'border-line bg-base text-steel hover:text-accent hover:border-accent/40'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SectionHead({ icon: Icon, title, sub }: { icon: LucideIcon; title: string; sub?: string }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2.5 pt-1">
+      <span className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center shrink-0"><Icon size={16} className="text-accent" /></span>
+      <div className="min-w-0">
+        <h2 className="font-semibold text-primary text-[15px] leading-tight truncate">{title}</h2>
+        {sub && <p className="text-[11px] text-steel truncate">{sub}</p>}
+      </div>
+    </div>
+  );
+}
+
+interface RankRow { code: string; rank: number; availabilityPct: number; production: number | null; runningMs: number; downtimeMs: number }
+
 // Performance ranking table — availability-based (the only officially derivable
 // performance metric; OEE inputs don't exist and are never fabricated).
-function RankPanel({ title, icon, color, rows, onPick, emptyNote }: { title: string; icon: LucideIcon; color: string; rows: (RankingRow & { rank: number })[]; onPick: (code: string) => void; emptyNote?: string }): JSX.Element {
+function RankPanel({ title, icon, color, rows, onPick, emptyNote }: { title: string; icon: LucideIcon; color: string; rows: RankRow[]; onPick: (code: string) => void; emptyNote?: string }): JSX.Element {
   return (
     <Panel title={title} subtitle="availability over the selected window · click to inspect" icon={icon}>
       {rows.length === 0 ? (
@@ -314,7 +429,7 @@ function RankPanel({ title, icon, color, rows, onPick, emptyNote }: { title: str
                   className="border-t border-line hover:bg-base/60 cursor-pointer">
                   <td className="px-2 py-2 data text-xs text-steel">{r.rank}</td>
                   <td className="px-2 py-2 data text-xs font-semibold text-primary">{String(r.code).toUpperCase()}</td>
-                  <td className="px-2 py-2 data text-xs text-right font-semibold" style={{ color: r.availabilityPct >= 75 ? '#0D9488' : r.availabilityPct >= 50 ? '#D97706' : color }}>{r.availabilityPct}%</td>
+                  <td className="px-2 py-2 data text-xs text-right font-semibold" style={{ color: r.availabilityPct >= 75 ? TEAL : r.availabilityPct >= 50 ? AMBER : color }}>{r.availabilityPct}%</td>
                   <td className="px-2 py-2 data text-xs text-right">{r.production != null ? fmtNum(r.production) : <span className="text-steel/50">—</span>}</td>
                   <td className="px-2 py-2 data text-xs text-right">{fmtDuration(r.runningMs)}</td>
                   <td className="px-2 py-2 data text-xs text-right">{r.downtimeMs ? fmtDuration(r.downtimeMs) : '0m'}</td>
@@ -337,25 +452,6 @@ function AiTile({ icon: Icon, color, title, line, value }: { icon: LucideIcon; c
         <span className="text-sm font-semibold text-primary">{title}</span>
       </div>
       <div className="text-xs text-steel">{line} <span className="blur-[3px] select-none font-medium text-primary" aria-hidden>{value}</span></div>
-    </div>
-  );
-}
-
-function Kpi({ label, value, sub, color, icon: Icon }: { label: string; value: ReactNode; sub?: ReactNode; color: string; icon?: LucideIcon }): JSX.Element {
-  return (
-    <div className="card p-3.5">
-      <div className="flex items-center justify-between"><span className="label">{label}</span>{Icon && <Icon size={14} style={{ color }} />}</div>
-      <div className="data text-xl font-bold mt-1.5 truncate" style={{ color }}>{value}</div>
-      {sub && <div className="text-[10px] text-steel mt-0.5 truncate">{sub}</div>}
-    </div>
-  );
-}
-
-function StatusTile({ label, value, color, icon: Icon, tint }: { label: string; value: ReactNode; color: string; icon?: LucideIcon; tint?: string }): JSX.Element {
-  return (
-    <div className="card p-3.5" style={{ background: tint }}>
-      <div className="flex items-center justify-between"><span className="label">{label}</span>{Icon && <Icon size={15} style={{ color }} />}</div>
-      <div className="data text-2xl font-bold mt-1.5" style={{ color }}>{value}</div>
     </div>
   );
 }
