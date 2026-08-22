@@ -107,7 +107,14 @@ export async function computeActivity(
   // Month / year windows scan far more telemetry but change far more slowly:
   // cache them longer and give Atlas more time, so the dashboard's group panels
   // can ask for them without timing out.
-  const longWindow = endMs - fromD.getTime() > 7 * 24 * 3600 * 1000;
+  const spanMs = endMs - fromD.getTime();
+  const longWindow = spanMs > 7 * 24 * 3600 * 1000;
+  // Readings are bucketed before they leave the database. Past a month the bucket
+  // widens so the pushed arrays stay small; 5 minutes is still exact for the
+  // coverage maths below, because that IS the bridging grace.
+  const binSize = spanMs > 30 * 24 * 3600 * 1000 ? 5 : 1;   // minutes
+  const binMs = binSize * 60_000;
+  const bucket = { $dateTrunc: { date: '$timestamp', unit: 'minute', binSize } };
   const ttlMs = longWindow ? 5 * 60_000 : 30_000;
   const maxTimeMS = longWindow ? 60_000 : 20_000;
 
@@ -126,26 +133,19 @@ export async function computeActivity(
             firstData: { $last: '$data' }, lastData: { $first: '$data' },
           } },
         ]).allowDiskUse(true).option({ maxTimeMS }).exec(),
-        // Reported COVERAGE per machine, summed in the database: running time is
-        // only credited for time the machine ACTUALLY reported, with gaps up to
-        // GRACE_MS bridged. Summed server-side on purpose — a year-long window
-        // holds ~500k reporting minutes per machine and shipping those stamps to
-        // Node (the previous $push) did not scale past a few days.
+        // The buckets in which each machine REPORTED. Running time is only
+        // credited for time the machine actually reported, with gaps up to
+        // GRACE_MS bridged (done in Node, below).
+        //
+        // Deliberately NO $setWindowFields here: it forces a blocking sort, and
+        // this Atlas tier does not honour allowDiskUse. Measured on the live
+        // cluster, that sort dies at ~48k group docs - about three days of this
+        // fleet's telemetry - so every week/month/year window would 500. $group
+        // + $push has no sort, and the bucket above bounds what comes back.
         Telemetry.aggregate([
           { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
-          { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute' } } } } },
-          { $setWindowFields: {
-            partitionBy: '$_id.m', sortBy: { '_id.t': 1 },
-            output: { prev: { $shift: { output: '$_id.t', by: -1, default: null } } },
-          } },
-          { $group: {
-            _id: '$_id.m',
-            minutes: { $sum: 1 },
-            coveredMs: { $sum: { $cond: [
-              { $eq: ['$prev', null] }, 0,
-              { $min: [{ $subtract: ['$_id.t', '$prev'] }, GRACE_MS] },
-            ] } },
-          } },
+          { $group: { _id: { m: '$machineId', t: bucket } } },
+          { $group: { _id: '$_id.m', ts: { $push: '$_id.t' } } },
         ]).allowDiskUse(true).option({ maxTimeMS }).exec(),
       ]);
 
@@ -170,22 +170,14 @@ export async function computeActivity(
           default: null,
         } } } },
         { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
-        // One value per reporting MINUTE before the window function — 11k readings
-        // a day become ~750 rows, so the sort never spills and a month-long window
-        // stays affordable.
-        // ponytail: a counter that resets AND climbs again inside one minute loses
-        // that minute's post-reset pieces (max() keeps the pre-reset peak). Once a
-        // day, bounded by one minute of output — drop the $group to make it exact.
-        { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute' } } }, pv: { $max: '$pv' } } },
-        { $setWindowFields: {
-          partitionBy: '$_id.m', sortBy: { '_id.t': 1 },
-          output: { prevV: { $shift: { output: '$pv', by: -1, default: null } } },
-        } },
-        { $group: { _id: '$_id.m', made: { $sum: { $cond: [
-          { $and: [{ $ne: ['$prevV', null] }, { $gt: ['$pv', '$prevV'] }] },
-          { $subtract: ['$pv', '$prevV'] },
-          0,
-        ] } } } },
+        // Highest counter value per bucket, then the series itself - the stepping
+        // happens in Node (countSteps), for the same reason as the pipeline above:
+        // no window function, so no blocking sort this tier cannot spill.
+        // ponytail: a counter that resets AND climbs again inside ONE bucket loses
+        // that bucket's post-reset pieces ($max keeps the pre-reset peak). Once a
+        // day, bounded by one bucket of output.
+        { $group: { _id: { m: '$machineId', t: bucket }, pv: { $max: '$pv' } } },
+        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv' } } } },
       ]).allowDiskUse(true).option({ maxTimeMS }).exec() : [];
 
       return { tele, minutes, made };
@@ -198,18 +190,50 @@ export async function computeActivity(
   ]);
 
   const teleBy = new Map<string, TeleRow>(((teleAgg as { tele: TeleRow[] }).tele).map((t) => [t._id, t]));
-  // coveredMs is the bridged gap total; the last reading's own minute is added
-  // here, so a machine with a single reading still counts as 1 minute reported.
+  // Consecutive reporting buckets up to GRACE_MS apart bridge as continuous
+  // reporting; the last bucket counts as its own width, so a machine with a
+  // single reading still counts as having reported for that bucket.
+  const coverageOf = (stamps: number[]): number => {
+    if (!stamps.length) return 0;
+    const s = [...stamps].sort((a, b) => a - b);
+    let cov = binMs;
+    for (let i = 0; i < s.length - 1; i += 1) cov += Math.min(s[i + 1] - s[i], GRACE_MS);
+    return cov;
+  };
   const coverageBy = new Map<string, number>(
-    ((teleAgg as { minutes: { _id: string; minutes: number; coveredMs: number }[] }).minutes)
-      .map((m) => [m._id, m.minutes ? m.coveredMs + 60_000 : 0]),
+    ((teleAgg as { minutes: { _id: string; ts: Date[] }[] }).minutes)
+      .map((m) => [m._id, coverageOf(m.ts.map((d) => new Date(d).getTime()))]),
   );
 
-  // What the counter ADDED inside the window (summed above). Key selection is
-  // shared (utils/production) with the event engine + client.
+  // What the counter ADDED across the window. A value only moves the high-water
+  // mark once the NEXT bucket confirms it, which is what separates the three
+  // things a PLC counter does: a real climb, a shift RESET (a drop the next
+  // bucket agrees with), and a single garbage sample. Both kinds of garbage are
+  // in this fleet's data - CNCLATHE04 once reported 0 against a true 440, SPG02
+  // once reported 507 against a true 51 - and unconfirmed, each would have
+  // fabricated hundreds of pieces.
+  // ponytail: a one-sample lookahead is the whole heuristic; a counter that
+  // stays wrong for two consecutive buckets still fools it.
+  const countSteps = (series: { t: number; v: number }[]): number => {
+    const v = [...series].sort((a, b) => a.t - b.t).map((p) => p.v);
+    if (v.length < 2) return 0;
+    let made = 0, high = v[0];
+    for (let i = 1; i < v.length; i += 1) {
+      const cur = v[i], next = i + 1 < v.length ? v[i + 1] : null;
+      if (cur > high) {
+        if (next === null || next >= cur) { made += cur - high; high = cur; }   // confirmed climb
+      } else if (cur < high && next !== null && next < high) {
+        high = cur;                                                              // confirmed reset
+      }
+    }
+    return made;
+  };
   const madeBy = new Map<string, number>(
-    ((teleAgg as { made: { _id: string; made: number }[] }).made || []).map((m) => [m._id, m.made]),
+    ((teleAgg as { made: { _id: string; pts: { t: Date; v: number }[] }[] }).made || [])
+      .map((m) => [m._id, countSteps(m.pts.map((x) => ({ t: new Date(x.t).getTime(), v: Number(x.v) })))]),
   );
+
+  // Key selection is shared (utils/production) with the event engine + client.
   const productionOf = (t?: TeleRow): { key: string; production: number } | null => {
     if (!t?.lastData) return null;
     const last = flattenData(t.lastData);
