@@ -88,6 +88,10 @@ export default function Dashboard() {
 
   const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
   const [drill, setDrill] = useState<string | null>(null);
+  // Bumping this remounts the group panels, which is how a reset also clears the
+  // per-group window overrides — they are local to each panel by design.
+  const [resetTick, setResetTick] = useState(0);
+  const atDefaults = !f.machineId && !f.shiftName && f.preset === 'today';
   const [pickRange, setPickRange] = useState(false);
 
   const selectedMachine = f.machineId
@@ -196,19 +200,23 @@ export default function Dashboard() {
             <PresetButton active={f.preset === 'custom'} onClick={() => setPickRange(true)}>
               <CalendarRange size={13} /> {f.preset === 'custom' && range ? windowLabel : 'Custom…'}
             </PresetButton>
-            {(f.machineId || f.shiftName || f.preset !== 'today') && (
-              <button onClick={f.reset} title="Reset filters"
-                className="w-8 h-8 flex items-center justify-center rounded-lg border border-line text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0">
-                <RotateCcw size={13} />
-              </button>
-            )}
+            {/* Always present, never a surprise: a control that appears only once
+                you've changed something is a control nobody knows exists. */}
+            <button
+              onClick={() => { f.reset(); setResetTick((n) => n + 1); }}
+              disabled={atDefaults}
+              title={atDefaults ? 'Filters are already at their defaults' : 'Back to All Machines · All Shifts · Today, and clear every group’s own window'}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-xs font-medium text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-steel disabled:hover:border-line"
+            >
+              <RotateCcw size={13} /> Reset
+            </button>
           </div>
         </div>
 
         {/* ── By group ────────────────────────────────────────────────────── */}
         <SectionHead icon={Boxes} title={f.machineId ? scopeLabel : 'Machine groups'}
           sub={`${t.machines} machine${t.machines === 1 ? '' : 's'} · ${t.reported} reported data · ${windowLabel}${stale ? ' · updating…' : ''}`} />
-        <MachineGroups rows={rows} windowMs={windowMs} windowLabel={windowLabel} loading={actLoading} />
+        <MachineGroups key={resetTick} rows={rows} windowMs={windowMs} windowLabel={windowLabel} loading={actLoading} />
 
         {/* ── Fleet totals for the same window, under the groups they sum ── */}
         <div className="grid lg:grid-cols-2 gap-5">

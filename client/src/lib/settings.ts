@@ -134,11 +134,14 @@ function defaults(): Settings {
       tagline: 'Production Monitor',
       defaultPlant: 'KASEZ (Gandhidham)',
     },
+    // Offline / first-paint fallback for useAppConfig. Must mirror the server seed
+    // (config.controller DEFAULTS) — the plant's real 8-hour rotation, confirmed
+    // against the machines' own SHIFT field. A fallback with different timings
+    // silently resolves a shift to the wrong window before /config answers.
     shifts: [
-      { name: 'Shift A', start: '06:00', end: '14:00' },
-      { name: 'Shift B', start: '14:00', end: '22:00' },
-      { name: 'Shift C', start: '22:00', end: '06:00' },
-      { name: 'General', start: '09:00', end: '18:00' },
+      { name: 'Shift A', start: '07:00', end: '15:00' },
+      { name: 'Shift B', start: '15:00', end: '23:00' },
+      { name: 'Shift C', start: '23:00', end: '07:00' },
     ],
     alerts: {
       tempWarn: 850, tempCrit: 950,

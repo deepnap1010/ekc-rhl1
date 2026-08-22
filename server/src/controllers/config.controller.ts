@@ -7,11 +7,14 @@ import { ok, fail, asyncHandler } from '../utils/http.js';
 
 // Canonical seeds (mirror the client's previous hard-coded lists).
 const DEFAULTS = {
+  // The plant's real 8-hour rotation, confirmed against the machines' own SHIFT
+  // field (B->C flips at 23:00, C->A at 07:00, and SHIFT_DATE rolls with A).
+  // Guessed timings here are not harmless: a shift window that doesn't match the
+  // PLC's silently attributes one shift's output to another.
   shifts: [
-    { name: 'Shift A', start: '06:00', end: '14:00' },
-    { name: 'Shift B', start: '14:00', end: '22:00' },
-    { name: 'Shift C', start: '22:00', end: '06:00' },
-    { name: 'General', start: '09:00', end: '18:00' },
+    { name: 'Shift A', start: '07:00', end: '15:00' },
+    { name: 'Shift B', start: '15:00', end: '23:00' },
+    { name: 'Shift C', start: '23:00', end: '07:00' },
   ] as IShift[],
   // EXACTLY the client's historical seed lists (lib/machineConfig.ts) — values
   // operators saved per-machine must keep resolving to an option.

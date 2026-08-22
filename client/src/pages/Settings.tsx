@@ -19,6 +19,7 @@ import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
 import { machineApi, authApi, configApi } from '../api/endpoints';
+import { useAppConfig } from '../hooks/useAppConfig';
 import { resizeImage } from '../lib/image';
 import { Avatar } from '../components/ui';
 import {
@@ -70,6 +71,10 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon; emoji: string 
 
 export default function Settings() {
   const s = useSettings();
+  // Pulls the server's shared shifts into the local copy this page edits — a
+  // deep link straight to /settings would otherwise show (and then push back)
+  // this device's stale timings.
+  useAppConfig();
   const t = useT();
   const [section, setSection] = useState<SectionId>('profile');
 

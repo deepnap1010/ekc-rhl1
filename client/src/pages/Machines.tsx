@@ -15,6 +15,8 @@ import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
+import { useAppConfig } from '../hooks/useAppConfig';
+import { todayWindow } from '../store/filters';
 import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
 import ParametersModal from '../components/machine/MachineParameters';
 import { linkedExtras } from '../lib/linkedMetrics';
@@ -93,15 +95,18 @@ export default function Machines() {
     enabled: rangeActive,
   });
 
-  // TODAY's activity per machine (midnight → now) — one window drives the whole
-  // card: uptime/idle/stopped/downtime tiles AND the "today +N pcs" production
-  // line. The `to` edge is rounded to the minute for stable query keys.
-  const dayTo = Math.floor(Date.now() / 60_000) * 60_000;
-  const todayStart = new Date(dayTo);
-  todayStart.setHours(0, 0, 0, 0);
+  // TODAY's activity per machine — one window drives the whole card:
+  // uptime/idle/stopped/downtime tiles AND the "today +N pcs" production line.
+  // The window is the PRODUCTION day (todayWindow: the union of today's shifts),
+  // the same one the machine Overview and the Full-day filter use, so a card and
+  // the page it opens can never disagree. `to` is minute-rounded for stable keys.
+  const { shifts: cfgShifts } = useAppConfig();
+  const day = todayWindow(cfgShifts);
+  const dayFromISO = day.from.toISOString();
+  const dayToISO = day.to.toISOString();
   const { data: dayAct } = useQuery({
-    queryKey: ['machine-activity-today', dayTo],
-    queryFn: () => machineApi.activity({ from: todayStart.toISOString(), to: new Date(dayTo).toISOString() }),
+    queryKey: ['machine-activity-today', dayFromISO, dayToISO],
+    queryFn: () => machineApi.activity({ from: dayFromISO, to: dayToISO }),
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
   });

@@ -74,6 +74,40 @@ const yearStart = (): Date => {
 // stay stable between renders instead of busting on every tick.
 const nowRounded = (): Date => new Date(Math.floor(Date.now() / 60_000) * 60_000);
 
+/** THE production day for a calendar date — the UNION of that day's shift
+ *  windows, so "Full day" is exactly Shift A + Shift B + Shift C and no piece is
+ *  counted in two days or in none.
+ *
+ *  With A 07:00-15:00 / B 15:00-23:00 / C 23:00-07:00 the day runs 07:00 -> 07:00
+ *  next morning: the night shift's output stays with the day it CLOCKED IN on,
+ *  which is the same day the PLC stamps into SHIFT_DATE (it resets PROD_DAY at
+ *  07:00, not at midnight). A plain midnight-to-midnight day splits that shift in
+ *  half and reads its post-midnight pieces as today's.
+ *
+ *  No shifts configured -> the calendar day, unchanged. */
+export function shiftDayOn(shifts: ShiftTiming[], day: Date): { from: Date; to: Date } {
+  if (!shifts.length) {
+    const from = new Date(day); from.setHours(0, 0, 0, 0);
+    const to = new Date(from); to.setDate(to.getDate() + 1);
+    return { from, to };
+  }
+  const wins = shifts.map((sh) => shiftWindowOn(sh, day));
+  return {
+    from: new Date(Math.min(...wins.map((w) => w.from.getTime()))),
+    to: new Date(Math.max(...wins.map((w) => w.to.getTime()))),
+  };
+}
+
+/** Today's production day so far. EVERY "today" surface — the machine cards, the
+ *  machine Overview tiles, the Full-day filter — must resolve through this, or
+ *  two panels on one screen quote different days. */
+export function todayWindow(shifts: ShiftTiming[]): { from: Date; to: Date } {
+  const { from } = shiftDayOn(shifts, dayStart(0));
+  // Before the first shift starts, today's day hasn't opened yet: the window
+  // stays empty (the shift running at 03:00 belongs to YESTERDAY's last shift).
+  return { from, to: new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000)) };
+}
+
 /** Resolve the current filter selection to a concrete [from, to], or null while
  *  a custom range is incomplete/invalid. */
 export function resolveRange(
@@ -90,14 +124,11 @@ export function resolveRange(
   const shift = f.shiftName && shiftApplies(f.preset) ? shifts.find((s) => s.name === f.shiftName) : null;
   if (f.preset === 'today') {
     if (shift) return shiftWindowOn(shift, dayStart(0));
-    const from = dayStart(0);
-    // First minute after midnight: nowRounded() == from — keep to strictly after from.
-    const to = new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000));
-    return { from, to };
+    return todayWindow(shifts);
   }
   if (f.preset === 'yesterday') {
     if (shift) return shiftWindowOn(shift, dayStart(-1));
-    return { from: dayStart(-1), to: dayStart(0) };
+    return shiftDayOn(shifts, dayStart(-1));
   }
   // Completed period → fixed end; running period → up to now.
   if (f.preset === 'prevWeek') return { from: weekStart(-1), to: weekStart(0) };

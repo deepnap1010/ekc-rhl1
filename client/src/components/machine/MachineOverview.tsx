@@ -20,7 +20,7 @@ import { fmtNum, fmtMetric, fmtTime, fmtDate, fmtDuration, prettyKey, prettyType
 import { namedMetrics, isNumeric, isFault, freshness, type NamedMetric } from '../../lib/metrics';
 import { useMachineTelemetry } from '../../hooks/useLive';
 import RangeFilter, { type RangeValue } from '../RangeFilter';
-import { resolveRange, shiftApplies, presetLabel } from '../../store/filters';
+import { resolveRange, shiftApplies, presetLabel, todayWindow } from '../../store/filters';
 import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { LINKS } from '../../lib/linkedMetrics';
@@ -59,16 +59,18 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
     enabled: !!id,
   });
 
-  // TODAY's activity from the SHARED engine — the same window and query key as
-  // the machine cards, so react-query shares one fetch and every surface tells
-  // the same story. Runtime is credited only for time the machine actually
-  // reported (silence is never uptime).
-  const dayTo = Math.floor(Date.now() / 60_000) * 60_000;
-  const todayStart = new Date(dayTo);
-  todayStart.setHours(0, 0, 0, 0);
+  // TODAY's activity from the SHARED engine — the same PRODUCTION day (shift-
+  // derived, via todayWindow) and query key as the machine cards, so react-query
+  // shares one fetch and no two panels on this page quote different days.
+  // Runtime is credited only for time the machine actually reported (silence is
+  // never uptime).
+  const { shifts } = useAppConfig();
+  const day = todayWindow(shifts);
+  const dayFromISO = day.from.toISOString();
+  const dayToISO = day.to.toISOString();
   const { data: dayAct } = useQuery({
-    queryKey: ['machine-activity-today', dayTo],
-    queryFn: () => machineApi.activity({ from: todayStart.toISOString(), to: new Date(dayTo).toISOString() }),
+    queryKey: ['machine-activity-today', dayFromISO, dayToISO],
+    queryFn: () => machineApi.activity({ from: dayFromISO, to: dayToISO }),
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
   });
@@ -323,9 +325,17 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   // resolveRange takes a custom range literally, so narrow it to the shift here.
   if (customDay && shift) win = shiftWindowOn(shift, new Date(`${customDay}T00:00:00`));
 
+  // The RESOLVED window IS the cache key. Keying on the preset alone let the
+  // fetched numbers and the window printed below drift apart: "today" stayed one
+  // key across midnight, so the 00:00 refetch still ran the closure resolved
+  // before midnight and served YESTERDAY's day totals under today's label. `to`
+  // is already minute-rounded, so this also gives the panel a fresh
+  // midnight-to-now figure every minute instead of a frozen one.
+  const fromISO = win?.from.toISOString();
+  const toISO = win?.to.toISOString();
   const { data, isLoading } = useQuery({
-    queryKey: ['machine-shift-prod', range.preset, range.customFrom, range.customTo, shiftOk ? shiftName : ''],
-    queryFn: () => machineApi.activity({ from: win!.from.toISOString(), to: win!.to.toISOString() }),
+    queryKey: ['machine-shift-prod', fromISO, toISO],
+    queryFn: () => machineApi.activity({ from: fromISO as string, to: toISO as string }),
     enabled: !!win,
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
