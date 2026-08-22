@@ -16,9 +16,11 @@ import { StatusPill } from '../ui';
 import PressureRing from '../PressureRing';
 import Sparkline from '../Sparkline';
 import MetricTrendModal, { type DrillEntry } from './MetricTrendModal';
-import { fmtNum, fmtMetric, fmtTime, fmtDuration, prettyKey, prettyType } from '../../lib/format';
+import { fmtNum, fmtMetric, fmtTime, fmtDate, fmtDuration, prettyKey, prettyType } from '../../lib/format';
 import { namedMetrics, isNumeric, isFault, freshness, type NamedMetric } from '../../lib/metrics';
 import { useMachineTelemetry } from '../../hooks/useLive';
+import RangeFilter, { type RangeValue } from '../RangeFilter';
+import { resolveRange, shiftApplies, presetLabel } from '../../store/filters';
 import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { LINKS } from '../../lib/linkedMetrics';
@@ -293,35 +295,36 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
   );
 }
 
-// ── shift/date production filter — replaces the old static Key Parameters ──────
-// Pick any date + shift (or the full day) and see what THIS machine produced in
-// that window, plus its runtime split. Data comes from /machines/activity
-// (read-only reconstruction from telemetry + downtime). A machine without its own
-// production counter borrows the linked machine's (same pairing as the cards).
+// ── window/shift production filter — replaces the old static Key Parameters ────
+// Pick a window (today / yesterday / week / month / year, or a custom date+time
+// range) and a shift, and see what THIS machine produced in it, plus its runtime
+// split. Same control and the same resolver as the dashboard filter, so a window
+// means the same thing everywhere. Data comes from /machines/activity (read-only
+// reconstruction from telemetry + downtime). A machine without its own production
+// counter borrows the linked machine's (same pairing as the cards).
 function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   const { shifts } = useAppConfig();   // shared server-side shift config
-  const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const [day, setDay] = useState(() => localDay(new Date()));
+  const [range, setRange] = useState<RangeValue>({ preset: 'today', customFrom: '', customTo: '' });
   const [shiftName, setShiftName] = useState('');
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
-  const isCustom = shiftName === '__custom__';
-  const shift = shifts.find((s) => s.name === shiftName) || null;
+  // A shift only narrows a SINGLE day: Today/Yesterday (as on the dashboard), or
+  // a custom range whose two dates are the same day — that keeps this panel's
+  // original job, "what did this machine make on Shift A last Tuesday".
+  const isCustom = range.preset === 'custom';
+  const customDay = isCustom && range.customFrom.slice(0, 10) && range.customFrom.slice(0, 10) === range.customTo.slice(0, 10)
+    ? range.customFrom.slice(0, 10)
+    : null;
+  const shiftOk = shiftApplies(range.preset) || !!customDay;
+  const shift = shiftOk ? shifts.find((s) => s.name === shiftName) || null : null;
 
-  // Window is either a custom [from,to] (datetime pickers) or a day ± shift.
-  let win: { from: Date; to: Date } | null = null;
-  if (isCustom) {
-    const f = new Date(customFrom), t = new Date(customTo);
-    if (customFrom && customTo && !Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime()) && f < t) win = { from: f, to: t };
-  } else {
-    const base = new Date(`${day}T00:00:00`);
-    if (day && !Number.isNaN(base.getTime())) {
-      win = shift ? shiftWindowOn(shift, base) : { from: base, to: new Date(base.getTime() + 24 * 3600 * 1000) };
-    }
-  }
+  let win = resolveRange(
+    { preset: range.preset, shiftName: shiftOk ? shiftName : '', customFrom: range.customFrom, customTo: range.customTo },
+    shifts,
+  );
+  // resolveRange takes a custom range literally, so narrow it to the shift here.
+  if (customDay && shift) win = shiftWindowOn(shift, new Date(`${customDay}T00:00:00`));
 
   const { data, isLoading } = useQuery({
-    queryKey: ['machine-shift-prod', day, shiftName, customFrom, customTo],
+    queryKey: ['machine-shift-prod', range.preset, range.customFrom, range.customTo, shiftOk ? shiftName : ''],
     queryFn: () => machineApi.activity({ from: win!.from.toISOString(), to: win!.to.toISOString() }),
     enabled: !!win,
     placeholderData: keepPreviousData,
@@ -342,33 +345,23 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   return (
     <Panel icon={Calendar} title="Production by Shift">
       <div className="flex items-center gap-2 flex-wrap mb-4">
-        <select value={shiftName} onChange={(e) => setShiftName(e.target.value)}
-          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent">
+        <select value={shiftOk ? shiftName : ''} onChange={(e) => setShiftName(e.target.value)}
+          disabled={!shiftOk}
+          title={shiftOk ? 'Narrow the day to one shift' : 'Shifts apply to a single day — Today, Yesterday, or a custom range within one day'}
+          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent disabled:opacity-45 disabled:cursor-not-allowed">
           <option value="">Full day</option>
           {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
-          <option value="__custom__">Custom range…</option>
         </select>
-        {isCustom ? (
-          <>
-            <input type="datetime-local" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
-              className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-            <span className="text-steel text-xs">→</span>
-            <input type="datetime-local" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
-              className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-          </>
-        ) : (
-          <input type="date" value={day} onChange={(e) => setDay(e.target.value)}
-            className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-        )}
+        <RangeFilter value={range} onChange={setRange} range={win} title="Pick the window for this machine" />
       </div>
       {!win ? (
-        <div className="text-sm text-steel py-6 text-center">{isCustom ? 'Pick a start and end time.' : 'Pick a date to see production.'}</div>
+        <div className="text-sm text-steel py-6 text-center">Pick a start date and an end date.</div>
       ) : isLoading && !row ? (
         <div className="text-sm text-steel py-6 text-center">Loading…</div>
       ) : (
         <>
           <div className="rounded-lg border border-line bg-base px-4 py-3 mb-3">
-            <div className="text-[10px] uppercase tracking-wide text-steel">Production{isCustom ? ' · Custom' : shift ? ` · ${shift.name}` : ' · Full day'}</div>
+            <div className="text-[10px] uppercase tracking-wide text-steel">Production · {isCustom ? (customDay ? fmtDate(`${customDay}T00:00:00`) : 'Custom range') : presetLabel(range.preset)}{shift ? ` · ${shift.name}` : ''}</div>
             <div className="data text-3xl font-bold text-primary leading-tight">
               {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
             </div>
