@@ -10,7 +10,7 @@ import { Machine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { flattenData } from '../utils/flatten.js';
-import { pickProductionKey, pickRunKey, type RunSignal } from '../utils/production.js';
+import { pickProductionKey, pickRunKeys, type MachineBooks } from '../utils/production.js';
 import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
 
@@ -207,17 +207,23 @@ export async function computeActivity(
       // would double the cost of every dashboard poll.
       const flatOf = (t: TeleRow): Record<string, unknown> => (t.lastData ? flattenData(t.lastData) : {});
       const usable = (k: string | null | undefined): boolean => !!k && !k.includes('.');
-      const keyed = tele
+      type Keyed = { id: string; key: string | null; books: MachineBooks };
+      const keyed: Keyed[] = tele
         .map((t: TeleRow) => {
           const flat = flatOf(t);
           const prod = pickProductionKey(flat);
-          const run = pickRunKey(flat);
-          return { id: t._id, key: usable(prod) ? prod : null, run: run && usable(run.key) ? run : null };
+          const b = pickRunKeys(flat);
+          const books: MachineBooks = {
+            run: b.run && usable(b.run.key) ? b.run : null,
+            idle: usable(b.idle) ? b.idle : null,
+            stop: usable(b.stop) ? b.stop : null,
+          };
+          return { id: t._id, key: usable(prod) ? prod : null, books };
         })
-        .filter((x) => !!x.key || !!x.run) as { id: string; key: string | null; run: RunSignal | null }[];
+        .filter((x) => !!x.key || !!x.books.run);
 
       const NUMERIC = ['int', 'long', 'double', 'decimal'];
-      const pick = (field: (k: { id: string; key: string | null; run: RunSignal | null }) => string | null) => ({
+      const pick = (field: (k: Keyed) => string | null) => ({
         $switch: {
           branches: keyed.filter((k) => field(k)).map((k) => ({
             case: { $eq: ['$machineId', k.id] },
@@ -229,7 +235,12 @@ export async function computeActivity(
 
       const made = keyed.length ? await Telemetry.aggregate([
         { $match: { machineId: { $in: keyed.map((k) => k.id) }, timestamp: { $gte: fromD, $lte: endD } } },
-        { $addFields: { pv: pick((k) => k.key), rv: pick((k) => k.run?.key ?? null) } },
+        { $addFields: {
+          pv: pick((k) => k.key),
+          rv: pick((k) => k.books.run?.key ?? null),
+          iv: pick((k) => k.books.idle),
+          sv: pick((k) => k.books.stop),
+        } },
         { $match: { $or: [{ pv: { $type: NUMERIC } }, { rv: { $type: NUMERIC } }] } },
         // Highest counter value per bucket, then the series itself - the stepping
         // happens in Node (countSteps), for the same reason as the pipeline above:
@@ -237,8 +248,8 @@ export async function computeActivity(
         // ponytail: a counter that resets AND climbs again inside ONE bucket loses
         // that bucket's post-reset pieces ($max keeps the pre-reset peak). Once a
         // day, bounded by one bucket of output.
-        { $group: { _id: { m: '$machineId', t: bucket }, pv: { $max: '$pv' }, rv: { $max: '$rv' } } },
-        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv', r: '$rv' } } } },
+        { $group: { _id: { m: '$machineId', t: bucket }, pv: { $max: '$pv' }, rv: { $max: '$rv' }, iv: { $max: '$iv' }, sv: { $max: '$sv' } } },
+        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv', r: '$rv', i: '$iv', s: '$sv' } } } },
       ]).allowDiskUse(true).option({ maxTimeMS }).exec() : [];
 
       return { tele, minutes, made, keyed };
@@ -275,25 +286,42 @@ export async function computeActivity(
   // fabricated hundreds of pieces.
   // ponytail: a one-sample lookahead is the whole heuristic; a counter that
   // stays wrong for two consecutive buckets still fools it.
-  type Point = { t: Date; v: number | null; r: number | null };
-  const seriesBy = new Map<string, { t: number; v: number | null; r: number | null }[]>(
+  type Point = { t: Date; v: number | null; r: number | null; i: number | null; s: number | null };
+  type Sample = { t: number; v: number | null; r: number | null; i: number | null; s: number | null };
+  const num = (x: unknown): number | null => (x == null ? null : Number(x));
+  const seriesBy = new Map<string, Sample[]>(
     ((teleAgg as { made: { _id: string; pts: Point[] }[] }).made || [])
       .map((m) => [m._id, m.pts
-        .map((x) => ({ t: new Date(x.t).getTime(), v: x.v == null ? null : Number(x.v), r: x.r == null ? null : Number(x.r) }))
+        .map((x) => ({ t: new Date(x.t).getTime(), v: num(x.v), r: num(x.r), i: num(x.i), s: num(x.s) }))
         .sort((a, b) => a.t - b.t)]),
   );
-  const runKeyBy = new Map<string, RunSignal | null>(
-    ((teleAgg as { keyed: { id: string; run: RunSignal | null }[] }).keyed || []).map((k) => [k.id, k.run]),
+  const booksBy = new Map<string, MachineBooks>(
+    ((teleAgg as { keyed: { id: string; books: MachineBooks }[] }).keyed || []).map((k) => [k.id, k.books]),
   );
   const madeBy = new Map<string, number>(
     [...seriesBy].map(([id, pts]) => [id, countStepsOf(pts.filter((x) => x.v != null).map((x) => ({ t: x.t, v: x.v as number })))]),
   );
 
-  const runFromSignal = (id: string): number | null => {
-    const sig = runKeyBy.get(id);
-    const pts = seriesBy.get(id);
-    if (!sig || !pts) return null;
-    return runMsFromSeries(pts.filter((x) => x.r != null).map((x) => ({ t: x.t, v: x.r as number })), sig.kind);
+  // Seconds counters are stepped like production; a flag credits the gaps after
+  // the samples that carried it — but only if it really IS a flag. SPG04 calls a
+  // register RUNNING_FLAG and puts 10932 in it; believing the name would have
+  // credited that as running time.
+  const seriesOf = (id: string, field: 'r' | 'i' | 's'): { t: number; v: number }[] =>
+    (seriesBy.get(id) || []).filter((x) => x[field] != null).map((x) => ({ t: x.t, v: x[field] as number }));
+
+  const booksFor = (id: string): { runMs: number; idleMs: number | null; stopMs: number | null } | null => {
+    const books = booksBy.get(id);
+    if (!books?.run) return null;
+    const runSeries = seriesOf(id, 'r');
+    if (books.run.kind === 'flag' && runSeries.some((x) => x.v !== 0 && x.v !== 1)) return null;
+    const runMs = runMsFromSeries(runSeries, books.run.kind);
+    if (runMs == null) return null;
+    const secs = (field: 'i' | 's', key: string | null): number | null => {
+      if (!key) return null;
+      const ms = runMsFromSeries(seriesOf(id, field), 'seconds');
+      return ms == null ? null : ms;
+    };
+    return { runMs, idleMs: secs('i', books.idle), stopMs: secs('s', books.stop) };
   };
 
   // Key selection is shared (utils/production) with the event engine + client.
@@ -365,7 +393,8 @@ export async function computeActivity(
     // The machine's own run signal wins when it has one: the collector's status
     // field is a guess about the machine, this IS the machine. ISB02 read 0m of
     // runtime for a 100-piece day purely because its status never said "running".
-    const signalRun = runFromSignal(ref) ?? (m.machineId && m.machineId !== ref ? runFromSignal(m.machineId) : null);
+    const own = booksFor(ref) ?? (m.machineId && m.machineId !== ref ? booksFor(m.machineId) : null);
+    const signalRun = own?.runMs ?? null;
     // …but only when the machine's own output doesn't contradict it. SPG02/03/04
     // publish RUNNING_FLAG and it is wired to nothing: 744 readings today, every
     // one of them 0, while the three of them made 297 pieces between them. A
@@ -377,6 +406,12 @@ export async function computeActivity(
     const runningMs = trustSignal
       ? Math.min(signalRun as number, windowMs)
       : (readings > 0 ? Math.max(0, reportedMs - downInEnvelope) : 0);
+
+    // When the machine keeps its own books for the whole day, use them for idle
+    // and stopped too — one clock for the whole pie. ISB03's span log claimed
+    // 7.59h stopped where the machine's own counter says 2.48h.
+    if (trustSignal && own?.idleMs != null) down.idle = Math.min(own.idleMs, windowMs);
+    if (trustSignal && own?.stopMs != null) down.stopped = Math.min(own.stopMs, windowMs);
 
     // A machine cannot be idle while it is demonstrably running. When the two
     // sources disagree, believe the machine and take the contradiction out of

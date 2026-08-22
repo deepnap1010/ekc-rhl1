@@ -67,18 +67,41 @@ const RUN_FLAG_RE = /^(is )?run(ning)?( flag| state)?$/;
 const normRunKey = (k: string): string =>
   k.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().replace(/[._/\-]+/g, ' ').trim();
 
-export type RunSignal = { key: string; kind: 'seconds' | 'flag' };
+// Some PLCs keep their OWN books for the whole day — run, idle and stopped
+// seconds side by side. Where all three exist they beat anything we reconstruct
+// from the status field: INTERNALSHOTBLASTING03's own counters say it was
+// stopped for 2.48h, while the span log (fed by a status field that lags) said
+// 7.59h.
+const IDLE_SECONDS_RE = /^idle (sec|secs|seconds|time)( today)?$/;
+const STOP_SECONDS_RE = /^stop(ped)? (sec|secs|seconds|time)( today)?$/;
 
-/** The machine's own run signal in a flattened payload, or null. */
-export function pickRunKey(flat: Record<string, unknown>): RunSignal | null {
+export type RunSignal = { key: string; kind: 'seconds' | 'flag' };
+export interface MachineBooks {
+  run: RunSignal | null;
+  idle: string | null;    // cumulative seconds only — a flag says nothing about idle
+  stop: string | null;
+}
+
+/** The machine's own run/idle/stopped signals in a flattened payload. */
+export function pickRunKeys(flat: Record<string, unknown>): MachineBooks {
   const candidates = Object.keys(flat).filter((k) => {
     if (IO_GROUP_RE.test(k)) return false;
     const label = stripGroups(k);
     if (isRegisterKey(label)) return false;
     return isNumericValue(flat[k]);
   });
-  const seconds = candidates.find((k) => RUN_SECONDS_RE.test(normRunKey(stripGroups(k))));
-  if (seconds) return { key: seconds, kind: 'seconds' };
-  const flag = candidates.find((k) => RUN_FLAG_RE.test(normRunKey(stripGroups(k))));
-  return flag ? { key: flag, kind: 'flag' } : null;
+  const find = (re: RegExp): string | null => candidates.find((k) => re.test(normRunKey(stripGroups(k)))) ?? null;
+
+  const seconds = find(RUN_SECONDS_RE);
+  const flag = seconds ? null : find(RUN_FLAG_RE);
+  return {
+    run: seconds ? { key: seconds, kind: 'seconds' } : (flag ? { key: flag, kind: 'flag' } : null),
+    // Only meaningful alongside a run counter — mixing the machine's idle with a
+    // reconstructed runtime would put two different clocks in the same pie.
+    idle: seconds ? find(IDLE_SECONDS_RE) : null,
+    stop: seconds ? find(STOP_SECONDS_RE) : null,
+  };
 }
+
+/** Back-compat single-signal helper. */
+export const pickRunKey = (flat: Record<string, unknown>): RunSignal | null => pickRunKeys(flat).run;
