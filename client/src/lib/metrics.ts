@@ -124,8 +124,9 @@ export interface ActivitySum {
   machines: number; reported: number;
   running: number; idle: number; stopped: number; offline: number;   // machine COUNTS by observed state
   production: number; reportedProduction: number;                     // pcs (and how many machines reported a counter)
+  avgTemp: number | null; reportedTemp: number;                       // degC, meaned over the machines that report one
   runningMs: number; idleMs: number; stoppedMs: number; offlineMs: number;
-  downtimeMs: number;                                                 // idle + stopped + signal lost
+  downtimeMs: number;                                                 // idle + stopped (signal lost is NOT downtime)
   availabilityPct: number;                                            // running time / (window x machines)
 }
 
@@ -133,8 +134,10 @@ export function sumActivity(rows: MachineActivityRow[], windowMs: number): Activ
   const s: ActivitySum = {
     machines: rows.length, reported: 0, running: 0, idle: 0, stopped: 0, offline: 0,
     production: 0, reportedProduction: 0,
+    avgTemp: null, reportedTemp: 0,
     runningMs: 0, idleMs: 0, stoppedMs: 0, offlineMs: 0, downtimeMs: 0, availabilityPct: 0,
   };
+  let tempSum = 0;
   for (const r of rows) {
     if (r.live) s.reported += 1;
     if (r.status === 'running') s.running += 1;
@@ -142,9 +145,17 @@ export function sumActivity(rows: MachineActivityRow[], windowMs: number): Activ
     else if (r.status === 'stopped') s.stopped += 1;
     else s.offline += 1;
     if (r.production != null) { s.production += r.production; s.reportedProduction += 1; }
+    // Temperature is a MEAN, never a sum — two furnaces at 620 C are a 620 C
+    // line, not a 1240 C one. Machines with no probe are left out entirely so
+    // they can't pull the family's average down.
+    if (r.avgTemp != null) { tempSum += r.avgTemp; s.reportedTemp += 1; }
     s.runningMs += r.runningMs; s.idleMs += r.idleMs; s.stoppedMs += r.stoppedMs; s.offlineMs += r.offlineMs;
   }
-  s.downtimeMs = s.idleMs + s.stoppedMs + s.offlineMs;
+  s.avgTemp = s.reportedTemp ? Math.round((tempSum / s.reportedTemp) * 10) / 10 : null;
+  // Signal lost is darkness, not downtime: we don't know what the machine was
+  // doing, so folding it in would report a reporting outage as a production loss.
+  // It stays visible as its own figure (s.offlineMs) next to this one.
+  s.downtimeMs = s.idleMs + s.stoppedMs;
   s.availabilityPct = windowMs && rows.length ? Math.round((s.runningMs / (windowMs * rows.length)) * 100) : 0;
   return s;
 }

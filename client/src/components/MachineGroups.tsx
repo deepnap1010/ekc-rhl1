@@ -21,6 +21,7 @@ import { machineApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from './ui';
 import { fmtNum, fmtDuration, fmtTime } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
+import { isFurnaceRef } from '../lib/temperature';
 import { sumActivity } from '../lib/metrics';
 import { resolveRange, DATE_PRESETS, presetLabel, type DatePreset } from '../store/filters';
 import type { ShiftTiming } from '../lib/settings';
@@ -167,12 +168,21 @@ function GroupPanel({ label, rows, windowMs, windowLabel }: {
 
       {/* Group totals — the sum of every machine in the family for this window */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3.5">
-        <Total label="Production" value={t.reportedProduction ? `${fmtNum(t.production)} pcs` : '—'}
-          sub={t.reportedProduction ? `${t.reportedProduction}/${t.machines} counters` : 'no counter signal'} color={TEAL} />
+        {/* A furnace family makes HEAT, not pieces — its headline figure is the mean
+            work-zone temperature over the window, never a piece count. */}
+        {isFurnaceRef(label) ? (
+          <Total label="Avg Temperature" value={t.avgTemp != null ? `${fmtNum(t.avgTemp)} °C` : '—'}
+            sub={t.reportedTemp ? `${t.reportedTemp}/${t.machines} reporting` : 'no temperature signal'}
+            color={t.avgTemp != null ? AMBER : SLATE} />
+        ) : (
+          <Total label="Production" value={t.reportedProduction ? `${fmtNum(t.production)} pcs` : '—'}
+            sub={t.reportedProduction ? `${t.reportedProduction}/${t.machines} counters` : 'no counter signal'} color={TEAL} />
+        )}
         <Total label="Runtime" value={fmtDuration(t.runningMs)} sub={`${t.availabilityPct}% availability`} color={TEAL} />
         <Total label="Idle" value={fmtDuration(t.idleMs)} sub="connected, no activity" color={t.idleMs ? AMBER : SLATE} />
         <Total label="Stopped" value={fmtDuration(t.stoppedMs)} sub="not operational" color={t.stoppedMs ? RED : SLATE} />
-        <Total label="Downtime" value={fmtDuration(t.downtimeMs)} sub={`incl. ${fmtDuration(t.offlineMs)} signal lost`} color={t.downtimeMs ? DEEP_RED : SLATE} />
+        <Total label="Downtime" value={fmtDuration(t.downtimeMs)}
+          sub={`${fmtDuration(t.idleMs)} idle + ${fmtDuration(t.stoppedMs)} stopped`} color={t.downtimeMs ? DEEP_RED : SLATE} />
       </div>
 
       <SplitBar running={t.runningMs} idle={t.idleMs} stopped={t.stoppedMs} offline={t.offlineMs} />
@@ -227,7 +237,8 @@ function SplitBar({ running, idle, stopped, offline }: { running: number; idle: 
 }
 
 function MachineMiniCard({ row }: { row: MachineActivityRow }): JSX.Element {
-  const downtimeMs = row.idleMs + row.stoppedMs + row.offlineMs;
+  const downtimeMs = row.idleMs + row.stoppedMs;
+  const furnace = isFurnaceRef(row.code);
   return (
     <Link to={`/machines/${row.code}`} className="card p-3.5 flex flex-col transition-all hover:shadow-md hover:border-accent/30 hover:-translate-y-0.5 group">
       <div className="flex items-start justify-between gap-2">
@@ -243,11 +254,18 @@ function MachineMiniCard({ row }: { row: MachineActivityRow }): JSX.Element {
       {/* Output in the window — the number a supervisor scans for */}
       <div className="mt-2.5 rounded-lg border border-line bg-base px-3 py-2 flex items-end justify-between gap-2">
         <div className="min-w-0">
-          <div className="label">Production</div>
-          <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.production ? TEAL : SLATE }}>
-            {row.production != null ? fmtNum(row.production) : '—'}
-            {row.production != null && <span className="text-[11px] font-medium text-steel"> pcs</span>}
-          </div>
+          <div className="label">{furnace ? 'Temperature' : 'Production'}</div>
+          {furnace ? (
+            <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.avgTemp != null ? AMBER : SLATE }}>
+              {row.avgTemp != null ? fmtNum(row.avgTemp) : '—'}
+              {row.avgTemp != null && <span className="text-[11px] font-medium text-steel"> °C</span>}
+            </div>
+          ) : (
+            <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.production ? TEAL : SLATE }}>
+              {row.production != null ? fmtNum(row.production) : '—'}
+              {row.production != null && <span className="text-[11px] font-medium text-steel"> pcs</span>}
+            </div>
+          )}
         </div>
         <div className="text-right shrink-0">
           <div className="text-[10px] text-steel">{row.live ? `${fmtNum(row.readings)} readings` : 'no data'}</div>

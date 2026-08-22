@@ -98,13 +98,23 @@ export function shiftDayOn(shifts: ShiftTiming[], day: Date): { from: Date; to: 
   };
 }
 
+/** The calendar date whose production day is RUNNING right now.
+ *
+ *  At 03:00 the plant is mid night-shift, and that shift belongs to YESTERDAY —
+ *  which is exactly what the PLC still stamps into SHIFT_DATE (verified: the
+ *  23:00 shift carries the previous date right through to 07:00). Anchoring on
+ *  today's calendar date instead would open a window that starts in the future,
+ *  and the night shift would stare at an empty dashboard until 07:00. */
+function runningDayAnchor(shifts: ShiftTiming[]): Date {
+  const today = dayStart(0);
+  return nowRounded() < shiftDayOn(shifts, today).from ? dayStart(-1) : today;
+}
+
 /** Today's production day so far. EVERY "today" surface — the machine cards, the
  *  machine Overview tiles, the Full-day filter — must resolve through this, or
  *  two panels on one screen quote different days. */
 export function todayWindow(shifts: ShiftTiming[]): { from: Date; to: Date } {
-  const { from } = shiftDayOn(shifts, dayStart(0));
-  // Before the first shift starts, today's day hasn't opened yet: the window
-  // stays empty (the shift running at 03:00 belongs to YESTERDAY's last shift).
+  const { from } = shiftDayOn(shifts, runningDayAnchor(shifts));
   return { from, to: new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000)) };
 }
 
@@ -121,14 +131,18 @@ export function resolveRange(
     return { from, to };
   }
 
+  // "Today" and "Yesterday" are production days, counted from the one running
+  // now — so at 03:00 they don't silently shift by one under the night shift.
+  const anchor = runningDayAnchor(shifts);
+  const prev = new Date(anchor); prev.setDate(prev.getDate() - 1);
   const shift = f.shiftName && shiftApplies(f.preset) ? shifts.find((s) => s.name === f.shiftName) : null;
   if (f.preset === 'today') {
-    if (shift) return shiftWindowOn(shift, dayStart(0));
+    if (shift) return shiftWindowOn(shift, anchor);
     return todayWindow(shifts);
   }
   if (f.preset === 'yesterday') {
-    if (shift) return shiftWindowOn(shift, dayStart(-1));
-    return shiftDayOn(shifts, dayStart(-1));
+    if (shift) return shiftWindowOn(shift, prev);
+    return shiftDayOn(shifts, prev);
   }
   // Completed period → fixed end; running period → up to now.
   if (f.preset === 'prevWeek') return { from: weekStart(-1), to: weekStart(0) };

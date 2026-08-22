@@ -11,6 +11,7 @@ import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue } from '../lib/production';
+import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
@@ -97,9 +98,10 @@ export default function Machines() {
 
   // TODAY's activity per machine — one window drives the whole card:
   // uptime/idle/stopped/downtime tiles AND the "today +N pcs" production line.
-  // The window is the PRODUCTION day (todayWindow: the union of today's shifts),
-  // the same one the machine Overview and the Full-day filter use, so a card and
-  // the page it opens can never disagree. `to` is minute-rounded for stable keys.
+  // The window is the PRODUCTION day (todayWindow: 07:00 -> 07:00, the boundary
+  // the PLC itself stamps into SHIFT_DATE), the same one the machine Overview
+  // and the Full-day filter use, so a card and the page it opens can never
+  // disagree. `to` is minute-rounded for stable query keys.
   const { shifts: cfgShifts } = useAppConfig();
   const day = todayWindow(cfgShifts);
   const dayFromISO = day.from.toISOString();
@@ -467,7 +469,26 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
   const liveCount  = sigEntries.filter(([, v]) => (isNumeric(v) && Number(v) !== 0) || (typeof v === 'string' && v.trim() !== '')).length;
   const rawOnly    = sigTotal > 0 && namedCount === 0;
 
-  const headline = computeHeadline(params);
+  // A furnace makes heat, not pieces: its live work-zone temperature IS the
+  // headline, and it must win over computeHeadline's generic rules — those skip
+  // T1…T4 as S7 timer addresses, which is right everywhere EXCEPT a furnace.
+  // `params` is the live socket reading, so this number moves with the furnace.
+  //
+  // A furnace ALWAYS shows Temperature, even with nothing to show. Falling back
+  // to the generic "Signals Tracked · 356 unmapped raw signals" answers a
+  // question nobody asked and hides the one that matters: this furnace is not
+  // reporting a temperature. "—" says that; a signal count does not.
+  const furnace = isFurnaceRef(code);
+  const liveTemp = furnace ? temperatureNow(params, code) : null;
+  const headline: Headline | null = furnace
+    ? {
+      label: 'Temperature',
+      value: liveTemp != null ? fmtNum(liveTemp) : '—',
+      unit: liveTemp != null ? '°C' : undefined,
+      sub: liveTemp != null ? undefined : 'no temperature signal from the PLC',
+      tone: 'neutral',
+    }
+    : computeHeadline(params);
   const hero: Headline = headline ?? {
     label: 'Signals Tracked',
     value: fmtCompact(sigTotal),
@@ -546,13 +567,24 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
             {hero.unit && <span className="text-sm font-medium text-steel">{hero.unit}</span>}
           </div>
           {hero.sub && <div className="text-[10px] text-steel mt-0.5 truncate">{hero.sub}</div>}
-          {/* The number a supervisor actually scans for: production made TODAY */}
-          {activity && activity.production != null && (
-            <div className="text-[10px] mt-1">
-              <span className="text-steel">today </span>
-              <span className={`data font-bold ${activity.production > 0 ? 'text-running' : 'text-steel'}`}>+{fmtNum(activity.production)}</span>
-              <span className="text-steel"> pcs</span>
-            </div>
+          {/* The number a supervisor actually scans for over the day: pieces made —
+              or, on a furnace, the mean temperature it held. */}
+          {furnace ? (
+            activity?.avgTemp != null && (
+              <div className="text-[10px] mt-1">
+                <span className="text-steel">today avg </span>
+                <span className="data font-bold text-idle">{fmtNum(activity.avgTemp)}</span>
+                <span className="text-steel"> °C</span>
+              </div>
+            )
+          ) : (
+            activity && activity.production != null && (
+              <div className="text-[10px] mt-1">
+                <span className="text-steel">today </span>
+                <span className={`data font-bold ${activity.production > 0 ? 'text-running' : 'text-steel'}`}>+{fmtNum(activity.production)}</span>
+                <span className="text-steel"> pcs</span>
+              </div>
+            )
           )}
         </div>
         {trend && trend.spark.length > 1 && (
@@ -566,7 +598,7 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
         <TimeStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
         <TimeStat label="Idle" ms={activity?.idleMs} color={AMBER} />
         <TimeStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
-        <TimeStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs + activity.offlineMs : undefined} color="#991B1B" />
+        <TimeStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs : undefined} color="#991B1B" />
       </div>
 
       {/* Footer — the card is a summary; deep views live behind these links */}

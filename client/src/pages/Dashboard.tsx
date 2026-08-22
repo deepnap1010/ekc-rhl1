@@ -245,7 +245,7 @@ export default function Dashboard() {
                   <Legend rows={timeSeg} total={observedMs} format={(v) => fmtDuration(v)} scroll={false} />
                 )}
                 <div className="flex items-center justify-between text-xs pt-2 border-t border-line">
-                  <span className="text-steel">Downtime <span className="text-steel/60">(idle + stopped + signal lost)</span></span>
+                  <span className="text-steel">Downtime <span className="text-steel/60">(idle + stopped)</span></span>
                   <span className="data font-bold" style={{ color: t.downtimeMs ? DEEP_RED : STEEL }}>{fmtDuration(t.downtimeMs)}</span>
                 </div>
               </div>

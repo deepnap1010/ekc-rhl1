@@ -24,6 +24,7 @@ import { resolveRange, shiftApplies, presetLabel, todayWindow } from '../../stor
 import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { LINKS } from '../../lib/linkedMetrics';
+import { isFurnaceRef } from '../../lib/temperature';
 import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent, MachineActivityRow } from '../../types/api';
 
 const isZoneTemp = (k: string) => /(^|_)t\d+$/i.test(k);
@@ -59,13 +60,13 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
     enabled: !!id,
   });
 
-  // TODAY's activity from the SHARED engine — the same PRODUCTION day (shift-
-  // derived, via todayWindow) and query key as the machine cards, so react-query
-  // shares one fetch and no two panels on this page quote different days.
-  // Runtime is credited only for time the machine actually reported (silence is
-  // never uptime).
-  const { shifts } = useAppConfig();
-  const day = todayWindow(shifts);
+  // TODAY's activity from the SHARED engine — the same PRODUCTION day (07:00 ->
+  // 07:00, the boundary the PLC itself stamps into SHIFT_DATE) and query key as
+  // the machine cards, so react-query shares one fetch and no two panels on this
+  // page quote different days. Runtime is credited only for time the machine
+  // actually reported (silence is never uptime).
+  const { shifts: cfgShifts } = useAppConfig();
+  const day = todayWindow(cfgShifts);
   const dayFromISO = day.from.toISOString();
   const dayToISO = day.to.toISOString();
   const { data: dayAct } = useQuery({
@@ -344,16 +345,21 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   const rows = data?.data || [];
   const codes = [machine.code, machine.machineId, machine.id, machine._id].filter(Boolean).map(String);
   const row = rows.find((r) => codes.includes(r.code));
+  // A furnace makes heat, not pieces: for it this panel answers "what temperature
+  // did it hold during that shift", and the whole production/linked-counter path
+  // below is skipped — borrowing a neighbour's piece count for a furnace would be
+  // nonsense twice over.
+  const furnace = codes.some((c) => isFurnaceRef(c));
   let production = row?.production ?? null;
   let borrowedFrom: string | null = null;
-  if (production == null || production <= 0) {
+  if (!furnace && (production == null || production <= 0)) {
     const link = LINKS.find((l) => codes.some((c) => c.toUpperCase() === l.target));
     const srcRow = link ? rows.find((r) => String(r.code).toUpperCase() === link.source) : null;
     if (srcRow?.production != null && srcRow.production > 0) { production = srcRow.production; borrowedFrom = srcRow.code; }
   }
 
   return (
-    <Panel icon={Calendar} title="Production by Shift">
+    <Panel icon={Calendar} title={furnace ? 'Temperature by Shift' : 'Production by Shift'}>
       <div className="flex items-center gap-2 flex-wrap mb-4">
         <select value={shiftOk ? shiftName : ''} onChange={(e) => setShiftName(e.target.value)}
           disabled={!shiftOk}
@@ -371,19 +377,36 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
       ) : (
         <>
           <div className="rounded-lg border border-line bg-base px-4 py-3 mb-3">
-            <div className="text-[10px] uppercase tracking-wide text-steel">Production · {isCustom ? (customDay ? fmtDate(`${customDay}T00:00:00`) : 'Custom range') : presetLabel(range.preset)}{shift ? ` · ${shift.name}` : ''}</div>
-            <div className="data text-3xl font-bold text-primary leading-tight">
-              {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
+            <div className="text-[10px] uppercase tracking-wide text-steel">
+              {furnace ? 'Avg temperature' : 'Production'} · {isCustom ? (customDay ? fmtDate(`${customDay}T00:00:00`) : 'Custom range') : presetLabel(range.preset)}{shift ? ` · ${shift.name}` : ''}
             </div>
-            {borrowedFrom
-              ? <div className="text-[10px] text-steel mt-0.5">via linked machine {borrowedFrom}</div>
-              : row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
+            {furnace ? (
+              <>
+                <div className="data text-3xl font-bold text-primary leading-tight">
+                  {row?.avgTemp != null ? fmtNum(row.avgTemp) : '—'} <span className="text-sm font-medium text-steel">°C</span>
+                </div>
+                <div className="text-[10px] text-steel mt-0.5">
+                  {row?.avgTemp != null
+                    ? `mean of ${row.tempZones} work zone${row.tempZones === 1 ? '' : 's'} over this window`
+                    : 'no temperature signal — the furnace reports no measured zone value'}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="data text-3xl font-bold text-primary leading-tight">
+                  {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
+                </div>
+                {borrowedFrom
+                  ? <div className="text-[10px] text-steel mt-0.5">via linked machine {borrowedFrom}</div>
+                  : row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
+              </>
+            )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <MiniStat label="Runtime" value={fmtDuration(row?.runningMs || 0)} color="#059669" />
             <MiniStat label="Idle" value={fmtDuration(row?.idleMs || 0)} color="#D97706" />
             <MiniStat label="Stopped" value={fmtDuration(row?.stoppedMs || 0)} color="#DC2626" />
-            <MiniStat label="Downtime" value={fmtDuration((row?.idleMs || 0) + (row?.stoppedMs || 0) + (row?.offlineMs || 0))} color="#991B1B" />
+            <MiniStat label="Downtime" value={fmtDuration((row?.idleMs || 0) + (row?.stoppedMs || 0))} color="#991B1B" />
           </div>
           <div className="text-[10px] text-steel/60 mt-3">
             {fmtNum(row?.readings || 0)} readings · {fmtTime(win.from)} → {fmtTime(win.to)}
@@ -438,7 +461,7 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
   const runtimeMs = actRow?.runningMs ?? 0;
   const idleMs = actRow?.idleMs ?? 0;
   const stoppedMs = actRow?.stoppedMs ?? 0;
-  const downMs = actRow ? actRow.idleMs + actRow.stoppedMs + actRow.offlineMs : 0;
+  const downMs = actRow ? actRow.idleMs + actRow.stoppedMs : 0;
   const accounted = runtimeMs + downMs;
   const uptimePct = accounted > 0 ? Math.round((runtimeMs / accounted) * 100) : 0;
   const efficiency = machine.oee != null ? Math.round(machine.oee) : uptimePct;

@@ -11,6 +11,7 @@ import { Telemetry } from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey, pickRunKeys, type MachineBooks } from '../utils/production.js';
+import { pickTemperatureKeys, TEMP_MIN, TEMP_MAX } from '../utils/temperature.js';
 import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
 
@@ -29,6 +30,11 @@ export interface ActivityRow {
   offlineMs: number;
   production: number | null; // counter delta over the range
   productionKey: string | null;
+  // Mean MEASURED temperature over the range, averaged across the machine's work
+  // zones. null = this machine reports no temperature (most of them don't) — a
+  // furnace shows this where a press shows production.
+  avgTemp: number | null;
+  tempZones: number;         // how many zones that mean was taken over
 }
 
 export interface ActivityResult {
@@ -144,7 +150,7 @@ export async function computeActivity(
     .lean()) as LeanM[];
   const refs = [...new Set(machines.flatMap((m) => [m.code, m.machineId].filter(Boolean) as string[]))];
 
-  const cacheKey = 'activity4:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
+  const cacheKey = 'activity5:' + JSON.stringify(scope || 'all') + ':' + JSON.stringify(only || null)
     + ':' + fromD.toISOString() + ':' + toD.toISOString();
   // Month / year windows scan far more telemetry but change far more slowly:
   // cache them longer and give Atlas more time, so the dashboard's group panels
@@ -252,7 +258,38 @@ export async function computeActivity(
         { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv', r: '$rv', i: '$iv', s: '$sv' } } } },
       ]).allowDiskUse(true).option({ maxTimeMS }).exec() : [];
 
-      return { tele, minutes, made, keyed };
+      // Mean temperature over the window, averaged in the database. A furnace's
+      // reading is the mean across its work zones (T1…T4), so each document
+      // contributes ONE per-zone mean and those are averaged over the window —
+      // otherwise a machine with four zones would out-weight one with a single
+      // probe. Dead channels (nulls, S7 fault sentinels) are filtered out first,
+      // so an unwired thermocouple can't drag the average toward zero.
+      const tempKeyed = tele
+        .map((t: TeleRow) => ({ id: t._id, keys: t.lastData ? pickTemperatureKeys(flattenData(t.lastData), t._id) : [] }))
+        .filter((x) => x.keys.length > 0 && x.keys.every((k) => !k.includes('.')));
+
+      const heat = tempKeyed.length ? await Telemetry.aggregate([
+        { $match: { machineId: { $in: tempKeyed.map((k) => k.id) }, timestamp: { $gte: fromD, $lte: endD } } },
+        { $addFields: { tv: { $switch: {
+          branches: tempKeyed.map((k) => ({
+            case: { $eq: ['$machineId', k.id] },
+            then: { $filter: {
+              input: k.keys.map((key) => ({ $getField: { field: key, input: '$data' } })),
+              as: 'v',
+              cond: { $and: [
+                { $isNumber: '$$v' },
+                { $gte: ['$$v', TEMP_MIN] },
+                { $lte: ['$$v', TEMP_MAX] },
+              ] },
+            } },
+          })),
+          default: [],
+        } } } },
+        { $match: { 'tv.0': { $exists: true } } },
+        { $group: { _id: '$machineId', avgTemp: { $avg: { $avg: '$tv' } }, zones: { $max: { $size: '$tv' } } } },
+      ]).allowDiskUse(true).option({ maxTimeMS }).exec() : [];
+
+      return { tele, minutes, made, keyed, heat };
     }),
     DowntimeEvent.find({
       machineId: { $in: refs },
@@ -297,6 +334,12 @@ export async function computeActivity(
   );
   const booksBy = new Map<string, MachineBooks>(
     ((teleAgg as { keyed: { id: string; books: MachineBooks }[] }).keyed || []).map((k) => [k.id, k.books]),
+  );
+  // Window-mean temperature per machine (averaged above). Keyed on the telemetry
+  // machineId, exactly like madeBy.
+  const heatBy = new Map<string, { avgTemp: number; zones: number }>(
+    ((teleAgg as { heat?: { _id: string; avgTemp: number; zones: number }[] }).heat || [])
+      .map((x) => [x._id, { avgTemp: x.avgTemp, zones: x.zones }]),
   );
   const madeBy = new Map<string, number>(
     [...seriesBy].map(([id, pts]) => [id, countStepsOf(pts.filter((x) => x.v != null).map((x) => ({ t: x.t, v: x.v as number })))]),
@@ -439,6 +482,7 @@ export async function computeActivity(
       status = buckets[0][0];
     }
     const prod = productionOf(t);
+    const heat = t ? heatBy.get(t._id) : undefined;
     return {
       code: ref,
       name: m.name || m.machineName || ref,
@@ -448,6 +492,8 @@ export async function computeActivity(
       runningMs, idleMs: down.idle, stoppedMs: down.stopped, offlineMs: down.offline,
       production: prod?.production ?? null,
       productionKey: prod?.key ?? null,
+      avgTemp: heat ? Math.round(heat.avgTemp * 10) / 10 : null,
+      tempZones: heat?.zones ?? 0,
     };
   });
 
