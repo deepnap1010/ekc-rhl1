@@ -52,6 +52,30 @@ const GRACE_MS = 5 * 60_000;
 const aliasMatch = (refs: string[]): Record<string, unknown> =>
   ({ $or: [{ code: { $in: refs } }, { machineId: { $in: refs } }] });
 
+export type Span = { type: 'idle' | 'stopped' | 'offline'; s: number; e: number };
+
+/** Collapse a machine's downtime spans into a NON-OVERLAPPING timeline.
+ *
+ *  The span log can't be trusted to be clean: while two server instances swept
+ *  the same database they wrote overlapping rows — and some backwards ones
+ *  (endedAt before startedAt) — for the same minutes. Summing those raw reported
+ *  more downtime than the window contains, which drove runtime to 0 on machines
+ *  that were demonstrably running. Each span is clipped to start after the
+ *  previous one ends, so overlapping time is counted ONCE (earliest writer wins)
+ *  and the total can never exceed the span of the input. */
+export function clipSpans(spans: Span[]): Span[] {
+  const out: Span[] = [];
+  let cursor = Number.NEGATIVE_INFINITY;
+  for (const sp of [...spans].sort((a, b) => a.s - b.s || a.e - b.e)) {
+    if (sp.e <= sp.s) continue;                 // backwards row — never real
+    const s = Math.max(sp.s, cursor);
+    if (sp.e <= s) continue;                    // fully swallowed by an earlier span
+    out.push({ type: sp.type, s, e: sp.e });
+    cursor = sp.e;
+  }
+  return out;
+}
+
 /**
  * @param scope user's machine scope (null = unrestricted)
  * @param only  optional further restriction to specific machine refs (code/machineId aliases)
@@ -205,7 +229,6 @@ export async function computeActivity(
 
   // Window-clipped spans per machine (kept span-level: runningMs below needs
   // per-span overlap with the machine's reporting envelope).
-  type Span = { type: 'idle' | 'stopped' | 'offline'; s: number; e: number };
   const spansBy = new Map<string, Span[]>();
   for (const ev of events) {
     const s = Math.max(new Date(ev.startedAt).getTime(), fromD.getTime());
@@ -220,10 +243,10 @@ export async function computeActivity(
   const rows: ActivityRow[] = machines.map((m) => {
     const ref = m.code || m.machineId || String(m._id);
     const t = teleBy.get(ref) ?? (m.machineId ? teleBy.get(m.machineId) : undefined);
-    const spans = [
+    const spans = clipSpans([
       ...(spansBy.get(ref) || []),
       ...(m.machineId && m.machineId !== ref ? spansBy.get(m.machineId) || [] : []),
-    ];
+    ]);
     const down = { idle: 0, stopped: 0, offline: 0 };
     for (const sp of spans) down[sp.type] += sp.e - sp.s;
     const downMs = down.idle + down.stopped + down.offline;

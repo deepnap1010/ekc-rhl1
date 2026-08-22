@@ -5,12 +5,42 @@
 // closes (with a duration) when it recovers. Offline = no telemetry within the
 // live window. Forward-looking (it can't reconstruct downtime from before it
 // started running). Reads machine status; writes only downtime events.
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { Machine } from '../models/Machine.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
+import { SweepLock } from '../models/SweepLock.js';
 import { errMessage } from '../utils/http.js';
 import { ensureEventSeed, recordState, recordProduction } from './event.service.js';
 
 const SWEEP_MS = 30_000; // re-evaluate every 30s
+
+// ── Single-writer lease ──────────────────────────────────────────────────────
+// Only ONE instance may sweep, however many are connected to the database. Two
+// were: a local dev server and the deployed one, both writing spans for the same
+// machine 2 seconds apart, which produced overlapping (and backwards) rows and
+// double-counted downtime until runtime read 0. The lease expires, so a leader
+// that dies is replaced within one lease period instead of stopping the sweep.
+const LOCK_ID = 'downtime-sweep';
+const LEASE_MS = 75_000;   // > 2 sweep intervals: renewals never race the expiry
+const OWNER = `${os.hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+let wasLeader: boolean | null = null;
+
+async function holdLease(now: Date): Promise<boolean> {
+  try {
+    // Take it only if free (expired) or already ours. A concurrent instance loses
+    // the upsert with a duplicate-key error, which IS the "someone else holds it"
+    // answer — the whole election is this one atomic write.
+    const doc = await SweepLock.findOneAndUpdate(
+      { _id: LOCK_ID, $or: [{ heldUntil: { $lte: now } }, { owner: OWNER }] },
+      { $set: { owner: OWNER, heldUntil: new Date(now.getTime() + LEASE_MS) } },
+      { upsert: true, new: true },
+    ).lean();
+    return doc?.owner === OWNER;
+  } catch {
+    return false;   // duplicate key = another instance is the leader right now
+  }
+}
 
 type DownState = 'idle' | 'stopped' | 'offline';
 type State = DownState | 'up';
@@ -70,9 +100,18 @@ export async function sweepDowntime(): Promise<void> {
   if (sweeping) return;
   sweeping = true;
   try {
+    const now = new Date();
+    const leader = await holdLease(now);
+    if (leader !== wasLeader) {
+      console.log(leader
+        ? `[downtime] this instance is the sweep leader (${OWNER})`
+        : '[downtime] another instance is sweeping — standing by');
+      wasLeader = leader;
+    }
+    if (!leader) return;
+
     await ensureEventSeed();
     const machines = await Machine.find({}).lean();
-    const now = new Date();
     for (const m of machines) {
       const ref = m.code || m.machineId || String(m._id);
       if (!ref) continue;
