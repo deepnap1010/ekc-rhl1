@@ -10,7 +10,7 @@ import { Machine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { flattenData } from '../utils/flatten.js';
-import { pickProductionKey } from '../utils/production.js';
+import { pickProductionKey, pickRunKey, type RunSignal } from '../utils/production.js';
 import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
 
@@ -63,6 +63,48 @@ export type Span = { type: 'idle' | 'stopped' | 'offline'; s: number; e: number 
  *  that were demonstrably running. Each span is clipped to start after the
  *  previous one ends, so overlapping time is counted ONCE (earliest writer wins)
  *  and the total can never exceed the span of the input. */
+/** Pieces (or seconds) a counter ADDED across a series of samples.
+ *
+ *  A value only moves the high-water mark once the NEXT sample confirms it,
+ *  which is what separates the three things a PLC counter does: a real climb, a
+ *  shift RESET (a drop the next sample agrees with), and a single garbage
+ *  sample. Both kinds of garbage are in this fleet's data — CNCLATHE04 once
+ *  reported 0 against a true 440, SPG02 once reported 507 against a true 51 —
+ *  and unconfirmed, each would have fabricated hundreds of pieces.
+ *  ponytail: a one-sample lookahead is the whole heuristic; a counter that stays
+ *  wrong for two consecutive samples still fools it. */
+export function countStepsOf(series: { t: number; v: number }[]): number {
+  const v = [...series].sort((a, b) => a.t - b.t).map((p) => p.v);
+  if (v.length < 2) return 0;
+  let made = 0, high = v[0];
+  for (let i = 1; i < v.length; i += 1) {
+    const cur = v[i], next = i + 1 < v.length ? v[i + 1] : null;
+    if (cur > high) {
+      if (next === null || next >= cur) { made += cur - high; high = cur; }   // confirmed climb
+    } else if (cur < high && next !== null && next < high) {
+      high = cur;                                                             // confirmed reset
+    }
+  }
+  return made;
+}
+
+/** Milliseconds the MACHINE says it was running, from its own signal.
+ *
+ *  A seconds counter is stepped like production (it resets daily too, so the
+ *  same confirmation rules apply); a flag credits the time between the samples
+ *  that carried it, bridged by the same grace as reporting coverage, so a
+ *  machine that reports every 5 minutes is not punished for the gaps. */
+export function runMsFromSeries(series: { t: number; v: number }[], kind: 'seconds' | 'flag'): number | null {
+  const s = [...series].sort((a, b) => a.t - b.t);
+  if (s.length < 2) return null;
+  if (kind === 'seconds') return countStepsOf(s) * 1000;
+  let ms = 0;
+  for (let i = 1; i < s.length; i += 1) {
+    if (s[i - 1].v >= 1) ms += Math.min(s[i].t - s[i - 1].t, GRACE_MS);
+  }
+  return ms;
+}
+
 export function clipSpans(spans: Span[]): Span[] {
   const out: Span[] = [];
   let cursor = Number.NEGATIVE_INFINITY;
@@ -159,28 +201,47 @@ export async function computeActivity(
       // has a payload to pick from — hence a second pass, inside the same cache
       // entry. Dotted keys (raw PLC addresses like I0.4) are never counters, so
       // $getField on a flat key covers every real case.
+      // The same pass also collects the machine's own RUN signal where it has
+      // one, because it is the honest answer for runtime — see utils/production
+      // #pickRunKey. One pipeline for both: a second scan of the same window
+      // would double the cost of every dashboard poll.
+      const flatOf = (t: TeleRow): Record<string, unknown> => (t.lastData ? flattenData(t.lastData) : {});
+      const usable = (k: string | null | undefined): boolean => !!k && !k.includes('.');
       const keyed = tele
-        .map((t: TeleRow) => ({ id: t._id, key: t.lastData ? pickProductionKey(flattenData(t.lastData)) : null }))
-        .filter((x): x is { id: string; key: string } => !!x.key && !x.key.includes('.'));
+        .map((t: TeleRow) => {
+          const flat = flatOf(t);
+          const prod = pickProductionKey(flat);
+          const run = pickRunKey(flat);
+          return { id: t._id, key: usable(prod) ? prod : null, run: run && usable(run.key) ? run : null };
+        })
+        .filter((x) => !!x.key || !!x.run) as { id: string; key: string | null; run: RunSignal | null }[];
+
+      const NUMERIC = ['int', 'long', 'double', 'decimal'];
+      const pick = (field: (k: { id: string; key: string | null; run: RunSignal | null }) => string | null) => ({
+        $switch: {
+          branches: keyed.filter((k) => field(k)).map((k) => ({
+            case: { $eq: ['$machineId', k.id] },
+            then: { $getField: { field: field(k) as string, input: '$data' } },
+          })),
+          default: null,
+        },
+      });
 
       const made = keyed.length ? await Telemetry.aggregate([
         { $match: { machineId: { $in: keyed.map((k) => k.id) }, timestamp: { $gte: fromD, $lte: endD } } },
-        { $addFields: { pv: { $switch: {
-          branches: keyed.map((k) => ({ case: { $eq: ['$machineId', k.id] }, then: { $getField: { field: k.key, input: '$data' } } })),
-          default: null,
-        } } } },
-        { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
+        { $addFields: { pv: pick((k) => k.key), rv: pick((k) => k.run?.key ?? null) } },
+        { $match: { $or: [{ pv: { $type: NUMERIC } }, { rv: { $type: NUMERIC } }] } },
         // Highest counter value per bucket, then the series itself - the stepping
         // happens in Node (countSteps), for the same reason as the pipeline above:
         // no window function, so no blocking sort this tier cannot spill.
         // ponytail: a counter that resets AND climbs again inside ONE bucket loses
         // that bucket's post-reset pieces ($max keeps the pre-reset peak). Once a
         // day, bounded by one bucket of output.
-        { $group: { _id: { m: '$machineId', t: bucket }, pv: { $max: '$pv' } } },
-        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv' } } } },
+        { $group: { _id: { m: '$machineId', t: bucket }, pv: { $max: '$pv' }, rv: { $max: '$rv' } } },
+        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv', r: '$rv' } } } },
       ]).allowDiskUse(true).option({ maxTimeMS }).exec() : [];
 
-      return { tele, minutes, made };
+      return { tele, minutes, made, keyed };
     }),
     DowntimeEvent.find({
       machineId: { $in: refs },
@@ -214,24 +275,26 @@ export async function computeActivity(
   // fabricated hundreds of pieces.
   // ponytail: a one-sample lookahead is the whole heuristic; a counter that
   // stays wrong for two consecutive buckets still fools it.
-  const countSteps = (series: { t: number; v: number }[]): number => {
-    const v = [...series].sort((a, b) => a.t - b.t).map((p) => p.v);
-    if (v.length < 2) return 0;
-    let made = 0, high = v[0];
-    for (let i = 1; i < v.length; i += 1) {
-      const cur = v[i], next = i + 1 < v.length ? v[i + 1] : null;
-      if (cur > high) {
-        if (next === null || next >= cur) { made += cur - high; high = cur; }   // confirmed climb
-      } else if (cur < high && next !== null && next < high) {
-        high = cur;                                                              // confirmed reset
-      }
-    }
-    return made;
-  };
-  const madeBy = new Map<string, number>(
-    ((teleAgg as { made: { _id: string; pts: { t: Date; v: number }[] }[] }).made || [])
-      .map((m) => [m._id, countSteps(m.pts.map((x) => ({ t: new Date(x.t).getTime(), v: Number(x.v) })))]),
+  type Point = { t: Date; v: number | null; r: number | null };
+  const seriesBy = new Map<string, { t: number; v: number | null; r: number | null }[]>(
+    ((teleAgg as { made: { _id: string; pts: Point[] }[] }).made || [])
+      .map((m) => [m._id, m.pts
+        .map((x) => ({ t: new Date(x.t).getTime(), v: x.v == null ? null : Number(x.v), r: x.r == null ? null : Number(x.r) }))
+        .sort((a, b) => a.t - b.t)]),
   );
+  const runKeyBy = new Map<string, RunSignal | null>(
+    ((teleAgg as { keyed: { id: string; run: RunSignal | null }[] }).keyed || []).map((k) => [k.id, k.run]),
+  );
+  const madeBy = new Map<string, number>(
+    [...seriesBy].map(([id, pts]) => [id, countStepsOf(pts.filter((x) => x.v != null).map((x) => ({ t: x.t, v: x.v as number })))]),
+  );
+
+  const runFromSignal = (id: string): number | null => {
+    const sig = runKeyBy.get(id);
+    const pts = seriesBy.get(id);
+    if (!sig || !pts) return null;
+    return runMsFromSeries(pts.filter((x) => x.r != null).map((x) => ({ t: x.t, v: x.r as number })), sig.kind);
+  };
 
   // Key selection is shared (utils/production) with the event engine + client.
   const productionOf = (t?: TeleRow): { key: string; production: number } | null => {
@@ -273,7 +336,6 @@ export async function computeActivity(
     ]);
     const down = { idle: 0, stopped: 0, offline: 0 };
     for (const sp of spans) down[sp.type] += sp.e - sp.s;
-    const downMs = down.idle + down.stopped + down.offline;
     const readings = t?.readings || 0;
     // Running time = time the machine ACTUALLY reported, minus downtime — but
     // only the downtime that OVERLAPS the machine's reporting envelope
@@ -300,7 +362,33 @@ export async function computeActivity(
         if (oe > os) downInEnvelope += oe - os;
       }
     }
-    const runningMs = readings > 0 ? Math.max(0, reportedMs - downInEnvelope) : 0;
+    // The machine's own run signal wins when it has one: the collector's status
+    // field is a guess about the machine, this IS the machine. ISB02 read 0m of
+    // runtime for a 100-piece day purely because its status never said "running".
+    const signalRun = runFromSignal(ref) ?? (m.machineId && m.machineId !== ref ? runFromSignal(m.machineId) : null);
+    // …but only when the machine's own output doesn't contradict it. SPG02/03/04
+    // publish RUNNING_FLAG and it is wired to nothing: 744 readings today, every
+    // one of them 0, while the three of them made 297 pieces between them. A
+    // signal that says "never ran" over a window the counter says was productive
+    // is broken, not informative — fall back and let it start working by itself
+    // the day it gets wired up.
+    const madeInWindow = madeBy.get(ref) ?? 0;
+    const trustSignal = signalRun != null && (signalRun > 0 || madeInWindow <= 0);
+    const runningMs = trustSignal
+      ? Math.min(signalRun as number, windowMs)
+      : (readings > 0 ? Math.max(0, reportedMs - downInEnvelope) : 0);
+
+    // A machine cannot be idle while it is demonstrably running. When the two
+    // sources disagree, believe the machine and take the contradiction out of
+    // idle first, then stopped — otherwise the four buckets would add up to more
+    // than the window and every share on the dashboard would be wrong.
+    let excess = runningMs + down.idle + down.stopped + down.offline - windowMs;
+    for (const k of ['idle', 'stopped', 'offline'] as const) {
+      if (excess <= 0) break;
+      const cut = Math.min(down[k], excess);
+      down[k] -= cut;
+      excess -= cut;
+    }
     // Dominant OBSERVED state — what the machine was doing while we could see
     // it (reported time + recorded spans). Silence is NOT folded in: a machine
     // observed running 52m inside a fortnight window must read "running · live
@@ -308,7 +396,7 @@ export async function computeActivity(
     // durations, and availability (runningMs ÷ window) — a dark machine can't
     // rank high because its runningMs stays tiny.
     let status = 'offline';
-    if (readings > 0 || downMs > 0) {
+    if (readings > 0 || down.idle + down.stopped + down.offline > 0) {
       const buckets: [string, number][] = [
         ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline],
       ];
