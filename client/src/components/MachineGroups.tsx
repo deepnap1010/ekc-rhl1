@@ -9,6 +9,10 @@
 //
 // Window: every group follows the dashboard's date filter, and can be switched
 // to its own (today / yesterday / this week / … ) without disturbing the page.
+//
+// The page opens on the production LINES — the families that hold more than one
+// machine (cutting, SPG, bottom milling today). One-off machines wait behind
+// "View all machine groups" so fifteen panels don't bury the three that matter.
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
@@ -34,7 +38,16 @@ interface Props {
 }
 
 export default function MachineGroups({ rows, windowMs, windowLabel, loading }: Props): JSX.Element {
+  const [showAll, setShowAll] = useState(false);
   const groups = groupMachines(rows);
+
+  // Derived, not configured: a family is any kind with more than one machine, so
+  // a second CNC lathe promotes that group to the front page by itself.
+  const lines = groups.filter((g) => g.machines.length > 1);
+  const singles = groups.filter((g) => g.machines.length === 1);
+  // Nothing to hide (or nothing but one-offs) → show everything, no button.
+  const collapsible = lines.length > 0 && singles.length > 0;
+  const visible = collapsible && !showAll ? lines : [...lines, ...singles];
 
   if (loading && rows.length === 0) {
     return <div className="panel p-10 text-center text-sm text-steel">Reconstructing machine activity…</div>;
@@ -50,10 +63,22 @@ export default function MachineGroups({ rows, windowMs, windowLabel, loading }: 
 
   return (
     <div className="space-y-4">
-      {groups.map((g) => (
+      {visible.map((g) => (
         <GroupPanel key={g.key} label={g.label} rows={g.machines}
           windowMs={windowMs} windowLabel={windowLabel} />
       ))}
+
+      {/* Hidden groups append BELOW — expanding never reshuffles what's on screen */}
+      {collapsible && (
+        <button
+          onClick={() => setShowAll((v) => !v)}
+          className="w-full panel py-3 text-xs font-medium text-accent hover:bg-accent/5 border-dashed transition-colors inline-flex items-center justify-center gap-1.5"
+        >
+          {showAll
+            ? <>Show fewer groups <ChevronDown size={13} className="rotate-180" /></>
+            : <>View all machine groups (+{singles.length} more) <ChevronDown size={13} /></>}
+        </button>
+      )}
     </div>
   );
 }
