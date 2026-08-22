@@ -101,7 +101,7 @@ export async function computeActivity(
             firstSeen: { $last: '$timestamp' }, lastSeen: { $first: '$timestamp' },
             firstData: { $last: '$data' }, lastData: { $first: '$data' },
           } },
-        ]).option({ allowDiskUse: true, maxTimeMS }).exec(),
+        ]).allowDiskUse(true).option({ maxTimeMS }).exec(),
         // Reported COVERAGE per machine, summed in the database: running time is
         // only credited for time the machine ACTUALLY reported, with gaps up to
         // GRACE_MS bridged. Summed server-side on purpose — a year-long window
@@ -122,9 +122,49 @@ export async function computeActivity(
               { $min: [{ $subtract: ['$_id.t', '$prev'] }, GRACE_MS] },
             ] } },
           } },
-        ]).option({ allowDiskUse: true, maxTimeMS }).exec(),
+        ]).allowDiskUse(true).option({ maxTimeMS }).exec(),
       ]);
-      return { tele, minutes };
+
+      // Production is the sum of the counter's POSITIVE steps inside the window,
+      // summed in the database. Last-minus-first was wrong on every machine whose
+      // counter resets each shift: INTERNALSHOTBLASTING03 ran 4 → 128, reset to 0
+      // at 07:00, climbed to 8 — and reported "4 pcs" for a 132-piece day. Steps
+      // are immune: a reset is a negative step, which contributes nothing.
+      //
+      // Needs the per-machine counter key, which only exists once the pass above
+      // has a payload to pick from — hence a second pass, inside the same cache
+      // entry. Dotted keys (raw PLC addresses like I0.4) are never counters, so
+      // $getField on a flat key covers every real case.
+      const keyed = tele
+        .map((t: TeleRow) => ({ id: t._id, key: t.lastData ? pickProductionKey(flattenData(t.lastData)) : null }))
+        .filter((x): x is { id: string; key: string } => !!x.key && !x.key.includes('.'));
+
+      const made = keyed.length ? await Telemetry.aggregate([
+        { $match: { machineId: { $in: keyed.map((k) => k.id) }, timestamp: { $gte: fromD, $lte: endD } } },
+        { $addFields: { pv: { $switch: {
+          branches: keyed.map((k) => ({ case: { $eq: ['$machineId', k.id] }, then: { $getField: { field: k.key, input: '$data' } } })),
+          default: null,
+        } } } },
+        { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
+        // One value per reporting MINUTE before the window function — 11k readings
+        // a day become ~750 rows, so the sort never spills and a month-long window
+        // stays affordable.
+        // ponytail: a counter that resets AND climbs again inside one minute loses
+        // that minute's post-reset pieces (max() keeps the pre-reset peak). Once a
+        // day, bounded by one minute of output — drop the $group to make it exact.
+        { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute' } } }, pv: { $max: '$pv' } } },
+        { $setWindowFields: {
+          partitionBy: '$_id.m', sortBy: { '_id.t': 1 },
+          output: { prevV: { $shift: { output: '$pv', by: -1, default: null } } },
+        } },
+        { $group: { _id: '$_id.m', made: { $sum: { $cond: [
+          { $and: [{ $ne: ['$prevV', null] }, { $gt: ['$pv', '$prevV'] }] },
+          { $subtract: ['$pv', '$prevV'] },
+          0,
+        ] } } } },
+      ]).allowDiskUse(true).option({ maxTimeMS }).exec() : [];
+
+      return { tele, minutes, made };
     }),
     DowntimeEvent.find({
       machineId: { $in: refs },
@@ -141,19 +181,24 @@ export async function computeActivity(
       .map((m) => [m._id, m.minutes ? m.coveredMs + 60_000 : 0]),
   );
 
-  // Production over the range = counter delta between first and last reading.
-  // Key selection is shared (utils/production) with the event engine + client.
+  // What the counter ADDED inside the window (summed above). Key selection is
+  // shared (utils/production) with the event engine + client.
+  const madeBy = new Map<string, number>(
+    ((teleAgg as { made: { _id: string; made: number }[] }).made || []).map((m) => [m._id, m.made]),
+  );
   const productionOf = (t?: TeleRow): { key: string; production: number } | null => {
     if (!t?.lastData) return null;
     const last = flattenData(t.lastData);
-    const first = flattenData(t.firstData || {});
     const key = pickProductionKey(last);
     if (!key) return null;
+    const steps = madeBy.get(t._id);
+    if (steps != null) return { key, production: steps };
+    // Dotted key (no $getField pass) → fall back to first-vs-last. A null/'' first
+    // reading must NOT coerce to 0, and a mid-window reset falls back to the end
+    // value, exactly as before.
+    const first = flattenData(t.firstData || {});
     const end = Number(last[key]);
-    // A null/'' first reading must NOT coerce to 0 (that would report the full
-    // counter value as "production in range").
     const start = isNumericValue(first[key]) ? Number(first[key]) : Number.NaN;
-    // Counter reset mid-range (delta negative) → best effort: the end value.
     const delta = Number.isFinite(start) ? end - start : 0;
     return { key, production: delta >= 0 ? delta : end };
   };
