@@ -362,6 +362,49 @@ export const machineStats = asyncHandler(async (req, res) => {
   return ok(res, { window: readings.length, metricCount, metrics });
 });
 
+// GET /machines/:code/metric-average?from&to&key= — the mean of ONE signal over
+// a window. Deliberately dumb: the CLIENT decides which signal matters (that
+// judgement lives in lib/headline, and the card the user is looking at already
+// made it), so this endpoint never guesses. Answers the panel's question for a
+// machine that counts no pieces: "what did it average during that shift?"
+export const machineMetricAverage = asyncHandler(async (req, res) => {
+  const m = await findMachine(req.params.code);
+  if (!m) return fail(res, 404, 'Machine not found');
+  if (!inUserScope(req.user as ScopeUser, m.code, m.machineId)) return fail(res, 403, 'You are not assigned to this machine');
+  const refs = [m.code, m.machineId].filter(Boolean) as string[];
+
+  const q = req.query as Record<string, string | undefined>;
+  const key = (q.key || '').trim();
+  // $getField takes a literal field name; a dotted key would be read as a path.
+  if (!key || key.includes('.') || key.includes('$')) return fail(res, 400, 'A plain top-level key is required');
+  const parseD = (s?: string): Date | null => {
+    if (!s) return null;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const toD = parseD(q.to) || new Date();
+  const fromD = parseD(q.from) || new Date(toD.getTime() - 24 * 3600 * 1000);
+  if (fromD >= toD) return fail(res, 400, 'from must be before to');
+  const endD = new Date(Math.min(toD.getTime(), Date.now()));
+
+  const at = { $getField: { field: key, input: '$data' } };
+  const [row] = await Telemetry.aggregate([
+    { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+    { $addFields: { v: at } },
+    // Sentinels from an unwired channel are not readings.
+    { $match: { v: { $type: ['int', 'long', 'double', 'decimal'] }, $expr: { $lt: [{ $abs: '$v' }, 32767] } } },
+    { $group: { _id: null, avg: { $avg: '$v' }, min: { $min: '$v' }, max: { $max: '$v' }, samples: { $sum: 1 } } },
+  ]).option({ maxTimeMS: 20000 }).exec();
+
+  return ok(res, {
+    key,
+    avg: row ? Math.round(row.avg * 100) / 100 : null,
+    min: row?.min ?? null,
+    max: row?.max ?? null,
+    samples: row?.samples ?? 0,
+  }, { from: fromD.toISOString(), to: endD.toISOString() });
+});
+
 // GET /machines/:code/series — time-bucketed OHLC candles for ONE metric (stock-style
 // chart). interval ∈ 30s|1m|5m|15m|30m|1h. Buckets the recent window and computes
 // open/high/low/close/avg per bucket (faults excluded).

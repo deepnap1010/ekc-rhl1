@@ -18,6 +18,8 @@ import Sparkline from '../Sparkline';
 import MetricTrendModal, { type DrillEntry } from './MetricTrendModal';
 import { fmtNum, fmtMetric, fmtTime, fmtDate, fmtDuration, prettyKey, prettyType } from '../../lib/format';
 import { namedMetrics, isNumeric, isFault, freshness, type NamedMetric } from '../../lib/metrics';
+import { flattenParams } from '../../lib/params';
+import { computeHeadline } from '../../lib/headline';
 import { useMachineTelemetry } from '../../hooks/useLive';
 import RangeFilter, { type RangeValue } from '../RangeFilter';
 import { resolveRange, shiftApplies, presetLabel, todayWindow } from '../../store/filters';
@@ -349,8 +351,28 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   const furnace = codes.some((c) => isFurnaceRef(c));
   const production = row?.production ?? null;
 
+  // Machines that count nothing still measure something. BOTTOMMILLING03 has no
+  // counter and never will, and answering "0 pcs" for every shift says nothing
+  // about a machine that ran all day — so the panel falls back to the AVERAGE of
+  // the same signal its card already headlines (feed speed, cut depth, spindle
+  // load…), over exactly this window. Which signal that is stays decided in one
+  // place, lib/headline; the server just averages the key it is handed.
+  const liveParams = flattenParams(
+    Object.keys(machine.currentParameters || {}).length ? machine.currentParameters as Record<string, unknown> : (machine.latestData || {}),
+  );
+  const headline = !furnace && row && row.productionKey == null ? computeHeadline(liveParams) : null;
+  const avgKey = headline?.key;
+  const { data: avgData } = useQuery({
+    queryKey: ['machine-metric-avg', codes[0], fromISO, toISO, avgKey],
+    queryFn: () => machineApi.metricAverage(String(codes[0]), { from: fromISO as string, to: toISO as string, key: avgKey as string }),
+    enabled: !!win && !!avgKey && !!codes[0],
+    placeholderData: keepPreviousData,
+    refetchInterval: 60000,
+  });
+  const avg = avgKey ? avgData?.data : undefined;
+
   return (
-    <Panel icon={Calendar} title={furnace ? 'Temperature by Shift' : 'Production by Shift'}>
+    <Panel icon={Calendar} title={furnace ? 'Temperature by Shift' : avgKey ? `${headline?.label ?? 'Reading'} by Shift` : 'Production by Shift'}>
       <div className="flex items-center gap-2 flex-wrap mb-4">
         <select value={shiftOk ? shiftName : ''} onChange={(e) => setShiftName(e.target.value)}
           disabled={!shiftOk}
@@ -380,6 +402,18 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
                   {row?.avgTemp != null
                     ? `mean of ${row.tempZones} work zone${row.tempZones === 1 ? '' : 's'} over this window`
                     : 'no temperature signal — the furnace reports no measured zone value'}
+                </div>
+              </>
+            ) : avgKey ? (
+              <>
+                <div className="data text-3xl font-bold text-primary leading-tight">
+                  {avg?.avg != null ? fmtNum(avg.avg) : '—'}
+                  {headline?.unit && avg?.avg != null && <span className="text-sm font-medium text-steel"> {headline.unit}</span>}
+                </div>
+                <div className="text-[10px] text-steel mt-0.5">
+                  {avg?.avg != null
+                    ? `${prettyKey(avgKey)} · mean of ${fmtNum(avg.samples)} readings${avg.min != null && avg.max != null ? ` · ${fmtNum(avg.min)}–${fmtNum(avg.max)}` : ''}`
+                    : `${prettyKey(avgKey)} — nothing reported in this window`}
                 </div>
               </>
             ) : (

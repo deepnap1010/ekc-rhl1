@@ -81,6 +81,9 @@ export const machineApi = {
   activity: (params: { from: string; to: string }) => get<MachineActivityRow[], ActivityMeta>('/machines/activity', params),
   get: (code: string) => get<Machine>(`/machines/${code}`),
   stats: (code: string, params?: Params) => get<MachineStats>(`/machines/${code}/stats`, params),
+  // Mean of ONE signal over a window — the caller says which; the server never guesses.
+  metricAverage: (code: string, params: { from: string; to: string; key: string }) =>
+    get<{ key: string; avg: number | null; min: number | null; max: number | null; samples: number }>(`/machines/${code}/metric-average`, params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),
   timeline: (code: string, params?: { from?: string; to?: string }) => get<TimelineRow[]>(`/machines/${code}/timeline`, params),
   downtime: (code: string, params?: Params) => get<DowntimeEvent[]>(`/machines/${code}/downtime`, params),

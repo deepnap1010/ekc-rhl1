@@ -22,6 +22,10 @@ export interface Headline {
   unit?: string;
   sub?: string;
   tone: Tone;
+  /** The single telemetry key this reading came from, when there is one.
+   *  Lets a caller ask the server for the same signal's average over a window
+   *  without re-deciding which signal matters — that judgement lives here. */
+  key?: string;
 }
 
 const norm = (k: string): string => k.toLowerCase().replace(/[._/\-]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -48,6 +52,22 @@ const firstVal = (data: ParameterMap, re: RegExp): number | null => {
   return v.length ? v[0] : null;
 };
 
+/** The KEY behind firstVal's match — same rules, same order. */
+function firstKey(data: ParameterMap, re: RegExp): string | null {
+  for (const [k, v] of Object.entries(data)) {
+    if (isRawAddress(k)) continue;
+    const n = asNum(v);
+    if (n !== null && n !== 0 && re.test(norm(paramLabel(k)))) return k;
+  }
+  return null;
+}
+
+const SPEED_RE = /processing.?speed|feed.?rate|cutting.?speed|^feed$/;
+const TORQUE_RE = /torque|spindle.?load/;
+const DEPTH_ACT_RE = /depth.?actual|actual.?depth/;
+const DEPTH_SET_RE = /depth.?(of.?)?cut|set.?depth/;
+const EFF_RE = /efficiency|oee/;
+
 export function computeHeadline(data?: ParameterMap): Headline | null {
   if (!data || Object.keys(data).length === 0) return null;
 
@@ -62,28 +82,29 @@ export function computeHeadline(data?: ParameterMap): Headline | null {
   }
 
   // 2) Efficiency / OEE
-  const eff = firstVal(data, /efficiency|oee/);
+  const eff = firstVal(data, EFF_RE);
   if (eff !== null) {
-    return { label: 'Efficiency', value: String(Math.round(eff)), unit: '%', tone: eff >= 75 ? 'good' : eff >= 50 ? 'warn' : 'bad' };
+    return { label: 'Efficiency', value: String(Math.round(eff)), unit: '%', key: firstKey(data, EFF_RE) ?? undefined, tone: eff >= 75 ? 'good' : eff >= 50 ? 'warn' : 'bad' };
   }
 
   // 3) Spindle / servo load (torque %) — milling tool & cut health
-  const torque = firstVal(data, /torque|spindle.?load/);
+  const torque = firstVal(data, TORQUE_RE);
   if (torque !== null) {
     const pct = Math.round(torque);
-    const feed = firstVal(data, /processing.?speed|feed.?rate|cutting.?speed|^feed$/);
+    const feed = firstVal(data, SPEED_RE);
     return {
       label: 'Spindle Load',
       value: String(pct),
       unit: '%',
+      key: firstKey(data, TORQUE_RE) ?? undefined,
       sub: feed !== null ? `feed ${fmtNum(feed)}` : undefined,
       tone: pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : pct > 0 ? 'good' : 'neutral',
     };
   }
 
   // 4) Cut depth — actual vs target
-  const depthAct = firstVal(data, /depth.?actual|actual.?depth/);
-  const depthSet = firstVal(data, /depth.?(of.?)?cut|set.?depth/);
+  const depthAct = firstVal(data, DEPTH_ACT_RE);
+  const depthSet = firstVal(data, DEPTH_SET_RE);
   if (depthAct !== null || depthSet !== null) {
     const act = depthAct ?? (depthSet as number);
     const tgt = depthAct !== null ? depthSet : null;
@@ -91,6 +112,7 @@ export function computeHeadline(data?: ParameterMap): Headline | null {
     return {
       label: 'Cut Depth',
       value: fmtNum(act),
+      key: (depthAct !== null ? firstKey(data, DEPTH_ACT_RE) : firstKey(data, DEPTH_SET_RE)) ?? undefined,
       sub: tgt !== null ? `target ${fmtNum(tgt)}` : undefined,
       tone: tgt !== null ? (Math.abs(act - tgt) <= tol ? 'good' : 'warn') : 'neutral',
     };
@@ -116,8 +138,8 @@ export function computeHeadline(data?: ParameterMap): Headline | null {
   if (temps.length === 1) return { label: 'Temperature', value: fmtNum(temps[0]), unit: '°C', tone: 'neutral' };
 
   // 6) Feed / processing speed (specific keys only — avoid digital "speed" flags)
-  const feed = firstVal(data, /processing.?speed|feed.?rate|cutting.?speed|^feed$/);
-  if (feed !== null) return { label: 'Feed Speed', value: fmtNum(feed), tone: 'neutral' };
+  const feed = firstVal(data, SPEED_RE);
+  if (feed !== null) return { label: 'Feed Speed', value: fmtNum(feed), key: firstKey(data, SPEED_RE) ?? undefined, tone: 'neutral' };
 
   return null;
 }
