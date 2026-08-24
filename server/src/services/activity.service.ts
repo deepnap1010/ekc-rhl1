@@ -111,6 +111,53 @@ export function runMsFromSeries(series: { t: number; v: number }[], kind: 'secon
   return ms;
 }
 
+export type Interval = { s: number; e: number };
+
+/** The intervals during which a machine was REPORTING.
+ *
+ *  Consecutive reporting buckets up to GRACE_MS apart are one continuous
+ *  interval (collectors post every few minutes / on change); a run's last bucket
+ *  contributes its own width. */
+export function coverageIntervals(stamps: number[], binMs: number): Interval[] {
+  if (!stamps.length) return [];
+  const t = [...stamps].sort((a, b) => a - b);
+  const out: Interval[] = [];
+  let start = t[0], prev = t[0];
+  for (let i = 1; i < t.length; i += 1) {
+    if (t[i] - prev <= GRACE_MS) { prev = t[i]; continue; }
+    out.push({ s: start, e: prev + binMs });
+    start = t[i]; prev = t[i];
+  }
+  out.push({ s: start, e: prev + binMs });
+  return out;
+}
+
+/** Measure of A minus B, where both are sorted and non-overlapping.
+ *
+ *  Runtime used to be `reportedMs - downtimeMs`, two scalars measured on
+ *  different clocks: coverage counts only the time a machine was REPORTING,
+ *  while a downtime span runs in wall-clock time. On a sparse reporter that
+ *  subtraction eats everything — SPG02 reported 542 times across 8.5h, so
+ *  widening the window by 31 minutes added 31 minutes of downtime, almost no
+ *  coverage, and its runtime FELL from 16m to 1m. A window cannot contain less
+ *  running time than a window inside it. Subtracting on the timeline instead is
+ *  monotonic by construction, and never negative. */
+export function subtractMs(cover: Interval[], cut: Interval[]): number {
+  let total = 0;
+  for (const c of cover) {
+    let pos = c.s;
+    for (const d of cut) {
+      if (d.e <= pos) continue;
+      if (d.s >= c.e) break;
+      if (d.s > pos) total += Math.min(d.s, c.e) - pos;
+      pos = Math.max(pos, d.e);
+      if (pos >= c.e) break;
+    }
+    if (pos < c.e) total += c.e - pos;
+  }
+  return total;
+}
+
 export function clipSpans(spans: Span[]): Span[] {
   const out: Span[] = [];
   let cursor = Number.NEGATIVE_INFINITY;
@@ -299,19 +346,12 @@ export async function computeActivity(
   ]);
 
   const teleBy = new Map<string, TeleRow>(((teleAgg as { tele: TeleRow[] }).tele).map((t) => [t._id, t]));
-  // Consecutive reporting buckets up to GRACE_MS apart bridge as continuous
-  // reporting; the last bucket counts as its own width, so a machine with a
-  // single reading still counts as having reported for that bucket.
-  const coverageOf = (stamps: number[]): number => {
-    if (!stamps.length) return 0;
-    const s = [...stamps].sort((a, b) => a - b);
-    let cov = binMs;
-    for (let i = 0; i < s.length - 1; i += 1) cov += Math.min(s[i + 1] - s[i], GRACE_MS);
-    return cov;
-  };
-  const coverageBy = new Map<string, number>(
+  // The reporting STAMPS are kept, not a total: runtime is the part of these
+  // intervals that no downtime span covers, and that has to be worked out on the
+  // timeline (see subtractMs).
+  const stampsBy = new Map<string, number[]>(
     ((teleAgg as { minutes: { _id: string; ts: Date[] }[] }).minutes)
-      .map((m) => [m._id, coverageOf(m.ts.map((d) => new Date(d).getTime()))]),
+      .map((m) => [m._id, m.ts.map((d) => new Date(d).getTime())]),
   );
 
   // What the counter ADDED across the window. A value only moves the high-water
@@ -408,31 +448,16 @@ export async function computeActivity(
     const down = { idle: 0, stopped: 0, offline: 0 };
     for (const sp of spans) down[sp.type] += sp.e - sp.s;
     const readings = t?.readings || 0;
-    // Running time = time the machine ACTUALLY reported, minus downtime — but
-    // only the downtime that OVERLAPS the machine's reporting envelope
-    // [firstSeen, lastSeen]. A silent overnight offline/idle span covers time
-    // that was never in reportedMs; subtracting it too would erase real morning
-    // runtime 1:1 (machines showed "offline" with hundreds of fresh readings).
-    // ponytail: envelope overlap, not per-minute intersection — a silent span
-    // WHOLLY INSIDE the envelope (report, silent-idle midday, report again)
-    // still double-subtracts; refine to reported-minute intersection if that
-    // pattern ever matters.
-    // Aliases (code + machineId) normally carry the SAME stream — take the
-    // larger coverage, never the sum, so a duplicated stream can't inflate runtime.
-    const reportedMs = Math.min(windowMs, Math.max(
-      coverageBy.get(ref) || 0,
-      m.machineId && m.machineId !== ref ? (coverageBy.get(m.machineId) || 0) : 0,
-    ));
-    let downInEnvelope = 0;
-    const envS = t?.firstSeen ? new Date(t.firstSeen).getTime() : null;
-    const envE = t?.lastSeen ? new Date(t.lastSeen).getTime() : null;
-    if (envS != null && envE != null && envE > envS) {
-      for (const sp of spans) {
-        const os = Math.max(sp.s, envS);
-        const oe = Math.min(sp.e, envE);
-        if (oe > os) downInEnvelope += oe - os;
-      }
-    }
+    // Running time = the part of the machine's REPORTING intervals that no
+    // downtime span covers. Aliases (code + machineId) normally carry the same
+    // stream, so their stamps are unioned — duplicates collapse into the same
+    // intervals and cannot inflate anything.
+    const cover = coverageIntervals([
+      ...(stampsBy.get(ref) || []),
+      ...(m.machineId && m.machineId !== ref ? stampsBy.get(m.machineId) || [] : []),
+    ], binMs).map((c) => ({ s: Math.max(c.s, fromD.getTime()), e: Math.min(c.e, endMs) }))
+      .filter((c) => c.e > c.s);
+    const reportedMs = Math.min(windowMs, cover.reduce((n, c) => n + (c.e - c.s), 0));
     // The machine's own run signal wins when it has one: the collector's status
     // field is a guess about the machine, this IS the machine. ISB02 read 0m of
     // runtime for a 100-piece day purely because its status never said "running".
@@ -448,7 +473,7 @@ export async function computeActivity(
     const trustSignal = signalRun != null && (signalRun > 0 || madeInWindow <= 0);
     const runningMs = trustSignal
       ? Math.min(signalRun as number, windowMs)
-      : (readings > 0 ? Math.max(0, reportedMs - downInEnvelope) : 0);
+      : (readings > 0 ? subtractMs(cover, spans) : 0);
 
     // When the machine keeps its own books for the whole day, use them for idle
     // and stopped too — one clock for the whole pie. ISB03's span log claimed

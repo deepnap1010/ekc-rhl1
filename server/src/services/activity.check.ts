@@ -64,3 +64,35 @@ eq('flag gap is bridged, not trusted',
 eq('one sample is not a signal', runMsFromSeries(series(1), 'flag'), null);
 
 console.log('activity: step + run-signal checks passed');
+
+// ── Reporting intervals and timeline subtraction ────────────────────────────
+import { coverageIntervals, subtractMs, type Interval } from './activity.service.js';
+
+const iv = (s: number, e: number): Interval => ({ s, e });
+const MIN = 60_000;
+
+// Buckets up to the 5-minute grace apart are one interval; the last one counts
+// as its own width.
+eq('one run', coverageIntervals([0, MIN, 2 * MIN], MIN), [{ s: 0, e: 3 * MIN }]);
+eq('single bucket', coverageIntervals([0], MIN), [{ s: 0, e: MIN }]);
+// A silence longer than the grace splits the run — that time is NOT reported.
+eq('gap splits', coverageIntervals([0, 20 * MIN], MIN), [{ s: 0, e: MIN }, { s: 20 * MIN, e: 21 * MIN }]);
+eq('grace bridges', coverageIntervals([0, 5 * MIN], MIN), [{ s: 0, e: 6 * MIN }]);
+
+// Downtime is removed from the reported time, on the timeline.
+eq('no overlap', subtractMs([iv(0, 10)], [iv(20, 30)]), 10);
+eq('fully covered', subtractMs([iv(0, 10)], [iv(0, 10)]), 0);
+eq('cut in the middle', subtractMs([iv(0, 100)], [iv(40, 60)]), 80);
+eq('cut hanging off both ends', subtractMs([iv(10, 20)], [iv(0, 15)]), 5);
+eq('several cuts', subtractMs([iv(0, 100)], [iv(10, 20), iv(30, 40), iv(90, 200)]), 70);
+eq('nothing to cut', subtractMs([], [iv(0, 10)]), 0);
+
+// THE invariant SPG02 broke: a window cannot hold less running time than a
+// window inside it. Same reporting, a wider window, more downtime — the shift's
+// runtime must survive in the day's.
+const dayCover = coverageIntervals([0, MIN, 2 * MIN, 480 * MIN], MIN);
+const shiftCover = coverageIntervals([0, MIN, 2 * MIN], MIN);
+const down = [iv(60 * MIN, 500 * MIN)];
+if (subtractMs(dayCover, down) < subtractMs(shiftCover, down)) throw new Error('runtime shrank as the window grew');
+
+console.log('activity: interval checks passed');
