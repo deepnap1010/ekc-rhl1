@@ -496,6 +496,23 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
     sub: 'unmapped raw signals',
   };
 
+  // What a supervisor walks up to the board for is TODAY, not the lifetime
+  // counter: "made 19 today" is the shift's answer, "the counter reads 25" is
+  // trivia — and on a machine whose counter resets each shift, the big number
+  // was the reset value anyway. So today's pieces are the headline and the raw
+  // counter drops to the sub-line. Furnaces keep their live temperature: heat
+  // now is the thing you act on, and their day-average already sits below it.
+  const madeToday = furnace ? null : activity?.production ?? null;
+  const counterNow = furnace ? null : productionValue(params);
+  const dayHero: Headline | null = madeToday == null ? null : {
+    label: 'Production · Today',
+    value: fmtNum(madeToday),
+    unit: 'pcs',
+    tone: madeToday > 0 ? 'good' : 'neutral',
+    sub: counterNow != null ? `counter reads ${fmtNum(counterNow)}` : undefined,
+  };
+  const show = dayHero ?? hero;
+
   // Per-card trends: [0] drives the hero sparkline, [1] the secondary progress bar.
   const statKey = machine.code || machine.machineId || machine._id;
   const { data: cardStats } = useQuery({
@@ -561,30 +578,19 @@ function MachineCard({ machine, liveTick, extraParams, activity, onParams }: Mac
       {/* Hero metric + inline sparkline */}
       <div className="mb-3 rounded-xl border border-line bg-base px-3.5 py-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-wide text-steel">{hero.label}</div>
+          <div className="text-[10px] uppercase tracking-wide text-steel">{show.label}</div>
           <div className="flex items-baseline gap-1">
-            <span className="data text-2xl font-bold leading-none" style={{ color: HEADLINE_TONE[hero.tone] }}>{hero.value}</span>
-            {hero.unit && <span className="text-sm font-medium text-steel">{hero.unit}</span>}
+            <span className="data text-2xl font-bold leading-none" style={{ color: HEADLINE_TONE[show.tone] }}>{show.value}</span>
+            {show.unit && <span className="text-sm font-medium text-steel">{show.unit}</span>}
           </div>
-          {hero.sub && <div className="text-[10px] text-steel mt-0.5 truncate">{hero.sub}</div>}
-          {/* The number a supervisor actually scans for over the day: pieces made —
-              or, on a furnace, the mean temperature it held. */}
-          {furnace ? (
-            activity?.avgTemp != null && (
-              <div className="text-[10px] mt-1">
-                <span className="text-steel">today avg </span>
-                <span className="data font-bold text-idle">{fmtNum(activity.avgTemp)}</span>
-                <span className="text-steel"> °C</span>
-              </div>
-            )
-          ) : (
-            activity && activity.production != null && (
-              <div className="text-[10px] mt-1">
-                <span className="text-steel">today </span>
-                <span className={`data font-bold ${activity.production > 0 ? 'text-running' : 'text-steel'}`}>+{fmtNum(activity.production)}</span>
-                <span className="text-steel"> pcs</span>
-              </div>
-            )
+          {show.sub && <div className="text-[10px] text-steel mt-0.5 truncate">{show.sub}</div>}
+          {/* On a furnace the day-average sits under the live reading. */}
+          {furnace && activity?.avgTemp != null && (
+            <div className="text-[10px] mt-1">
+              <span className="text-steel">today avg </span>
+              <span className="data font-bold text-idle">{fmtNum(activity.avgTemp)}</span>
+              <span className="text-steel"> °C</span>
+            </div>
           )}
         </div>
         {trend && trend.spark.length > 1 && (
