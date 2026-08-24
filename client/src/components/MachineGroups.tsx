@@ -144,6 +144,9 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
     refetchInterval: 60_000,
   });
   const avgBy = new Map((avgData?.data || []).map((a) => [a.code.toUpperCase(), a]));
+  // A furnace family always shows heat; every other family shows Production only
+  // when at least one of its machines actually counts something.
+  const showOutput = isFurnaceRef(label) || t.reportedProduction > 0;
   const scopeLabel = ownRows && override ? presetLabel(override) : windowLabel;
 
   const visible = open ? shown : shown.slice(0, PREVIEW);
@@ -189,17 +192,22 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
         </div>
       </div>
 
-      {/* Group totals — the sum of every machine in the family for this window */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3.5">
+      {/* Group totals — the sum of every machine in the family for this window.
+          A family where NOT ONE machine counts pieces (bottom milling) drops the
+          Production tile rather than reserving a fifth of the row for a dash: the
+          per-machine cards below already show what those machines do measure, and
+          those measurements are different from each other, so there is no family
+          figure to put here. */}
+      <div className={`grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3.5 ${showOutput ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
         {/* A furnace family makes HEAT, not pieces — its headline figure is the mean
             work-zone temperature over the window, never a piece count. */}
         {isFurnaceRef(label) ? (
           <Total label="Avg Temperature" value={t.avgTemp != null ? `${fmtNum(t.avgTemp)} °C` : '—'}
             sub={t.reportedTemp ? `${t.reportedTemp}/${t.machines} reporting` : 'no temperature signal'}
             color={t.avgTemp != null ? AMBER : SLATE} />
-        ) : (
-          <Total label="Production" value={t.reportedProduction ? `${fmtNum(t.production)} pcs` : '—'}
-            sub={t.reportedProduction ? `${t.reportedProduction}/${t.machines} counters` : 'no counter signal'} color={TEAL} />
+        ) : t.reportedProduction > 0 && (
+          <Total label="Production" value={`${fmtNum(t.production)} pcs`}
+            sub={`${t.reportedProduction}/${t.machines} counters`} color={TEAL} />
         )}
         <Total label="Runtime" value={fmtDuration(t.runningMs)} sub={`${t.availabilityPct}% availability`} color={TEAL} />
         <Total label="Idle" value={fmtDuration(t.idleMs)} sub="connected, no activity" color={t.idleMs ? AMBER : SLATE} />
@@ -287,16 +295,16 @@ function MachineMiniCard({ row, signal, avg }: {
           {/* Pieces where a counter exists, heat on a furnace, and otherwise the
               average of whatever this machine DOES measure — a milling machine
               that counts nothing still ran all day, and "—" said nothing. */}
-          <div className="label">{furnace ? 'Temperature' : row.production != null || !signal ? 'Production' : signal.label}</div>
+          <div className="label">{furnace ? 'Temperature' : row.production != null ? 'Production' : signal ? signal.label : 'No signal'}</div>
           {furnace ? (
             <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.avgTemp != null ? AMBER : SLATE }}>
               {row.avgTemp != null ? fmtNum(row.avgTemp) : '—'}
               {row.avgTemp != null && <span className="text-[11px] font-medium text-steel"> °C</span>}
             </div>
-          ) : row.production == null && signal ? (
+          ) : row.production == null ? (
             <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: avg ? INDIGO : SLATE }}>
               {avg ? fmtNum(avg.avg) : '—'}
-              {avg && <span className="text-[11px] font-medium text-steel"> {signal.unit || 'avg'}</span>}
+              {avg && <span className="text-[11px] font-medium text-steel"> {signal?.unit || 'avg'}</span>}
             </div>
           ) : (
             <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.production ? TEAL : SLATE }}>
