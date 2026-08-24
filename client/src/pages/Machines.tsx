@@ -168,7 +168,14 @@ export default function Machines() {
   // made in the current window, credited out loud.
   const borrowedToday: Record<string, { value: number; from: string }> = {};
   for (const link of LINKS) {
-    const srcRow = actBy.get(link.source) || (dayAct?.data || []).find((r) => r.code.toUpperCase() === link.source);
+    const rows = dayAct?.data || [];
+    const srcRow = actBy.get(link.source) || rows.find((r) => r.code.toUpperCase() === link.source);
+    const tgtRow = actBy.get(link.target) || rows.find((r) => r.code.toUpperCase() === link.target);
+    // The coupling only licenses the borrow while the TARGET is actually
+    // reporting. BOTTOMMILLING03 sent nothing for two days while the press
+    // feeding it made 89 — crediting those 89 to a machine we cannot see is a
+    // guess, and it looked exactly like a fact.
+    if (!tgtRow?.live) continue;
     if (srcRow?.production != null) borrowedToday[link.target] = { value: srcRow.production, from: srcRow.code };
   }
 

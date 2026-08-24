@@ -352,7 +352,9 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   const furnace = codes.some((c) => isFurnaceRef(c));
   let production = row?.production ?? null;
   let borrowedFrom: string | null = null;
-  if (!furnace && (production == null || production <= 0)) {
+  // Borrow the coupled machine's figure only while THIS machine is reporting:
+  // its own silence is not evidence that it ran. Same rule as the machine cards.
+  if (!furnace && (production == null || production <= 0) && row?.live) {
     const link = LINKS.find((l) => codes.some((c) => c.toUpperCase() === l.target));
     const srcRow = link ? rows.find((r) => String(r.code).toUpperCase() === link.source) : null;
     if (srcRow?.production != null && srcRow.production > 0) { production = srcRow.production; borrowedFrom = srcRow.code; }
