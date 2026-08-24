@@ -23,7 +23,6 @@ import RangeFilter, { type RangeValue } from '../RangeFilter';
 import { resolveRange, shiftApplies, presetLabel, todayWindow } from '../../store/filters';
 import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
-import { LINKS } from '../../lib/linkedMetrics';
 import { isFurnaceRef } from '../../lib/temperature';
 import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent, MachineActivityRow } from '../../types/api';
 
@@ -346,19 +345,9 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
   const codes = [machine.code, machine.machineId, machine.id, machine._id].filter(Boolean).map(String);
   const row = rows.find((r) => codes.includes(r.code));
   // A furnace makes heat, not pieces: for it this panel answers "what temperature
-  // did it hold during that shift", and the whole production/linked-counter path
-  // below is skipped — borrowing a neighbour's piece count for a furnace would be
-  // nonsense twice over.
+  // did it hold during that shift" instead of a piece count.
   const furnace = codes.some((c) => isFurnaceRef(c));
-  let production = row?.production ?? null;
-  let borrowedFrom: string | null = null;
-  // Borrow the coupled machine's figure only while THIS machine is reporting:
-  // its own silence is not evidence that it ran. Same rule as the machine cards.
-  if (!furnace && (production == null || production <= 0) && row?.live) {
-    const link = LINKS.find((l) => codes.some((c) => c.toUpperCase() === l.target));
-    const srcRow = link ? rows.find((r) => String(r.code).toUpperCase() === link.source) : null;
-    if (srcRow?.production != null && srcRow.production > 0) { production = srcRow.production; borrowedFrom = srcRow.code; }
-  }
+  const production = row?.production ?? null;
 
   return (
     <Panel icon={Calendar} title={furnace ? 'Temperature by Shift' : 'Production by Shift'}>
@@ -398,9 +387,7 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
                 <div className="data text-3xl font-bold text-primary leading-tight">
                   {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
                 </div>
-                {borrowedFrom
-                  ? <div className="text-[10px] text-steel mt-0.5">via linked machine {borrowedFrom}</div>
-                  : row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
+                {row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
               </>
             )}
           </div>

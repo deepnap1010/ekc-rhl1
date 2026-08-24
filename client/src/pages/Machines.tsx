@@ -20,7 +20,6 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { todayWindow } from '../store/filters';
 import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
 import ParametersModal from '../components/machine/MachineParameters';
-import { LINKS } from '../lib/linkedMetrics';
 import type { Machine, MachineTick, MachineActivityRow } from '../types/api';
 
 const TEAL = '#0D9488';
@@ -160,24 +159,6 @@ export default function Machines() {
     .sort(SORTS[sortBy] || SORTS.status);
 
 
-  // A machine with no counter of its own borrows the one it is coupled to
-  // (lib/linkedMetrics). The card used to show that machine's ABSOLUTE counter
-  // as this machine's "Production Count" — unlabelled — while its own page
-  // showed the source's figure for TODAY. Same machine, two numbers, neither
-  // marked as borrowed. Both surfaces now quote the same thing: what the source
-  // made in the current window, credited out loud.
-  const borrowedToday: Record<string, { value: number; from: string }> = {};
-  for (const link of LINKS) {
-    const rows = dayAct?.data || [];
-    const srcRow = actBy.get(link.source) || rows.find((r) => r.code.toUpperCase() === link.source);
-    const tgtRow = actBy.get(link.target) || rows.find((r) => r.code.toUpperCase() === link.target);
-    // The coupling only licenses the borrow while the TARGET is actually
-    // reporting. BOTTOMMILLING03 sent nothing for two days while the press
-    // feeding it made 89 — crediting those 89 to a machine we cannot see is a
-    // guess, and it looked exactly like a fact.
-    if (!tgtRow?.live) continue;
-    if (srcRow?.production != null) borrowedToday[link.target] = { value: srcRow.production, from: srcRow.code };
-  }
 
   const q = search.trim().toLowerCase();
   // Only machines that actually EXISTED in the range (sent data or had recorded
@@ -401,7 +382,6 @@ export default function Machines() {
               const ref = m.code || m.machineId || '';
               return (
                 <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
-                  borrowed={borrowedToday[String(ref).toUpperCase()]}
                   activity={actBy.get(ref)}
                   onParams={() => setParamsFor(m)} />
               );
@@ -431,20 +411,15 @@ function Kpi({ label, value, sub, color, icon: Icon }: { label: string; value: n
 interface MachineCardProps {
   machine: Machine;
   liveTick?: MachineTick;
-  borrowed?: { value: number; from: string }; // today's production, from the coupled machine
   activity?: MachineActivityRow;        // rolling 24h uptime/downtime/idle
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, borrowed, activity, onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity, onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
   const own       = flattenParams(Object.keys(cp).length ? cp : (machine.latestData || {}));
-  // Borrowed values are deliberately NOT merged in here: every generic reader
-  // below (the headline, the signal strip, the counter line) would present
-  // another machine's number as this one's, with nothing saying so. A borrowed
-  // figure gets exactly one home — the credited line built further down.
   const params    = own;
   const status    = effectiveStatus({ status: liveTick?.status || machine.status, lastReadingAt: liveTick?.lastReadingAt || machine.lastReadingAt });
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
@@ -521,18 +496,14 @@ function MachineCard({ machine, liveTick, borrowed, activity, onParams }: Machin
   // was the reset value anyway. So today's pieces are the headline and the raw
   // counter drops to the sub-line. Furnaces keep their live temperature: heat
   // now is the thing you act on, and their day-average already sits below it.
-  const ownToday = furnace ? null : activity?.production ?? null;
-  const viaLink = ownToday == null && !furnace ? borrowed : undefined;
-  const madeToday = ownToday ?? viaLink?.value ?? null;
+  const madeToday = furnace ? null : activity?.production ?? null;
   const counterNow = furnace ? null : productionValue(params);
   const dayHero: Headline | null = madeToday == null ? null : {
     label: 'Production · Today',
     value: fmtNum(madeToday),
     unit: 'pcs',
     tone: madeToday > 0 ? 'good' : 'neutral',
-    sub: viaLink
-      ? `via ${viaLink.from} — this machine has no counter`
-      : (counterNow != null ? `counter reads ${fmtNum(counterNow)}` : undefined),
+    sub: counterNow != null ? `counter reads ${fmtNum(counterNow)}` : undefined,
   };
   const show = dayHero ?? hero;
 
