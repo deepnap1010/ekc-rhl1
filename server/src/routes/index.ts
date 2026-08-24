@@ -36,6 +36,7 @@ r.get('/machines/activity', authorize('machines'), machine.machineActivity); // 
 r.get('/machines/:code', authorize('machines'), machine.getMachine);
 r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);
+r.get('/machines/metric-averages', authorize('machines'), machine.machineMetricAverages);     // same, for many machines at once
 r.get('/machines/:code/metric-average', authorize('machines'), machine.machineMetricAverage); // mean of one signal over a window
 r.get('/machines/:code/history', authorize('history'), machine.machineHistory);
 r.get('/machines/:code/timeline', authorize('history'), machine.machineTimeline); // minute-level change log

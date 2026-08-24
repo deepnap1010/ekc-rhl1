@@ -84,6 +84,9 @@ export const machineApi = {
   // Mean of ONE signal over a window — the caller says which; the server never guesses.
   metricAverage: (code: string, params: { from: string; to: string; key: string }) =>
     get<{ key: string; avg: number | null; min: number | null; max: number | null; samples: number }>(`/machines/${code}/metric-average`, params),
+  // Many machines, one round trip. `keys` is "CODE:key,CODE:key".
+  metricAverages: (params: { from: string; to: string; keys: string }) =>
+    get<{ code: string; key: string | null; avg: number; min: number; max: number; samples: number }[]>('/machines/metric-averages', params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),
   timeline: (code: string, params?: { from?: string; to?: string }) => get<TimelineRow[]>(`/machines/${code}/timeline`, params),
   downtime: (code: string, params?: Params) => get<DowntimeEvent[]>(`/machines/${code}/downtime`, params),

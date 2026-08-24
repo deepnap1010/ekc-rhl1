@@ -27,7 +27,7 @@ import { resolveRange, DATE_PRESETS, presetLabel, type DatePreset } from '../sto
 import type { ShiftTiming } from '../lib/settings';
 import type { MachineActivityRow } from '../types/api';
 
-const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', DEEP_RED = '#991B1B', SLATE = '#94A3B8';
+const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', DEEP_RED = '#991B1B', SLATE = '#94A3B8', INDIGO = '#6366F1';
 
 const PREVIEW = 3;   // cards shown before "view all"
 
@@ -35,10 +35,15 @@ interface Props {
   rows: MachineActivityRow[];   // reconstructed activity for the page's window
   windowMs: number;
   windowLabel: string;          // e.g. "Today" — what the page filter currently means
+  from?: string;                // the page window, ISO — a group without an override averages over this
+  to?: string;
+  /** Which signal each machine would headline, decided once in lib/headline.
+   *  Machines that count no pieces show this signal's AVERAGE instead. */
+  signals?: Record<string, { key: string; label: string; unit?: string }>;
   loading?: boolean;
 }
 
-export default function MachineGroups({ rows, windowMs, windowLabel, loading }: Props): JSX.Element {
+export default function MachineGroups({ rows, windowMs, windowLabel, from, to, signals, loading }: Props): JSX.Element {
   const [showAll, setShowAll] = useState(false);
   const groups = groupMachines(rows);
 
@@ -66,7 +71,8 @@ export default function MachineGroups({ rows, windowMs, windowLabel, loading }: 
     <div className="space-y-4">
       {visible.map((g) => (
         <GroupPanel key={g.key} label={g.label} rows={g.machines}
-          windowMs={windowMs} windowLabel={windowLabel} />
+          windowMs={windowMs} windowLabel={windowLabel}
+          pageFrom={from} pageTo={to} signals={signals} />
       ))}
 
       {/* Hidden groups append BELOW — expanding never reshuffles what's on screen */}
@@ -85,8 +91,9 @@ export default function MachineGroups({ rows, windowMs, windowLabel, loading }: 
 }
 
 // ── One family ───────────────────────────────────────────────────────────────
-function GroupPanel({ label, rows, windowMs, windowLabel }: {
+function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, signals }: {
   label: string; rows: MachineActivityRow[]; windowMs: number; windowLabel: string;
+  pageFrom?: string; pageTo?: string; signals?: Record<string, { key: string; label: string; unit?: string }>;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   // '' = follow the page filter. An override re-fetches ONLY this group's window.
@@ -121,6 +128,22 @@ function GroupPanel({ label, rows, windowMs, windowLabel }: {
   const shown = ownRows ?? rows;
   const effWindowMs = ownRows ? (ownWindowMs as number) : windowMs;
   const t = sumActivity(shown, effWindowMs);
+
+  // A machine that counts nothing still measures something. For those, the card
+  // shows the AVERAGE of the signal it would headline, over this panel's window —
+  // one request for the whole group, never one per card.
+  const winFrom = ownRows ? fromISO : pageFrom;
+  const winTo = ownRows ? toISO : pageTo;
+  const needAvg = shown.filter((r) => r.production == null && !isFurnaceRef(r.code) && signals?.[r.code.toUpperCase()]);
+  const keysParam = needAvg.map((r) => `${r.code}:${signals![r.code.toUpperCase()].key}`).join(',');
+  const { data: avgData } = useQuery({
+    queryKey: ['metric-averages', winFrom, winTo, keysParam],
+    queryFn: () => machineApi.metricAverages({ from: winFrom as string, to: winTo as string, keys: keysParam }),
+    enabled: !!keysParam && !!winFrom && !!winTo,
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  });
+  const avgBy = new Map((avgData?.data || []).map((a) => [a.code.toUpperCase(), a]));
   const scopeLabel = ownRows && override ? presetLabel(override) : windowLabel;
 
   const visible = open ? shown : shown.slice(0, PREVIEW);
@@ -189,7 +212,10 @@ function GroupPanel({ label, rows, windowMs, windowLabel }: {
 
       {/* Machines — three across; the rest open on demand */}
       <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-3.5">
-        {visible.map((r) => <MachineMiniCard key={r.code} row={r} />)}
+        {visible.map((r) => (
+          <MachineMiniCard key={r.code} row={r}
+            signal={signals?.[r.code.toUpperCase()]} avg={avgBy.get(r.code.toUpperCase())} />
+        ))}
       </div>
 
       {(hidden > 0 || open) && (
@@ -236,7 +262,11 @@ function SplitBar({ running, idle, stopped, offline }: { running: number; idle: 
   );
 }
 
-function MachineMiniCard({ row }: { row: MachineActivityRow }): JSX.Element {
+function MachineMiniCard({ row, signal, avg }: {
+  row: MachineActivityRow;
+  signal?: { key: string; label: string; unit?: string };
+  avg?: { avg: number; min: number; max: number; samples: number };
+}): JSX.Element {
   const downtimeMs = row.idleMs + row.stoppedMs;
   const furnace = isFurnaceRef(row.code);
   return (
@@ -254,11 +284,19 @@ function MachineMiniCard({ row }: { row: MachineActivityRow }): JSX.Element {
       {/* Output in the window — the number a supervisor scans for */}
       <div className="mt-2.5 rounded-lg border border-line bg-base px-3 py-2 flex items-end justify-between gap-2">
         <div className="min-w-0">
-          <div className="label">{furnace ? 'Temperature' : 'Production'}</div>
+          {/* Pieces where a counter exists, heat on a furnace, and otherwise the
+              average of whatever this machine DOES measure — a milling machine
+              that counts nothing still ran all day, and "—" said nothing. */}
+          <div className="label">{furnace ? 'Temperature' : row.production != null || !signal ? 'Production' : signal.label}</div>
           {furnace ? (
             <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.avgTemp != null ? AMBER : SLATE }}>
               {row.avgTemp != null ? fmtNum(row.avgTemp) : '—'}
               {row.avgTemp != null && <span className="text-[11px] font-medium text-steel"> °C</span>}
+            </div>
+          ) : row.production == null && signal ? (
+            <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: avg ? INDIGO : SLATE }}>
+              {avg ? fmtNum(avg.avg) : '—'}
+              {avg && <span className="text-[11px] font-medium text-steel"> {signal.unit || 'avg'}</span>}
             </div>
           ) : (
             <div className="data text-xl font-bold leading-none mt-0.5" style={{ color: row.production ? TEAL : SLATE }}>

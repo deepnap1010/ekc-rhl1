@@ -362,6 +362,53 @@ export const machineStats = asyncHandler(async (req, res) => {
   return ok(res, { window: readings.length, metricCount, metrics });
 });
 
+// GET /machines/metric-averages?from&to&keys=CODE:key,CODE:key — the same mean,
+// for a whole group in ONE round trip. A dashboard panel showing 19 machines
+// must not fire 19 requests every poll.
+export const machineMetricAverages = asyncHandler(async (req, res) => {
+  const q = req.query as Record<string, string | undefined>;
+  const pairs = (q.keys || '').split(',')
+    .map((p) => p.split(':'))
+    .filter((p) => p.length === 2 && p[0].trim() && p[1].trim() && !p[1].includes('.') && !p[1].includes('$'))
+    .map((p) => ({ code: p[0].trim(), key: p[1].trim() }))
+    .slice(0, 60);
+  if (!pairs.length) return ok(res, []);
+
+  const scope = machineScope(req.user as ScopeUser);
+  const wanted = scope ? pairs.filter((p) => scope.includes(p.code)) : pairs;
+  if (!wanted.length) return ok(res, []);
+
+  const parseD = (s?: string): Date | null => {
+    if (!s) return null;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const toD = parseD(q.to) || new Date();
+  const fromD = parseD(q.from) || new Date(toD.getTime() - 24 * 3600 * 1000);
+  if (fromD >= toD) return fail(res, 400, 'from must be before to');
+  const endD = new Date(Math.min(toD.getTime(), Date.now()));
+
+  // One $switch picks each machine's own key, exactly as the activity engine
+  // does for production and temperature.
+  const rows = await Telemetry.aggregate([
+    { $match: { machineId: { $in: wanted.map((p) => p.code) }, timestamp: { $gte: fromD, $lte: endD } } },
+    { $addFields: { v: { $switch: {
+      branches: wanted.map((p) => ({ case: { $eq: ['$machineId', p.code] }, then: { $getField: { field: p.key, input: '$data' } } })),
+      default: null,
+    } } } },
+    { $match: { v: { $type: ['int', 'long', 'double', 'decimal'] }, $expr: { $lt: [{ $abs: '$v' }, 32767] } } },
+    { $group: { _id: '$machineId', avg: { $avg: '$v' }, min: { $min: '$v' }, max: { $max: '$v' }, samples: { $sum: 1 } } },
+  ]).option({ allowDiskUse: true, maxTimeMS: 20000 }).exec();
+
+  const keyOf = new Map(wanted.map((p) => [p.code, p.key]));
+  return ok(res, rows.map((r) => ({
+    code: r._id as string,
+    key: keyOf.get(r._id as string) || null,
+    avg: Math.round(r.avg * 100) / 100,
+    min: r.min, max: r.max, samples: r.samples,
+  })), { from: fromD.toISOString(), to: endD.toISOString() });
+});
+
 // GET /machines/:code/metric-average?from&to&key= — the mean of ONE signal over
 // a window. Deliberately dumb: the CLIENT decides which signal matters (that
 // judgement lives in lib/headline, and the card the user is looking at already

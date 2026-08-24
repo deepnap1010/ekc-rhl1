@@ -26,6 +26,8 @@ import { Donut, Legend } from '../components/charts';
 import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
 import { sumActivity } from '../lib/metrics';
+import { flattenParams } from '../lib/params';
+import { computeHeadline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS } from '../store/filters';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -87,6 +89,20 @@ export default function Dashboard() {
   const t = useMemo(() => sumActivity(rows, windowMs), [rows, windowMs]);
 
   const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
+  // Which signal each machine would headline — the same judgement the machine
+  // cards make, made once here so a group can show an average where there is no
+  // piece counter. Keyed by CODE, uppercased.
+  const signals = useMemo(() => {
+    const out: Record<string, { key: string; label: string; unit?: string }> = {};
+    for (const m of machineList || []) {
+      const code = String(m.code || m.machineId || m._id).toUpperCase();
+      const cp = m.currentParameters || {};
+      const h = computeHeadline(flattenParams(Object.keys(cp).length ? cp : (m.latestData || {})));
+      if (h?.key) out[code] = { key: h.key, label: h.label, unit: h.unit };
+    }
+    return out;
+  }, [machineList]);
+
   const [drill, setDrill] = useState<string | null>(null);
   // Bumping this remounts the group panels, which is how a reset also clears the
   // per-group window overrides — they are local to each panel by design.
@@ -216,7 +232,8 @@ export default function Dashboard() {
         {/* ── By group ────────────────────────────────────────────────────── */}
         <SectionHead icon={Boxes} title={f.machineId ? scopeLabel : 'Machine groups'}
           sub={`${t.machines} machine${t.machines === 1 ? '' : 's'} · ${t.reported} reported data · ${windowLabel}${stale ? ' · updating…' : ''}`} />
-        <MachineGroups key={resetTick} rows={rows} windowMs={windowMs} windowLabel={windowLabel} loading={actLoading} />
+        <MachineGroups key={resetTick} rows={rows} windowMs={windowMs} windowLabel={windowLabel}
+          from={fromISO} to={toISO} signals={signals} loading={actLoading} />
 
         {/* ── Fleet totals for the same window, under the groups they sum ── */}
         <div className="grid lg:grid-cols-2 gap-5">
