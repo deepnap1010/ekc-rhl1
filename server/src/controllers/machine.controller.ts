@@ -175,6 +175,18 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   if (fromD >= toD) return fail(res, 400, 'from must be before to');
   const endD = new Date(Math.min(toD.getTime(), Date.now()));
 
+  // The counter key comes from the machine's CURRENT snapshot, so the pipeline
+  // can ask the database for the minute's HIGHEST counter value. "Latest reading
+  // in the minute" was not survivable: when a collector reconnects it replays its
+  // buffer stamped with the current time — CUTTINGMACHINE07 wrote 15,294 readings
+  // into 30 minutes, the same values interleaved over and over (359 rises, 293
+  // drops, one of them 67 wide), so "the last one" was effectively a coin toss and
+  // the History column sawed up and down. The highest value in a minute is stable
+  // however many times that minute is replayed.
+  const snapKey = pickProductionKey(flattenData((m as LeanMachine).currentParameters as Record<string, unknown> || {}));
+  const maxKey = snapKey && !snapKey.includes('.') ? snapKey : null;
+  const counterAt = maxKey ? { $getField: { field: maxKey, input: '$data' } } : null;
+
   // Latest reading per minute — the sort rides {machineId, timestamp:-1}.
   // Downtime spans give each row a status even when the payload carries none
   // (many machines don't send a status key) — same source as the status pills.
@@ -187,9 +199,15 @@ export const machineTimeline = asyncHandler(async (req, res) => {
         ts: { $first: '$timestamp' },
         data: { $first: '$data' },
         docStatus: { $first: '$status' },
+        readings: { $sum: 1 },
+        // Non-numeric samples are ignored rather than compared: BSON orders
+        // strings above numbers, so one stray '' would win every $max.
+        prodMax: counterAt ? { $max: { $cond: [{ $isNumber: counterAt }, counterAt, null] } } : { $max: null },
       } },
-      { $sort: { _id: 1 } },
-    ]).option({ allowDiskUse: true, maxTimeMS: 20000 }) as Promise<{ _id: Date; ts: Date; data?: Record<string, unknown>; docStatus?: string }[]>,
+      // Deliberately NO { $sort: { _id: 1 } } here: a sort after $group is a
+      // blocking sort, and this Atlas tier ignores allowDiskUse — a History range
+      // of a few months would 500 instead of loading. Ordering happens in Node.
+    ]).option({ allowDiskUse: true, maxTimeMS: 20000 }) as Promise<{ _id: Date; ts: Date; data?: Record<string, unknown>; docStatus?: string; readings: number; prodMax: number | null }[]>,
     DowntimeEvent.find({
       machineId: { $in: refs },
       startedAt: { $lte: endD },
@@ -205,9 +223,13 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     return 'running'; // it reported this minute and no downtime span covers it
   };
 
-  // One production-counter key for the whole range (newest payload that has one),
-  // via the shared picker — same key the event engine and activity view use.
-  let prodKey: string | null = null;
+  agg.sort((a, b) => new Date(a._id).getTime() - new Date(b._id).getTime());
+
+  // One production-counter key for the whole range. The snapshot's key is the
+  // one the $max above used; fall back to the newest payload that carries one
+  // (report-by-exception means the snapshot can be missing it), in which case
+  // rows fall back to that minute's last reading.
+  let prodKey: string | null = maxKey;
   for (let i = agg.length - 1; i >= 0 && !prodKey; i -= 1) prodKey = pickProductionKey(flattenData(agg[i].data || {}));
 
   // Keep only real changes (production or status differs from the previous minute).
@@ -216,7 +238,9 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   let prevStatus: string | null = null;
   for (const r of agg) {
     const flat = flattenData(r.data || {});
-    const production = prodKey && isNumericValue(flat[prodKey]) ? Number(flat[prodKey]) : null;
+    const production = r.prodMax != null && isNumericValue(r.prodMax)
+      ? Number(r.prodMax)
+      : (prodKey && isNumericValue(flat[prodKey]) ? Number(flat[prodKey]) : null);
     // Status priority: payload status → telemetry doc status → downtime spans.
     const rawStatus = [flat.status, r.docStatus].find((v) => typeof v === 'string' && (v as string).trim());
     const status = rawStatus ? String(rawStatus).trim().toLowerCase() : statusAt(new Date(r.ts).getTime());
@@ -227,9 +251,15 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   }
   rows.reverse(); // newest first
 
+  // A minute holding more readings than a machine can physically produce is a
+  // replay burst, not a busy minute — surfaced so the UI can say so instead of
+  // leaving the reader to wonder why the counter moved oddly.
+  const REPLAY_PER_MIN = 60;
+  const replayMinutes = agg.filter((r) => r.readings > REPLAY_PER_MIN).length;
+
   return ok(res, rows.slice(0, 2000), {
     from: fromD.toISOString(), to: endD.toISOString(),
-    productionKey: prodKey, total: rows.length, minutes: agg.length,
+    productionKey: prodKey, total: rows.length, minutes: agg.length, replayMinutes,
   });
 });
 

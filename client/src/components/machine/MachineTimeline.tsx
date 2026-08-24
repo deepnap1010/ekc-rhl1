@@ -29,6 +29,12 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
     placeholderData: keepPreviousData,
   });
   const rows: TimelineRow[] = data?.data || [];
+  // A minute holding more readings than a machine can physically produce is a
+  // collector REPLAY: on reconnect it flushes its buffer stamped with the current
+  // time, so hours of history land in minutes. The counter column already shows
+  // each minute's highest value so it stays truthful, but the reader still
+  // deserves to know why a chunk of time is missing above those rows.
+  const replayMinutes = (data?.meta as { replayMinutes?: number } | undefined)?.replayMinutes || 0;
 
   const exportCsv = () => {
     if (!rows.length) return;
@@ -65,6 +71,14 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
         One reading per minute · unchanged minutes are hidden, so every row is a real change.
         Without a From/To range the view covers the <span className="font-medium text-primary">last 7 days</span> — pick a range for older data.
       </p>
+
+      {replayMinutes > 0 && (
+        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          <span className="font-semibold">{replayMinutes} minute{replayMinutes === 1 ? '' : 's'}</span> in this range hold far more
+          readings than the machine can send — its collector reconnected and replayed a buffer stamped with the current time.
+          Those pieces were made earlier, during the gap above; the counter shown is each minute's highest value, so it stays correct.
+        </p>
+      )}
 
       {/* Change log */}
       <div className="panel overflow-x-auto">
