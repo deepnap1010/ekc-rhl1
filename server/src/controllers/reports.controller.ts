@@ -16,6 +16,25 @@ type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 
 const num = (p: string): { $ifNull: [string, number] } => ({ $ifNull: [p, 0] });
 
+/** The window a report covers. A page-level filter speaks in real edges — a
+ *  "previous week" or "yesterday" cannot be said with "last N days" — so from/to
+ *  win when given, and ?days= stays as the fallback every existing caller uses. */
+function reportWindow(rq: Record<string, string | undefined>): { since: Date; until: Date; windowDays: number } {
+  const parse = (v?: string): Date | null => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const from = parse(rq.from);
+  const to = parse(rq.to);
+  if (from && to && from < to) {
+    const until = new Date(Math.min(to.getTime(), Date.now()));
+    return { since: from, until, windowDays: Math.max(1, Math.round((until.getTime() - from.getTime()) / 86400000)) };
+  }
+  const windowDays = Math.min(Math.max(Number(rq.days) || 30, 1), 365);
+  return { since: new Date(Date.now() - windowDays * 24 * 3600 * 1000), until: new Date(), windowDays };
+}
+
 // An explicit ?machineId= scopes a report to one machine ("Machine Report").
 // The ref is resolved to BOTH its spellings (business `code` + raw `machineId`)
 // so downtime rows keyed by either alias are found and scope checks accept
@@ -62,17 +81,16 @@ export const overviewReport = asyncHandler(async (req, res) => {
   const { refs, denied } = await requestedMachine(rq, scope);
   if (denied) return ok(res, { windowDays: 0, kpis: {}, statusMix: [], errorsByStatus: [], downtimeByMachine: [] });
   const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
-  const windowDays = Math.min(Math.max(Number(rq.days) || 30, 1), 365);
-  const since = new Date(Date.now() - windowDays * 24 * 3600 * 1000);
+  const { since, until, windowDays } = reportWindow(rq);
 
   const [snapshotAll, totals, byMachine] = await Promise.all([
     getFleetSnapshot(scope),
     DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: since }, ...sm } as PipelineStage.Match['$match'] },
+      { $match: { startedAt: { $gte: since, $lte: until }, ...sm } as PipelineStage.Match['$match'] },
       { $group: { _id: null, events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') }, open: { $sum: { $cond: [{ $eq: ['$endedAt', null] }, 1, 0] } } } },
     ]),
     DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: since }, ...sm } as PipelineStage.Match['$match'] },
+      { $match: { startedAt: { $gte: since, $lte: until }, ...sm } as PipelineStage.Match['$match'] },
       { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') }, open: { $sum: { $cond: [{ $eq: ['$endedAt', null] }, 1, 0] } } } },
       { $sort: { totalMs: -1 } },
     ]),
@@ -319,15 +337,14 @@ export const reliabilityReport = asyncHandler(async (req, res) => {
   const { refs, denied } = await requestedMachine(rq, scope);
   if (denied) return ok(res, { windowDays: 0, machines: [] });
   const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
-  const windowDays = Math.min(Math.max(Number(rq.days) || 30, 1), 365);
-  const windowMs = windowDays * 24 * 3600 * 1000;
-  const since = new Date(Date.now() - windowMs);
+  const { since, until, windowDays } = reportWindow(rq);
+  const windowMs = until.getTime() - since.getTime();
 
   // Operating time comes from the SHARED activity engine (time the machine
   // actually reported minus downtime) — never window-minus-spans, which
   // credited silent days as operating time and inflated availability/MTBF.
   const [act, agg] = await Promise.all([
-    computeActivity(scope, since, new Date(), refs),
+    computeActivity(scope, since, until, refs),
     // Events OVERLAPPING the window — same semantics as the duration source
     // (computeActivity), or a boundary-crossing span contributes duration with
     // no event and MTTR explodes.

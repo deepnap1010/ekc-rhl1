@@ -13,6 +13,8 @@ import { reportsApi, machineApi } from '../api/endpoints';
 import { StatCard, Spinner } from '../components/ui';
 import { Donut, Gauge, Legend, ERROR_COLORS, STATUS_COLORS, BLUE_RAMP, PALETTE } from '../components/charts';
 import PageHeader from '../components/PageHeader';
+import RangeFilter from '../components/RangeFilter';
+import { useRangeFilter } from '../hooks/useRangeFilter';
 import { fmtNum, fmtDuration, prettyType } from '../lib/format';
 import type { MetricValue } from '../types/api';
 import type { ReactNode } from 'react';
@@ -28,6 +30,12 @@ export default function Reports() {
   const [tab, setTab] = useState('overview');
   const [machineId, setMachineId] = useState('');
   const mid = machineId || undefined;
+  // One window for the whole page — the same control the dashboard, history log
+  // and downtime archive use. It drives the reports that HAVE a window; the
+  // snapshot ones (production totals, fleet inventory, plants) are point-in-time
+  // by nature and say so, rather than pretending to honour a date range.
+  const win = useRangeFilter('month');
+  const range = { from: win.fromISO, to: win.toISO };
 
   // Machine selector options — the real machine dataset.
   const { data: machineList } = useQuery({
@@ -42,8 +50,8 @@ export default function Reports() {
     refetchInterval: 60000,
   });
   const { data: dtData, isLoading: dtLoading } = useQuery({
-    queryKey: ['reports', 'downtime', machineId],
-    queryFn: () => reportsApi.downtime({ machineId: mid }).then((r) => r.data),
+    queryKey: ['reports', 'downtime', machineId, win.fromISO, win.toISO],
+    queryFn: () => reportsApi.downtime({ machineId: mid, ...range }).then((r) => r.data),
     refetchInterval: 60000,
   });
   const { data: plantData } = useQuery({
@@ -57,8 +65,8 @@ export default function Reports() {
     refetchInterval: 60000,
   });
   const { data: relData, isLoading: relLoading } = useQuery({
-    queryKey: ['reports', 'reliability', machineId],
-    queryFn: () => reportsApi.reliability({ machineId: mid }).then((r) => r.data),
+    queryKey: ['reports', 'reliability', machineId, win.fromISO, win.toISO],
+    queryFn: () => reportsApi.reliability({ machineId: mid, ...range }).then((r) => r.data),
     refetchInterval: 60000,
   });
 
@@ -121,6 +129,8 @@ export default function Reports() {
               return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
             })}
           </select>
+          <RangeFilter value={win.value} onChange={win.setValue} range={win.range}
+            title="Which period these reports cover" />
           <div className="flex gap-1 bg-base rounded-lg p-0.5 border border-line">
             {['overview', 'production', 'downtime', 'plants', 'fleet', 'reliability'].map((t) => (
               <button
@@ -140,7 +150,7 @@ export default function Reports() {
         )}
 
         {/* ---- OVERVIEW ---- */}
-        {tab === 'overview' && <OverviewReport machineId={mid} />}
+        {tab === 'overview' && <OverviewReport machineId={mid} from={win.fromISO} to={win.toISO} />}
 
         {/* ---- PRODUCTION ---- */}
         {tab === 'production' && (
@@ -463,13 +473,12 @@ function DtTooltip({ active, payload, label }: ChartTooltipProps) {
 }
 
 // ── Overview: live downtime & error analysis console (real health + downtime) ─
-const OV_WINDOWS: [number, string][] = [[7, '7d'], [30, '30d'], [90, '90d']];
-
-function OverviewReport({ machineId }: { machineId?: string }) {
-  const [days, setDays] = useState(30);
+// The window comes from the page control; this section had its own 7d/30d/90d
+// buttons, which is one control too many on a screen that already has one.
+function OverviewReport({ machineId, from, to }: { machineId?: string; from?: string; to?: string }) {
   const { data, isLoading } = useQuery({
-    queryKey: ['reports', 'overview', days, machineId || ''],
-    queryFn: () => reportsApi.overview({ days, machineId }).then((r) => r.data),
+    queryKey: ['reports', 'overview', from, to, machineId || ''],
+    queryFn: () => reportsApi.overview({ from, to, machineId }).then((r) => r.data),
     refetchInterval: 30000,
   });
   if (isLoading) return <Spinner />;
@@ -478,7 +487,7 @@ function OverviewReport({ machineId }: { machineId?: string }) {
   const statusMix = data?.statusMix || [];
   const errorsByStatus = data?.errorsByStatus || [];
   const downtimeByMachine = data?.downtimeByMachine || [];
-  const windowDays = data?.windowDays || days;
+  const windowDays = data?.windowDays || 30;
 
   const errSeg = errorsByStatus.map((e, i) => ({ label: e.label, value: e.count, color: ERROR_COLORS[e.key] || PALETTE[i % PALETTE.length] || STEEL }));
   const statusSeg = statusMix.map((s) => ({ label: s.label, value: s.count, color: STATUS_COLORS[s.key] || STEEL }));
@@ -489,11 +498,7 @@ function OverviewReport({ machineId }: { machineId?: string }) {
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="font-semibold text-sm text-primary">Downtime &amp; Error Analysis</h2>
-        <div className="panel p-1 inline-flex gap-0.5">
-          {OV_WINDOWS.map(([d, label]) => (
-            <button key={d} onClick={() => setDays(d)} className={`px-3 py-1 rounded-md text-xs transition-colors ${days === d ? 'bg-accent/10 text-accent font-medium' : 'text-steel hover:text-primary'}`}>{label}</button>
-          ))}
-        </div>
+        <span className="text-[11px] text-steel">{windowDays} day{windowDays === 1 ? '' : 's'} in the selected window</span>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">

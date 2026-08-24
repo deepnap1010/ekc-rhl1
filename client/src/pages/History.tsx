@@ -17,6 +17,8 @@ import { Spinner, StatusPill, FreshnessPill } from '../components/ui';
 import TrendChart from '../components/TrendChart';
 import Sparkline from '../components/Sparkline';
 import PageHeader from '../components/PageHeader';
+import RangeFilter from '../components/RangeFilter';
+import { useRangeFilter } from '../hooks/useRangeFilter';
 import { fmtTime, prettyKey, fmtNum, fmtMetric, fmtDuration, prettyType } from '../lib/format';
 import { effectiveStatus } from '../lib/machineStatus';
 import { isFault, isRegisterKey, isMetaKey } from '../lib/metrics';
@@ -69,8 +71,9 @@ const STATE_META: Record<string, { icon: LucideIcon; color: string; verb: string
 
 function EventsArchive(): JSX.Element {
   const [machineId, setMachineId] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  // The same window control the dashboard uses — presets plus a custom date+time
+  // range — instead of two bare datetime boxes nobody could scan.
+  const win = useRangeFilter('week');
   const [type, setType] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
@@ -82,13 +85,13 @@ function EventsArchive(): JSX.Element {
   });
 
   const [kind, state] = type ? type.split(':') : ['', ''];
-  // Default window = last 7 days (minute-rounded for stable query keys) so the
-  // summary counters and the table always cover the SAME range.
-  const nowMin = Math.floor(Date.now() / 60_000) * 60_000;
+  // The summary counters and the table always cover the SAME window.
+  const from = win.fromISO;
+  const to = win.toISO;
   const params = {
     machineId: machineId || undefined,
-    from: from ? new Date(from).toISOString() : new Date(nowMin - 7 * 24 * 3600_000).toISOString(),
-    to: to ? new Date(to).toISOString() : new Date(nowMin).toISOString(),
+    from,
+    to,
     kind: kind || undefined,
     state: state || undefined,
   };
@@ -182,14 +185,9 @@ function EventsArchive(): JSX.Element {
           </select>
         </div>
         <div>
-          <label className="label block mb-1.5">From</label>
-          <input type="datetime-local" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }}
-            className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
-        </div>
-        <div>
-          <label className="label block mb-1.5">To</label>
-          <input type="datetime-local" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }}
-            className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
+          <label className="label block mb-1.5">Window</label>
+          <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
+            className="w-full" title="Which period this archive covers" />
         </div>
         <div>
           <label className="label block mb-1.5">Event type</label>
@@ -302,8 +300,9 @@ function Counter({ label, value, sub, color }: { label: string; value: string; s
 // ─── Raw telemetry archive (previous History page, preserved) ────────────────
 function RawArchive(): JSX.Element {
   const [code, setCode] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const win = useRangeFilter('week');
+  const from = win.fromISO || '';
+  const to = win.toISO || '';
   const [page, setPage] = useState(1);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
@@ -378,14 +377,9 @@ function RawArchive(): JSX.Element {
           </select>
         </div>
         <div>
-          <label className="label block mb-1.5">From</label>
-          <input type="datetime-local" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }}
-            className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
-        </div>
-        <div>
-          <label className="label block mb-1.5">To</label>
-          <input type="datetime-local" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }}
-            className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
+          <label className="label block mb-1.5">Window</label>
+          <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
+            className="w-full" title="Which period these readings cover" />
         </div>
       </div>
 

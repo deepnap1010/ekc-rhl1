@@ -6,6 +6,9 @@ import { downtimeApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { StatCard, Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
+import RangeFilter from '../components/RangeFilter';
+import { useRangeFilter } from '../hooks/useRangeFilter';
+import { presetLabel } from '../store/filters';
 import { fmtDuration, fmtTime, fmtNum, prettyType } from '../lib/format';
 import type { ApiMeta, DowntimeEvent } from '../types/api';
 
@@ -13,7 +16,6 @@ const TYPES = ['all', 'idle', 'stopped', 'offline'];
 const STATUS_OPTS = ['all', 'open', 'closed'];
 const REVIEW_OPTS = ['all', 'unacknowledged', 'acknowledged'];
 // Bounding every query by a time window keeps it index-backed at production scale.
-const WINDOWS: [string, number | null][] = [['7d', 7], ['30d', 30], ['90d', 90], ['all', null], ['custom', null]];
 const PAGE_SIZE = 25;
 
 export default function Downtime() {
@@ -24,10 +26,10 @@ export default function Downtime() {
   const [review, setReview] = useState('all');
   const [page, setPage] = useState(1);
   const [reasonModal, setReasonModal] = useState<DowntimeEvent | null>(null);
-  const [win, setWin] = useState('30d');
+  // The shared window control — the same presets and the same custom date+time
+  // popup as everywhere else, instead of this page's own 7D/30D/90D buttons.
+  const win = useRangeFilter('month');
   const [machineId, setMachineId] = useState('');
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
 
   // Machine selector options — the real machine dataset.
   const { data: machineList } = useQuery({
@@ -36,24 +38,13 @@ export default function Downtime() {
     staleTime: 60_000,
   });
 
-  // Range recomputes only when the window/custom inputs change → stable query keys.
-  const range = useMemo(() => {
-    if (win === 'custom') {
-      const f = customFrom ? new Date(customFrom) : null;
-      const t = customTo ? new Date(customTo) : null;
-      if (f && t && !Number.isNaN(f.getTime()) && !Number.isNaN(t.getTime()) && f < t) {
-        return { from: f.toISOString(), to: t.toISOString() };
-      }
-      return { from: undefined, to: undefined };
-    }
-    const days = ({ '7d': 7, '30d': 30, '90d': 90 } as Record<string, number>)[win];
-    return { from: days ? new Date(Date.now() - days * 86400000).toISOString() : undefined, to: undefined };
-  }, [win, customFrom, customTo]);
-  const from = range.from;
-  const to = range.to;
+  const from = win.fromISO;
+  const to = win.toISO;
   // A half-filled custom range must NOT silently run an unbounded all-time query.
-  const customReady = win !== 'custom' || (!!from && !!to);
-  const winLabel = win === 'custom' ? (customReady ? 'custom range' : 'pick start & end') : win === 'all' ? 'all time' : `last ${win.replace('d', '')} days`;
+  const customReady = win.value.preset !== 'custom' || (!!from && !!to);
+  const winLabel = win.value.preset === 'custom'
+    ? (customReady ? 'custom range' : 'pick start & end')
+    : presetLabel(win.value.preset).toLowerCase();
 
   const ackMut = useMutation({
     mutationFn: ({ id, acknowledged }: { id: string; acknowledged: boolean }) =>
@@ -109,11 +100,8 @@ export default function Downtime() {
       <PageHeader
         title="Downtime" subtitle="Idle, stopped & offline event log"
         right={(
-          <div className="panel p-1 inline-flex gap-0.5">
-            {WINDOWS.map(([k]) => (
-              <button key={k} onClick={() => { setWin(k); setPage(1); }} className={`px-2.5 py-1 rounded-md text-xs uppercase transition-colors ${win === k ? 'bg-accent/10 text-accent font-medium' : 'text-steel hover:text-primary'}`}>{k}</button>
-            ))}
-          </div>
+          <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
+            title="Which period this log covers" />
         )}
       />
 
@@ -156,15 +144,6 @@ export default function Downtime() {
               return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
             })}
           </select>
-          {win === 'custom' && (
-            <span className="flex items-center gap-1.5">
-              <input type="datetime-local" value={customFrom} onChange={(e) => { setCustomFrom(e.target.value); setPage(1); }}
-                className="rounded-xl border border-line bg-base px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-              <span className="text-steel text-xs">→</span>
-              <input type="datetime-local" value={customTo} onChange={(e) => { setCustomTo(e.target.value); setPage(1); }}
-                className="rounded-xl border border-line bg-base px-2.5 py-1.5 text-sm text-primary outline-none focus:border-accent" />
-            </span>
-          )}
           <FilterGroup label="Type" value={type} opts={typeOpts} onChange={(v) => { setType(v); setPage(1); }} />
           <FilterGroup label="Status" value={status} opts={STATUS_OPTS} onChange={(v) => { setStatus(v); setPage(1); }} />
           <FilterGroup label="Review" value={review} opts={REVIEW_OPTS} onChange={(v) => { setReview(v); setPage(1); }} />
