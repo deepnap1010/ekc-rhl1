@@ -99,10 +99,6 @@ export default function Downtime() {
     <div>
       <PageHeader
         title="Downtime" subtitle="Idle, stopped & offline event log"
-        right={(
-          <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
-            title="Which period this log covers" />
-        )}
       />
 
       <div className="px-4 sm:px-6 pb-8 space-y-5">
@@ -144,6 +140,8 @@ export default function Downtime() {
               return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
             })}
           </select>
+          <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
+            title="Which period this log covers" />
           <FilterGroup label="Type" value={type} opts={typeOpts} onChange={(v) => { setType(v); setPage(1); }} />
           <FilterGroup label="Status" value={status} opts={STATUS_OPTS} onChange={(v) => { setStatus(v); setPage(1); }} />
           <FilterGroup label="Review" value={review} opts={REVIEW_OPTS} onChange={(v) => { setReview(v); setPage(1); }} />

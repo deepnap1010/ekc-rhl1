@@ -39,7 +39,22 @@ export const listEvents = asyncHandler(async (req, res) => {
     const range: RangeFilter = {};
     if (from) range.$gte = from;
     if (to) range.$lte = to;
-    filter.startedAt = range;
+
+    // A state SESSION that began BEFORE this window and ran into it happened
+    // during the window. /events/summary counts it that way; this list used
+    // "started inside" and so the tiles and the table contradicted each other on
+    // one screen — 45 sessions counted above an empty table for a day whose
+    // machines had gone silent mid-session.
+    // Production events are point-in-time, so for those "started inside" IS the
+    // right question.
+    const sessionInWindow: Record<string, unknown> = { kind: 'state' };
+    if (to) sessionInWindow.startedAt = { $lte: to };
+    if (from) sessionInWindow.$or = [{ endedAt: null }, { endedAt: { $gte: from } }];
+    const pointInWindow = { kind: 'production', startedAt: range };
+
+    if (filter.kind === 'state') Object.assign(filter, sessionInWindow);
+    else if (filter.kind === 'production') filter.startedAt = range;
+    else filter.$or = [sessionInWindow, pointInWindow];
   }
 
   const page = Math.max(1, Number(q.page) || 1);
