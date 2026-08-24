@@ -34,7 +34,13 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
   // time, so hours of history land in minutes. The counter column already shows
   // each minute's highest value so it stays truthful, but the reader still
   // deserves to know why a chunk of time is missing above those rows.
-  const replayMinutes = (data?.meta as { replayMinutes?: number } | undefined)?.replayMinutes || 0;
+  const meta = data?.meta as { replayMinutes?: number; productionKey?: string | null } | undefined;
+  const replayMinutes = meta?.replayMinutes || 0;
+  // No counter + a status that never changes = a change log with nothing to
+  // show. BOTTOMMILLING04 sends 74,642 readings that all say "running" and no
+  // production signal at all, which collapsed a whole week into a single row
+  // dated three days ago — technically a change, practically a bug report.
+  const noCounter = !isLoading && meta != null && !meta.productionKey;
 
   const exportCsv = () => {
     if (!rows.length) return;
@@ -71,6 +77,14 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
         One reading per minute · unchanged minutes are hidden, so every row is a real change.
         Without a From/To range the view covers the <span className="font-medium text-primary">last 7 days</span> — pick a range for older data.
       </p>
+
+      {noCounter && (
+        <p className="text-[11px] text-steel bg-base border border-line rounded-lg px-3 py-2">
+          This machine reports <span className="font-semibold text-primary">no production counter</span>, so the log below tracks
+          status changes only{rows.length <= 1 ? ' — and its status has not changed in this range' : ''}. Use
+          <span className="font-medium text-primary"> View parameters</span> to see what it does send.
+        </p>
+      )}
 
       {replayMinutes > 0 && (
         <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
