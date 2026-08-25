@@ -222,6 +222,8 @@ export interface MachineActivityRow {
   offlineMs: number;
   production: number | null;      // production counter delta over the range
   productionKey: string | null;   // which signal the delta was read from
+  productionFrom: string | null;  // set when an UPSTREAM machine counted it
+  productionLagMs: number;        // how far behind that count runs here
   avgTemp: number | null;         // mean MEASURED temperature over the range (furnaces)
   tempZones: number;              // work zones that mean was taken over (0 = no temp signal)
 }
@@ -511,6 +513,8 @@ export interface ProductionReport {
     readings: number;
     output: number | null;          // null = this machine counts nothing
     productionKey: string | null;
+    productionFrom: string | null;
+    productionLagMs: number;
   }[];
 }
 

@@ -17,6 +17,7 @@ import PressureRing from '../PressureRing';
 import Sparkline from '../Sparkline';
 import MetricTrendModal, { type DrillEntry } from './MetricTrendModal';
 import { fmtNum, fmtMetric, fmtTime, fmtDate, fmtDuration, prettyKey, prettyType } from '../../lib/format';
+import { borrowedFrom } from '../../lib/production';
 import { namedMetrics, isNumeric, isFault, freshness, type NamedMetric } from '../../lib/metrics';
 import { flattenParams } from '../../lib/params';
 import { computeHeadline } from '../../lib/headline';
@@ -421,7 +422,11 @@ function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
                 <div className="data text-3xl font-bold text-primary leading-tight">
                   {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
                 </div>
-                {row?.productionKey && <div className="text-[10px] text-steel mt-0.5">{prettyKey(row.productionKey)}</div>}
+                {(borrowedFrom(row) || row?.productionKey) && (
+                  <div className="text-[10px] text-steel mt-0.5">
+                    {borrowedFrom(row) ?? prettyKey(row?.productionKey as string)}
+                  </div>
+                )}
               </>
             )}
           </div>

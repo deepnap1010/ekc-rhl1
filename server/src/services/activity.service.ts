@@ -14,6 +14,7 @@ import { pickProductionKey, pickRunKeys, type MachineBooks } from '../utils/prod
 import { pickTemperatureKeys, TEMP_MIN, TEMP_MAX } from '../utils/temperature.js';
 import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
+import { lineLinkFor, normRef } from '../config/lineLinks.js';
 
 export interface ActivityRow {
   code: string;
@@ -30,6 +31,11 @@ export interface ActivityRow {
   offlineMs: number;
   production: number | null; // counter delta over the range
   productionKey: string | null;
+  // Set when this machine's count was made by the machine UPSTREAM of it: the
+  // code that counted, and how far behind that count runs here (see
+  // config/lineLinks). null on every machine that counts its own work.
+  productionFrom: string | null;
+  productionLagMs: number;
   // Mean MEASURED temperature over the range, averaged across the machine's work
   // zones. null = this machine reports no temperature (most of them don't) — a
   // furnace shows this where a press shows production.
@@ -517,10 +523,39 @@ export async function computeActivity(
       runningMs, idleMs: down.idle, stoppedMs: down.stopped, offlineMs: down.offline,
       production: prod?.production ?? null,
       productionKey: prod?.key ?? null,
+      productionFrom: null,
+      productionLagMs: 0,
       avgTemp: heat ? Math.round(heat.avgTemp * 10) / 10 : null,
       tempZones: heat?.zones ?? 0,
     };
   });
+
+  // ── Line links ────────────────────────────────────────────────────────────
+  // A milling machine with no counter still makes pieces: the ones the machine
+  // upstream counted, reaching it a couple of minutes later. Take the source's
+  // counter series and stop it short by the transit time, so a piece counted
+  // upstream at 12:29 lands here at 12:31 — the delay is the point, not a
+  // detail. Over a past window the two numbers agree; live, this one trails.
+  // ponytail: the window's START edge is not shifted, so pieces made in the two
+  // minutes before it land on the wrong side of a day boundary. Bounded by two
+  // minutes of one machine's output; shift both edges if that ever matters.
+  const rowBy = new Map(rows.map((r) => [normRef(r.code), r]));
+  const seriesNorm = new Map([...seriesBy].map(([id, pts]) => [normRef(id), pts]));
+  for (const row of rows) {
+    const link = lineLinkFor(row.code);
+    if (!link) continue;
+    const src = rowBy.get(normRef(link.source));
+    const pts = seriesNorm.get(normRef(link.source));
+    const arrived = pts
+      ? countStepsOf(pts.filter((x) => x.v != null && x.t <= endMs - link.delayMs)
+          .map((x) => ({ t: x.t, v: x.v as number })))
+      : src?.production ?? null;
+    if (arrived == null) continue;
+    row.production = arrived;
+    row.productionKey = src?.productionKey ?? null;
+    row.productionFrom = src?.code ?? link.source;
+    row.productionLagMs = link.delayMs;
+  }
 
   return { rows, windowMs, from: fromD, to: endD };
 }

@@ -14,6 +14,7 @@ import RangeFilter from '../components/RangeFilter';
 import { useRangeFilter } from '../hooks/useRangeFilter';
 import { fmtNum, fmtDuration, prettyType, prettyKey } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
+import { borrowedFrom } from '../lib/production';
 import type { MetricValue } from '../types/api';
 import type { ReactNode } from 'react';
 
@@ -190,7 +191,7 @@ export default function Reports() {
                       <tr key={m.code} className="border-t border-line hover:bg-white/5">
                         <td className="px-4 py-2.5 data font-medium text-xs">{(m.code || '').toUpperCase()}</td>
                         <td className="px-4 py-2.5 text-xs text-steel">{prettyType(m.type)}</td>
-                        <td className="px-4 py-2.5 text-xs text-steel">{m.productionKey ? prettyKey(m.productionKey) : '—'}</td>
+                        <td className="px-4 py-2.5 text-xs text-steel">{borrowedFrom(m) ?? (m.productionKey ? prettyKey(m.productionKey) : '—')}</td>
                         <td className="px-4 py-2.5">
                           <span className={`pill text-[10px] ${
                             m.status === 'running' ? 'bg-accent/10 text-accent' :

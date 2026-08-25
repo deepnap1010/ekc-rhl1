@@ -10,7 +10,7 @@ import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
-import { productionValue } from '../lib/production';
+import { productionValue, borrowedFrom } from '../lib/production';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
@@ -336,7 +336,11 @@ export default function Machines() {
                           <>
                             <span className="data font-semibold text-running">{fmtNum(r.production)}</span>
                             <span className="text-steel"> pcs</span>
-                            {r.productionKey && <div className="text-[10px] text-steel/80 truncate max-w-[120px]">{prettyKey(r.productionKey)}</div>}
+                            {(borrowedFrom(r) || r.productionKey) && (
+                              <div className="text-[10px] text-steel/80 truncate max-w-[120px]">
+                                {borrowedFrom(r) ?? prettyKey(r.productionKey as string)}
+                              </div>
+                            )}
                           </>
                         ) : (
                           <span className="text-steel">—</span>
@@ -503,7 +507,9 @@ function MachineCard({ machine, liveTick, activity, onParams }: MachineCardProps
     value: fmtNum(madeToday),
     unit: 'pcs',
     tone: madeToday > 0 ? 'good' : 'neutral',
-    sub: counterNow != null ? `counter reads ${fmtNum(counterNow)}` : undefined,
+    // A borrowed count says so instead of quoting a counter this machine
+    // doesn't have.
+    sub: borrowedFrom(activity) ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}` : undefined),
   };
   const show = dayHero ?? hero;
 

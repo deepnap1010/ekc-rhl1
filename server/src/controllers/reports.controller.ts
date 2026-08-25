@@ -170,6 +170,8 @@ export const productionReport = asyncHandler(async (req, res) => {
       readings: r.readings,
       output: r.production,          // null = this machine counts nothing
       productionKey: r.productionKey,
+      productionFrom: r.productionFrom,
+      productionLagMs: r.productionLagMs,
     }))
     .sort((a, b) => (b.output ?? -1) - (a.output ?? -1) || a.code.localeCompare(b.code));
 

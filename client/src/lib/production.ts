@@ -54,3 +54,18 @@ export function productionValue(
   }
   return null;
 }
+
+/**
+ * Where a machine's piece count came from, when it wasn't counted there.
+ * BOTTOMMILLING03/04 report no counter — their number is the count of the
+ * machine upstream, reaching them a couple of minutes later (server:
+ * config/lineLinks). Shown wherever that number is, so it never reads as
+ * something this machine measured. null on a machine that counts its own work.
+ */
+export function borrowedFrom(
+  r?: { productionFrom?: string | null; productionLagMs?: number } | null,
+): string | null {
+  if (!r?.productionFrom) return null;
+  const min = Math.round((r.productionLagMs || 0) / 60_000);
+  return `from ${r.productionFrom}${min ? ` · ${min} min behind` : ''}`;
+}
