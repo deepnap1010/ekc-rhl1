@@ -5,26 +5,39 @@
 // does the bucketing + dedup, so the browser never receives telemetry spam).
 // "View parameters" opens the shared, searchable parameters module scoped to
 // that minute's reading.
-import { useState } from 'react';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useState, useEffect } from 'react';
+import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import { Download, Eye } from 'lucide-react';
 import { machineApi } from '../../api/endpoints';
 import { StatusPill, Spinner } from '../ui';
 import ParametersModal from './MachineParameters';
+import RangeFilter from '../RangeFilter';
+import Pager, { DEFAULT_PAGE_SIZE } from '../Pager';
+import { useRangeFilter } from '../../hooks/useRangeFilter';
 import { fmtNum, fmtTime } from '../../lib/format';
 import type { Machine, TimelineRow } from '../../types/api';
 
 export default function MachineTimeline({ machine, code }: { machine: Machine; code: string }): JSX.Element {
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  // The same window control as the dashboard, history log and downtime archive —
+  // presets plus the custom date+time popup — instead of two bare datetime boxes
+  // that only this page had.
+  const win = useRangeFilter('week');
+  const from = win.fromISO;
+  const to = win.toISO;
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [inspectAt, setInspectAt] = useState<string | null>(null);
+  const qc = useQueryClient();
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['machine-timeline', code, from, to],
-    queryFn: () => machineApi.timeline(code, {
-      from: from ? new Date(from).toISOString() : undefined,
-      to: to ? new Date(to).toISOString() : undefined,
-    }),
+  // A new window starts at page 1 — page 7 of the last range means nothing here.
+  useEffect(() => { setPage(1); }, [from, to, code]);
+
+  const timelinePage = (p: number) => ({
+    queryKey: ['machine-timeline', code, from, to, size, p],
+    queryFn: () => machineApi.timeline(code, { from, to, page: p, limit: size }),
+  });
+  const { data, isLoading, isFetching } = useQuery({
+    ...timelinePage(page),
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
   });
@@ -34,18 +47,35 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
   // time, so hours of history land in minutes. The counter column already shows
   // each minute's highest value so it stays truthful, but the reader still
   // deserves to know why a chunk of time is missing above those rows.
-  const meta = data?.meta as { replayMinutes?: number; productionKey?: string | null } | undefined;
+  const meta = data?.meta as {
+    replayMinutes?: number; productionKey?: string | null; total?: number; capped?: boolean;
+  } | undefined;
   const replayMinutes = meta?.replayMinutes || 0;
+  const total = meta?.total || 0;
+  const pageCount = Math.max(1, Math.ceil(total / size));
+
+  // Warm the next page while this one is being read.
+  useEffect(() => {
+    if (page < pageCount) qc.prefetchQuery({ ...timelinePage(page + 1), staleTime: 30_000 });
+  }, [code, from, to, size, page, pageCount]);
   // No counter + a status that never changes = a change log with nothing to
   // show. BOTTOMMILLING04 sends 74,642 readings that all say "running" and no
   // production signal at all, which collapsed a whole week into a single row
   // dated three days ago — technically a change, practically a bug report.
   const noCounter = !isLoading && meta != null && !meta.productionKey;
 
-  const exportCsv = () => {
+  // The CSV covers the window, not the page on screen — a 25-row export from a
+  // 4,000-change range would be a trap. Capped at the endpoint's 2,000.
+  const [exporting, setExporting] = useState(false);
+  const exportCsv = async () => {
     if (!rows.length) return;
+    setExporting(true);
+    const full = await machineApi.timeline(code, { from, to, page: 1, limit: 2000 })
+      .then((r) => r.data)
+      .catch(() => rows)
+      .finally(() => setExporting(false));
     const header = 'Time,Production Count,Status';
-    const lines = rows.map((r) => [new Date(r.ts).toISOString(), r.production ?? '', r.status ?? ''].join(','));
+    const lines = full.map((r) => [new Date(r.ts).toISOString(), r.production ?? '', r.status ?? ''].join(','));
     const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -58,24 +88,19 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
       {/* Range + export */}
       <div className="panel p-4 flex items-end gap-3 flex-wrap">
         <div>
-          <label className="label block mb-1.5">From</label>
-          <input type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
+          <label className="label block mb-1.5">Window</label>
+          <RangeFilter value={win.value} onChange={win.setValue} range={win.range}
+            title="Which period this history covers" />
         </div>
-        <div>
-          <label className="label block mb-1.5">To</label>
-          <input type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)}
-            className="bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
-        </div>
-        <button onClick={exportCsv} disabled={!rows.length}
+        <button onClick={exportCsv} disabled={!rows.length || exporting}
           className="ml-auto flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-2 rounded-lg hover:bg-accent/20 disabled:opacity-50">
-          <Download size={14} /> Export CSV
+          <Download size={14} /> {exporting ? 'Preparing…' : 'Export CSV'}
         </button>
       </div>
 
       <p className="text-[11px] text-steel px-1">
         One reading per minute · unchanged minutes are hidden, so every row is a real change.
-        Without a From/To range the view covers the <span className="font-medium text-primary">last 7 days</span> — pick a range for older data.
+        {meta?.capped ? ' Showing the most recent 20,000 changes in this window.' : ''}
       </p>
 
       {noCounter && (
@@ -132,6 +157,11 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
           </table>
         )}
       </div>
+
+      {total > 0 && (
+        <Pager page={page} size={size} onPage={setPage} onSize={setSize}
+          total={total} loading={isFetching && !isLoading} noun="changes" />
+      )}
 
       {inspectAt && (
         <ParametersModal machine={machine} code={code} at={inspectAt} onClose={() => setInspectAt(null)} />

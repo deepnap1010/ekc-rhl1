@@ -87,7 +87,7 @@ export const machineApi = {
   metricAverages: (params: { from: string; to: string; keys: string }) =>
     get<{ code: string; key: string | null; avg: number; min: number; max: number; samples: number }[]>('/machines/metric-averages', params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),
-  timeline: (code: string, params?: { from?: string; to?: string }) => get<TimelineRow[]>(`/machines/${code}/timeline`, params),
+  timeline: (code: string, params?: { from?: string; to?: string; page?: number; limit?: number }) => get<TimelineRow[]>(`/machines/${code}/timeline`, params),
   downtime: (code: string, params?: Params) => get<DowntimeEvent[]>(`/machines/${code}/downtime`, params),
 };
 
