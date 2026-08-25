@@ -22,6 +22,17 @@ export const MODULES = [
   'settings',
 ];
 
+// Super Admin means "everything", so it is defined by a matrix, not by a flag a
+// caller might forget to tick. Every reader — the permission grid, authorize(),
+// the login payload — then sees the same access.
+export const SUPER_ADMIN_RE = /super[\s_-]*admin/i;
+
+export const isSuperAdminRole = (r?: { key?: string; name?: string } | null): boolean =>
+  SUPER_ADMIN_RE.test(`${r?.key || ''} ${r?.name || ''}`);
+
+export const FULL_PERMISSIONS: Record<string, string[]> =
+  Object.fromEntries(MODULES.map((m) => [m, [...ACTIONS]]));
+
 export interface IRole {
   name: string;
   key: string;

@@ -1,6 +1,6 @@
 // server/src/controllers/rbac.controller.ts
 import type { FilterQuery, Types } from 'mongoose';
-import { Role, MODULES, ACTIONS } from '../models/Role.js';
+import { Role, MODULES, ACTIONS, FULL_PERMISSIONS, SUPER_ADMIN_RE, isSuperAdminRole } from '../models/Role.js';
 import type { IRole } from '../models/Role.js';
 import { User } from '../models/User.js';
 import type { IUser, Deletion } from '../models/User.js';
@@ -58,8 +58,22 @@ interface StripableUser {
   deletion?: unknown;
 }
 
+// The Super Admin grid is read-only in the UI, so nobody could ever tick its boxes:
+// the role was created with an empty matrix and stayed that way. Its access came
+// solely from the user-level isSuperAdmin flag, which left the page claiming "full
+// access" above 84 empty checkboxes — and an employee given the ROLE without the
+// flag got nothing at all. Self-heal: the role that means everything holds
+// everything. Idempotent, so it costs one no-op write per page load.
+async function grantSuperAdminEverything(): Promise<void> {
+  await Role.updateMany(
+    { $or: [{ key: SUPER_ADMIN_RE }, { name: SUPER_ADMIN_RE }] },
+    { $set: { permissions: FULL_PERMISSIONS } },
+  );
+}
+
 // ---- Roles ----
 export const listRoles = asyncHandler(async (req, res) => {
+  await grantSuperAdminEverything();
   const roles = await Role.find().sort({ isSystem: -1, name: 1 }).lean();
   return ok(res, roles.map((r) => ({ ...r, permissions: normalizePermissions(r.permissions) })));
 });
@@ -76,14 +90,17 @@ export const createRole = asyncHandler(async (req, res) => {
     permissions?: Record<string, string[]>;
   };
   if (!name || !key) return fail(res, 400, 'name and key required');
-  const clean = normalizePermissions(permissions);
+  const clean = isSuperAdminRole({ key, name }) ? FULL_PERMISSIONS : normalizePermissions(permissions);
   const role = await Role.create({ name, key, description, permissions: clean as unknown as IRole['permissions'] });
   return created(res, { ...role.toObject(), permissions: normalizePermissions(role.permissions) });
 });
 
 export const updateRolePermissions = asyncHandler(async (req, res) => {
   const { permissions } = req.body as { permissions?: Record<string, string[]> };
-  const clean = normalizePermissions(permissions);
+  const target = await Role.findById(req.params.id).select('key name').lean();
+  // The UI locks this role's grid; the API has to say no too, or a stray PUT
+  // silently strips the account that fixes every other account.
+  const clean = isSuperAdminRole(target) ? FULL_PERMISSIONS : normalizePermissions(permissions);
   const role = await Role.findByIdAndUpdate(
     req.params.id,
     { $set: { permissions: clean } },

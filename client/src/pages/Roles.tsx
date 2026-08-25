@@ -1,7 +1,7 @@
 // client/src/pages/Roles.tsx
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, Plus, Lock, Crown, ChevronDown, ChevronRight, Sparkles, Building2, X, ShieldCheck } from 'lucide-react';
+import { Save, Plus, Lock, LockOpen, Crown, ChevronDown, ChevronRight, Sparkles, Building2, X, ShieldCheck } from 'lucide-react';
 import { rbacApi } from '../api/endpoints';
 import { Spinner } from '../components/ui';
 import Modal from '../components/Modal';
@@ -18,8 +18,10 @@ import type { PermissionMatrix, Role } from '../types/api';
 // Local working copy of a role's permission matrix: module -> set of actions.
 type PermissionDraft = Record<string, Set<string>>;
 
-// Only the Super Admin role is protected — its permissions are read-only and it can
-// never be deleted. Every other role (system or custom) is edited directly.
+// Super Admin starts locked so nobody strips their own access with a stray click,
+// but the lock opens — its matrix has to be editable, or the role that grants every
+// permission is the one role whose permissions can never be set. Deleting it stays
+// impossible (the server refuses).
 const isProtected = (r?: Role | null): boolean => {
   const s = `${r?.key || ''} ${r?.name || ''}`.toLowerCase();
   return s.includes('super') && s.includes('admin');
@@ -41,7 +43,9 @@ export default function Roles() {
   const { data: roles, isLoading } = useQuery({ queryKey: ['roles'], queryFn: () => rbacApi.roles().then((r) => r.data) });
 
   const selected = roles?.find((r) => r._id === selectedId) || roles?.[0];
-  const locked = !!selected && isProtected(selected);      // only Super Admin is read-only
+  const [unlocked, setUnlocked] = useState(false);         // Super Admin's lock, opened by hand
+  const protectedRole = !!selected && isProtected(selected);
+  const locked = protectedRole && !unlocked;
   const editable = canEdit && !locked;                     // every other role edits directly
 
   // Group roles into the org tree: Super Admin → Plant Head → Departments → Other.
@@ -64,6 +68,7 @@ export default function Roles() {
       Object.entries(selected.permissions || {}).forEach(([m, acts]) => { d[m] = new Set(acts); });
       setDraft(d);
       setSelectedId(selected._id);
+      setUnlocked(false);   // never leave the lock open behind you
     }
   }, [selected?._id]);
 
@@ -217,10 +222,24 @@ export default function Roles() {
             )}
           </div>
 
-          {locked ? (
-            <div className="text-xs text-steel bg-base border border-line rounded-lg px-3 py-2 mb-4 flex items-center gap-1.5">
-              <Lock size={12} className="shrink-0" />
-              The Super Admin role has full access — its permissions can't be changed and it can't be deleted.
+          {protectedRole ? (
+            <div className={`text-xs rounded-lg px-3 py-2 mb-4 flex items-center gap-2 border ${
+              locked ? 'text-steel bg-base border-line' : 'text-amber-700 bg-amber-50 border-amber-200'
+            }`}>
+              {locked ? <Lock size={12} className="shrink-0" /> : <LockOpen size={12} className="shrink-0" />}
+              <span className="flex-1">
+                {locked
+                  ? 'Super Admin is locked — unlock to change what it can access. It can never be deleted.'
+                  : 'Unlocked. Unticking a box here removes it from every Super Admin, including you.'}
+              </span>
+              {canEdit && (
+                <button
+                  onClick={() => setUnlocked((u) => !u)}
+                  className="shrink-0 flex items-center gap-1 border border-line bg-surface rounded-md px-2 py-1 hover:bg-base"
+                >
+                  {locked ? <><LockOpen size={11} /> Unlock</> : <><Lock size={11} /> Lock</>}
+                </button>
+              )}
             </div>
           ) : !canEdit ? (
             <div className="text-xs text-steel bg-base border border-line rounded-lg px-3 py-2 mb-4">
