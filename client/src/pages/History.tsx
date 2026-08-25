@@ -14,7 +14,6 @@ import {
 } from 'lucide-react';
 import { machineApi, eventsApi } from '../api/endpoints';
 import { Spinner, StatusPill, FreshnessPill } from '../components/ui';
-import TrendChart from '../components/TrendChart';
 import Sparkline from '../components/Sparkline';
 import PageHeader from '../components/PageHeader';
 import RangeFilter from '../components/RangeFilter';
@@ -336,6 +335,11 @@ function RawArchive(): JSX.Element {
 
   const records = data?.data || [];
   const meta = data?.meta ?? ({} as ApiMeta);
+  // How many raw readings the change list was distilled from, and whether the
+  // scan hit its ceiling — both come back with the page.
+  const rawMeta = data?.meta as (ApiMeta & { scanned?: number; capped?: boolean }) | undefined;
+  const scanned = rawMeta?.scanned ?? 0;
+  const capped = !!rawMeta?.capped;
   const metrics = stats?.metrics || [];
   // Raw-log columns derive from the (server-flattened) telemetry payload itself.
   const metricKeys = Object.keys(records[0]?.data || {}).slice(0, 12);
@@ -432,12 +436,16 @@ function RawArchive(): JSX.Element {
             </div>
           )}
 
-          {/* Multi-line trends (its own panel + Normalize toggle) */}
-          {metrics.length > 0 && <TrendChart code={code} from={from} to={to} keys={metrics.map((m) => m.key)} />}
 
           {meta.total > 0 && (
             <div className="flex items-center justify-between text-xs text-steel">
-              <span>{fmtNum(meta.total)} readings{from || to ? ' in range' : ' total'} — page {page} of {pageCount}</span>
+              {/* The table lists CHANGES, so say so — "827 of 14,027" is the useful
+                  fact, not a page count over rows that all said the same thing. */}
+              <span>
+                {fmtNum(meta.total)} change{meta.total === 1 ? '' : 's'}{from || to ? ' in range' : ''}
+                {scanned > meta.total ? ` · ${fmtNum(scanned)} readings, repeats collapsed` : ''}
+                {capped ? ' · showing the most recent 5,000' : ''} — page {page} of {pageCount}
+              </span>
               <span className="flex items-center gap-3">
                 {isFetching && <span className="text-accent">Refreshing…</span>}
                 {records.length > 0 && (

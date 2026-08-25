@@ -15,6 +15,7 @@ import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { computeActivity } from '../services/activity.service.js';
+import { cached } from '../utils/cache.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -533,13 +534,49 @@ export const machineHistory = asyncHandler(async (req, res) => {
     q.timestamp = range;
   }
 
-  const [items, total] = await Promise.all([
-    Telemetry.find(q).sort({ timestamp: -1 }).skip(skip).limit(lim).lean(),
-    Telemetry.countDocuments(q),
-  ]);
+  // Only readings where something CHANGED. A machine posting every fraction of a
+  // second fills page after page with the identical row — BOTTOMMILLING04 sent
+  // 13,599 readings in one morning and every one of them said 7,000 / 800 / 800.
+  // A run of identical payloads collapses to the reading where that value FIRST
+  // appeared, so the table reads as "this is when it became this", and a value
+  // that changes twice inside one second still shows twice.
+  //
+  // Streamed with a cursor in index order ({machineId, timestamp:-1}) rather than
+  // loaded whole: the scan can be hundreds of thousands of readings, but what
+  // survives it is small. Cached briefly so paging doesn't rescan the range.
+  const MAX_ROWS = 5000;
+  const cacheKey = 'rawchanges:' + ref + ':' + (from || '') + ':' + (to || '');
+  const changes = await cached(cacheKey, 30_000, async () => {
+    const cursor = Telemetry.find(q).sort({ timestamp: -1 })
+      .select({ timestamp: 1, data: 1, machineId: 1 }).lean().cursor();
+    const rows: Record<string, unknown>[] = [];
+    let prevSig: string | null = null;
+    let runOldest: Record<string, unknown> | null = null;
+    let scanned = 0;
+    let capped = false;
+    for await (const doc of cursor) {
+      scanned += 1;
+      const data = flattenData((doc as { data?: Record<string, unknown> }).data);
+      const sig = JSON.stringify(data);
+      if (sig !== prevSig) {
+        // Scanning newest -> oldest, the run we just left ends at its OLDEST
+        // reading: the moment that value came up.
+        if (runOldest) {
+          rows.push(runOldest);
+          if (rows.length >= MAX_ROWS) { capped = true; break; }
+        }
+        prevSig = sig;
+      }
+      runOldest = { ...(doc as Record<string, unknown>), data };
+    }
+    if (!capped && runOldest && rows.length < MAX_ROWS) rows.push(runOldest);
+    await cursor.close();
+    return { rows, scanned, capped };
+  });
 
-  // Flatten nested payloads so the history table + CSV expose every signal.
-  const flat = items.map((it) => ({ ...it, data: flattenData(it.data) }));
-
-  return ok(res, flat, { total, page: Number(page), limit: lim });
+  const total = changes.rows.length;
+  return ok(res, changes.rows.slice(skip, skip + lim), {
+    total, page: Number(page), limit: lim,
+    scanned: changes.scanned, capped: changes.capped,
+  });
 });
