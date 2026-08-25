@@ -1,10 +1,7 @@
 // client/src/pages/Reports.tsx
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  PieChart, Pie,
-} from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,  } from 'recharts';
 import {
   Download, FileBarChart, AlertTriangle, Clock, ShieldCheck, Play, CircleSlash, Power,
   Gauge as GaugeIcon, type LucideIcon,
@@ -15,7 +12,8 @@ import { Donut, Gauge, Legend, ERROR_COLORS, STATUS_COLORS, BLUE_RAMP, PALETTE }
 import PageHeader from '../components/PageHeader';
 import RangeFilter from '../components/RangeFilter';
 import { useRangeFilter } from '../hooks/useRangeFilter';
-import { fmtNum, fmtDuration, prettyType } from '../lib/format';
+import { fmtNum, fmtDuration, prettyType, prettyKey } from '../lib/format';
+import { groupMachines } from '../lib/machineOrder';
 import type { MetricValue } from '../types/api';
 import type { ReactNode } from 'react';
 
@@ -70,17 +68,25 @@ export default function Reports() {
     refetchInterval: 60000,
   });
 
-  const totalOutput = (prodData?.byType || []).reduce((s, r) => s + r.output, 0);
-  const avgEff = prodData?.byType?.length
-    ? Math.round(prodData.byType.reduce((s, r) => s + r.efficiency, 0) / prodData.byType.length)
-    : 0;
+  const totalOutput = prodData?.totalOutput || 0;
+  // Machines here have no `type` — every one reads "Unclassified" — so output is
+  // charted by FAMILY, the same grouping the dashboard uses (cutting, SPG,
+  // bottom milling…). Grouping by a field nobody fills produced one empty bar.
+  const outputByGroup = groupMachines(prodData?.machines || [])
+    .map((g) => ({
+      group: g.label,
+      output: g.machines.reduce((n, m) => n + (m.output ?? 0), 0),
+      machines: g.machines.length,
+    }))
+    .filter((g) => g.output > 0)
+    .sort((a, b) => b.output - a.output);
 
   // Export the ACTIVE tab's (already filtered) dataset — never the whole database.
   const exportCsv = () => {
     const suffix = machineId ? `_${machineId}` : '';
     if (tab === 'production' && prodData?.machines?.length) {
-      const header = 'Machine,Type,Plant,Status,Output,OEE (%),Capacity';
-      const rows = prodData.machines.map((m) => [m.code, m.type, m.plant, m.status, m.output, m.efficiency, m.capacity].join(','));
+      const header = 'Machine,Type,Counter,Status,Readings,Output';
+      const rows = prodData.machines.map((m) => [m.code, m.type ?? '', m.productionKey ?? '', m.status, m.readings, m.output ?? ''].join(','));
       download([header, ...rows].join('\n'), `production_report${suffix}.csv`);
     } else if (tab === 'downtime' && dtData?.byMachine?.length) {
       const header = 'Machine,Events,Downtime (ms)';
@@ -156,40 +162,28 @@ export default function Reports() {
         {tab === 'production' && (
           prodLoading ? <Spinner /> : (
             <div className="space-y-5">
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <StatCard label="Total Output" value={fmtNum(totalOutput)} sub="Combined production" accent={ACCENT} icon={FileBarChart} />
-                <StatCard label="Avg OEE" value={`${avgEff}%`} sub="Across types" accent={avgEff > 60 ? ACCENT : IDLE} />
-                <StatCard label="Machine Types" value={prodData?.byType?.length || 0} sub="Active types" accent={STEEL} />
-                <StatCard label="Machines" value={prodData?.machines?.length || 0} sub="Reporting" accent={STEEL} />
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                <StatCard label="Total Output" value={fmtNum(totalOutput)} sub="pieces made in this window" accent={ACCENT} icon={FileBarChart} />
+                <StatCard label="Counting Machines" value={prodData?.reported || 0} sub="report a piece counter" accent={STEEL} />
+                <StatCard label="Machines" value={prodData?.machines?.length || 0} sub="in this window" accent={STEEL} />
               </div>
 
-              <div className="grid lg:grid-cols-2 gap-5">
-                <div className="panel p-5">
-                  <h2 className="font-semibold text-sm mb-4">Output by Machine Type</h2>
+              <div className="panel p-5">
+                <h2 className="font-semibold text-sm mb-4">Output by Machine Group</h2>
+                {outputByGroup.length === 0 ? (
+                  <div className="text-sm text-steel py-10 text-center">No machine reported a piece counter in this window.</div>
+                ) : (
                   <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={prodData?.byType || []} barSize={24}>
-                      <XAxis dataKey="type" tickFormatter={prettyType} tick={{ fill: STEEL, fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <BarChart data={outputByGroup} barSize={28}>
+                      <XAxis dataKey="group" tick={{ fill: STEEL, fontSize: 10 }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fill: STEEL, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => fmtNum(v)} />
                       <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,0,0,0.03)' }} />
                       <Bar dataKey="output" radius={[4, 4, 0, 0]}>
-                        {(prodData?.byType || []).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                        {outputByGroup.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
-
-                <div className="panel p-5">
-                  <h2 className="font-semibold text-sm mb-4">OEE by Type</h2>
-                  <ResponsiveContainer width="100%" height={220}>
-                    <PieChart>
-                      <Pie data={prodData?.byType || []} dataKey="efficiency" nameKey="type" cx="50%" cy="50%" outerRadius={80}
-                        label={({ type, efficiency }) => `${prettyType(type)}: ${efficiency}%`} labelLine={{ stroke: STEEL }}>
-                        {(prodData?.byType || []).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                      </Pie>
-                      <Tooltip formatter={(v) => [`${v}%`, 'OEE']} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
+                )}
               </div>
 
               <div className="panel overflow-x-auto">
@@ -199,11 +193,10 @@ export default function Reports() {
                     <tr className="text-steel">
                       <th className="text-left label px-4 py-2.5">Machine</th>
                       <th className="text-left label px-4 py-2.5">Type</th>
-                      <th className="text-left label px-4 py-2.5">Plant</th>
+                      <th className="text-left label px-4 py-2.5">Counter</th>
                       <th className="text-left label px-4 py-2.5">Status</th>
+                      <th className="text-right label px-4 py-2.5">Readings</th>
                       <th className="text-right label px-4 py-2.5">Output</th>
-                      <th className="text-right label px-4 py-2.5">OEE %</th>
-                      <th className="text-right label px-4 py-2.5">Capacity</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -211,7 +204,7 @@ export default function Reports() {
                       <tr key={m.code} className="border-t border-line hover:bg-white/5">
                         <td className="px-4 py-2.5 data font-medium text-xs">{(m.code || '').toUpperCase()}</td>
                         <td className="px-4 py-2.5 text-xs text-steel">{prettyType(m.type)}</td>
-                        <td className="px-4 py-2.5 text-xs text-steel">{m.plant}</td>
+                        <td className="px-4 py-2.5 text-xs text-steel">{m.productionKey ? prettyKey(m.productionKey) : '—'}</td>
                         <td className="px-4 py-2.5">
                           <span className={`pill text-[10px] ${
                             m.status === 'running' ? 'bg-accent/10 text-accent' :
@@ -219,13 +212,14 @@ export default function Reports() {
                             m.status === 'stopped' ? 'bg-stopped/10 text-stopped' : 'bg-white/5 text-steel'
                           }`}>{m.status}</span>
                         </td>
-                        <td className="px-4 py-2.5 data text-xs text-right">{fmtNum(m.output)}</td>
-                        <td className="px-4 py-2.5 data text-xs text-right" style={{ color: m.efficiency > 60 ? ACCENT : IDLE }}>{m.efficiency}%</td>
-                        <td className="px-4 py-2.5 data text-xs text-right text-steel">{fmtNum(m.capacity)}</td>
+                        <td className="px-4 py-2.5 data text-xs text-right text-steel">{fmtNum(m.readings)}</td>
+                        <td className="px-4 py-2.5 data text-xs text-right">
+                          {m.output != null ? fmtNum(m.output) : <span className="text-steel">—</span>}
+                        </td>
                       </tr>
                     ))}
                     {(prodData?.machines || []).length === 0 && (
-                      <tr><td colSpan={7} className="text-center text-steel py-8">No machines reporting yet</td></tr>
+                      <tr><td colSpan={6} className="text-center text-steel py-8">No machines reporting yet</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -349,11 +343,9 @@ export default function Reports() {
                   <thead className="bg-base border-t border-line">
                     <tr className="text-steel">
                       <th className="text-left label px-4 py-2.5">Machine</th>
-                      <th className="text-left label px-4 py-2.5">Class</th>
                       <th className="text-left label px-4 py-2.5">Health</th>
                       <th className="text-right label px-4 py-2.5">Signals</th>
                       <th className="text-right label px-4 py-2.5">Registers</th>
-                      <th className="text-right label px-4 py-2.5">Faults</th>
                       <th className="text-right label px-4 py-2.5">Downtime</th>
                     </tr>
                   </thead>
@@ -361,18 +353,16 @@ export default function Reports() {
                     {(fleetData?.machines || []).map((m) => (
                       <tr key={m.machineId} className="border-t border-line hover:bg-base/60">
                         <td className="px-4 py-2.5 data font-medium text-xs">{m.machineId.toUpperCase()}</td>
-                        <td className="px-4 py-2.5 text-xs text-steel">{m.class ? prettyType(m.class) : '—'}</td>
                         <td className="px-4 py-2.5">
                           <span className="data text-xs font-semibold" style={{ color: m.health === 'critical' ? STOPPED : m.health === 'warning' ? IDLE : m.health === 'healthy' ? ACCENT : STEEL }}>{m.score}</span>
                           <span className="text-[10px] text-steel capitalize ml-1">{m.health}</span>
                         </td>
                         <td className="px-4 py-2.5 data text-xs text-right">{fmtNum(m.namedCount + m.ioCount)}</td>
                         <td className="px-4 py-2.5 data text-xs text-right text-steel">{fmtNum(m.registers)}</td>
-                        <td className="px-4 py-2.5 data text-xs text-right" style={{ color: m.faultCount ? STOPPED : STEEL }}>{m.faultCount}</td>
                         <td className="px-4 py-2.5 data text-xs text-right text-idle">{m.downtimeMs ? fmtDuration(m.downtimeMs) : '—'}</td>
                       </tr>
                     ))}
-                    {(fleetData?.machines || []).length === 0 && <tr><td colSpan={7} className="text-center text-steel py-8">No machines.</td></tr>}
+                    {(fleetData?.machines || []).length === 0 && <tr><td colSpan={5} className="text-center text-steel py-8">No machines.</td></tr>}
                   </tbody>
                 </table>
               </div>

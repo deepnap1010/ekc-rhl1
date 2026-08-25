@@ -144,69 +144,49 @@ export const overviewReport = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /reports/production — production summary by type + plant
+// GET /reports/production?from&to — what the fleet actually MADE in a window.
+//
+// This used to sum machine.totalOutput and average machine.oee — fields the
+// factory's own system would fill and that nothing in this plant ever sets. So
+// every figure on the page was 0: total output, per-machine output, OEE, and a
+// bar chart with no bars. Production now comes from the same activity engine as
+// the dashboard and the machine pages (telemetry counters, stepped), so the
+// report and the rest of the app can never disagree.
+//
+// OEE is not returned at all. Its inputs (cycle time, good/reject counts) do not
+// exist in this telemetry, and a column of zeroes reads as "we measured nothing"
+// rather than "this cannot be measured".
 export const productionReport = asyncHandler(async (req, res) => {
-  const { plant, machineId } = req.query as Record<string, string | undefined>;
+  const rq = req.query as Record<string, string | undefined>;
   const scope = machineScope(req.user as ScopedUser | undefined);
-  const { refs, denied } = await requestedMachine({ machineId }, scope);
-  if (denied) return ok(res, { byType: [], byPlant: [], machines: [] });
-  const match: FilterQuery<IMachine> = {};
-  if (plant && plant !== 'all') match.plant = plant;
-  const conds: FilterQuery<IMachine>[] = [];
-  if (refs) conds.push({ $or: [{ code: { $in: refs } }, { machineId: { $in: refs } }] } as FilterQuery<IMachine>);
-  if (scope) conds.push({ $or: [{ code: { $in: scope } }, { machineId: { $in: scope } }] } as FilterQuery<IMachine>);
-  if (conds.length) match.$and = conds;
+  const { refs, denied } = await requestedMachine(rq, scope);
+  if (denied) return ok(res, { from: '', to: '', totalOutput: 0, reported: 0, machines: [] });
 
-  const [byType, byPlant, machines] = await Promise.all([
-    Machine.aggregate([
-      { $match: match as PipelineStage.Match['$match'] },
-      {
-        $group: {
-          _id: '$type',
-          output:   { $sum: num('$totalOutput') },
-          avgOee:   { $avg: num('$oee') },
-          machines: { $sum: 1 },
-          running:  { $sum: { $cond: [{ $eq: ['$status', 'running'] }, 1, 0] } },
-        },
-      },
-      { $sort: { output: -1 } },
-    ]),
-    Machine.aggregate([
-      { $match: match as PipelineStage.Match['$match'] },
-      {
-        $group: {
-          _id: '$plant',
-          output:   { $sum: num('$totalOutput') },
-          avgOee:   { $avg: num('$oee') },
-          machines: { $sum: 1 },
-          running:  { $sum: { $cond: [{ $eq: ['$status', 'running'] }, 1, 0] } },
-        },
-      },
-      ...resolvePlantName,
-      { $sort: { output: -1 } },
-    ]),
-    Machine.find(match).populate({ path: 'plant', select: 'name' })
-      .select('code name type plant status totalOutput oee ratedCapacity')
-      .sort({ type: 1, name: 1 }).lean(),
-  ]);
+  const { since, until } = reportWindow(rq);
+  const act = await computeActivity(scope, since, until, refs);
+
+  const machines = act.rows
+    .map((r) => ({
+      code: r.code,
+      name: r.name,
+      type: r.type,
+      status: r.status,
+      live: r.live,
+      readings: r.readings,
+      output: r.production,          // null = this machine counts nothing
+      productionKey: r.productionKey,
+    }))
+    .sort((a, b) => (b.output ?? -1) - (a.output ?? -1) || a.code.localeCompare(b.code));
 
   return ok(res, {
-    byType: byType.map((r) => ({ type: r._id, output: Math.round(r.output), efficiency: Math.round(r.avgOee || 0), machines: r.machines, running: r.running })),
-    byPlant: byPlant.map((r) => ({ plant: r.plantName || 'Unassigned', output: Math.round(r.output), efficiency: Math.round(r.avgOee || 0), machines: r.machines, running: r.running })),
-    machines: (machines as unknown as PopulatedMachine[]).map((m) => ({
-      code:       m.code,
-      name:       m.name,
-      type:       m.type,
-      plant:      m.plant?.name || 'Unassigned',
-      status:     m.status,
-      output:     Math.round(m.totalOutput ?? 0),
-      efficiency: Math.round(m.oee ?? 0),
-      capacity:   Math.round(m.ratedCapacity ?? 0),
-    })),
+    from: act.from.toISOString(),
+    to: act.to.toISOString(),
+    totalOutput: machines.reduce((n, m) => n + (m.output ?? 0), 0),
+    reported: machines.filter((m) => m.output != null).length,
+    machines,
   });
 });
 
-// GET /reports/downtime — downtime summary (reads downtime_reports; empty → zeros)
 export const downtimeReport = asyncHandler(async (req, res) => {
   const { plant, from, to, machineId } = req.query as Record<string, string | undefined>;
   const scope = machineScope(req.user as ScopedUser | undefined);

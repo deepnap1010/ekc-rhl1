@@ -498,9 +498,20 @@ export interface ReportByPlant {
 } 
 
 export interface ProductionReport {
-  byType: ProductionByType[];
-  byPlant: ReportByPlant[];
-  machines: ReportMachineRow[];
+  from: string;
+  to: string;
+  totalOutput: number;
+  reported: number;                 // machines that report a counter at all
+  machines: {
+    code: string;
+    name: string;
+    type: string | null;
+    status: string;
+    live: boolean;
+    readings: number;
+    output: number | null;          // null = this machine counts nothing
+    productionKey: string | null;
+  }[];
 }
 
 export interface DowntimeReportTotals {
