@@ -60,7 +60,6 @@ r.patch('/downtime/:id/ack', authorize('downtime', 'update'), downtime.acknowled
 r.get('/reports/overview', authorize('reports'), reports.overviewReport);
 r.get('/reports/production', authorize('reports'), reports.productionReport);
 r.get('/reports/downtime', authorize('reports'), reports.downtimeReport);
-r.get('/reports/plants', authorize('reports'), reports.plantsReport);
 r.get('/reports/fleet', authorize('reports'), reports.fleetReport);
 r.get('/reports/reliability', authorize('reports'), reports.reliabilityReport);
 

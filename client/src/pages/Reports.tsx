@@ -30,7 +30,7 @@ export default function Reports() {
   const mid = machineId || undefined;
   // One window for the whole page — the same control the dashboard, history log
   // and downtime archive use. It drives the reports that HAVE a window; the
-  // snapshot ones (production totals, fleet inventory, plants) are point-in-time
+  // snapshot ones (production totals, fleet inventory) are point-in-time
   // by nature and say so, rather than pretending to honour a date range.
   const win = useRangeFilter('month');
   const range = { from: win.fromISO, to: win.toISO };
@@ -50,11 +50,6 @@ export default function Reports() {
   const { data: dtData, isLoading: dtLoading } = useQuery({
     queryKey: ['reports', 'downtime', machineId, win.fromISO, win.toISO],
     queryFn: () => reportsApi.downtime({ machineId: mid, ...range }).then((r) => r.data),
-    refetchInterval: 60000,
-  });
-  const { data: plantData } = useQuery({
-    queryKey: ['reports', 'plants'],
-    queryFn: () => reportsApi.plants().then((r) => r.data),
     refetchInterval: 60000,
   });
   const { data: fleetData, isLoading: fleetLoading } = useQuery({
@@ -92,10 +87,6 @@ export default function Reports() {
       const header = 'Machine,Events,Downtime (ms)';
       const rows = dtData.byMachine.map((m) => [m._id, m.events, m.totalMs].join(','));
       download([header, ...rows].join('\n'), `downtime_report${suffix}.csv`);
-    } else if (tab === 'plants' && plantData?.length) {
-      const header = 'Plant,Machines,Running,Idle,Stopped,Offline,Output,Avg OEE (%)';
-      const rows = plantData.map((p) => [p.plant, p.total, p.running, p.idle, p.stopped, p.offline, p.totalOutput, p.avgEfficiency].join(','));
-      download([header, ...rows].join('\n'), 'plants_report.csv');
     } else if (tab === 'fleet' && fleetData?.machines?.length) {
       const header = 'Machine,Type,Status,Health,Score,Readings,Faults,Downtime (ms),Downtime events';
       const rows = fleetData.machines.map((m) => [m.machineId, m.type, m.status, m.health, m.score, m.readings, m.faultCount, m.downtimeMs, m.downtimeEvents].join(','));
@@ -138,7 +129,7 @@ export default function Reports() {
           <RangeFilter value={win.value} onChange={win.setValue} range={win.range}
             title="Which period these reports cover" />
           <div className="flex gap-1 bg-base rounded-lg p-0.5 border border-line">
-            {['overview', 'production', 'downtime', 'plants', 'fleet', 'reliability'].map((t) => (
+            {['overview', 'production', 'downtime', 'fleet', 'reliability'].map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -149,11 +140,6 @@ export default function Reports() {
             ))}
           </div>
         </div>
-
-        {/* Plants is inherently a fleet-wide rollup — say so instead of faking a filter */}
-        {machineId && tab === 'plants' && (
-          <div className="panel p-3 text-xs text-steel">Plants is a fleet-wide rollup — the machine filter doesn't apply to this tab.</div>
-        )}
 
         {/* ---- OVERVIEW ---- */}
         {tab === 'overview' && <OverviewReport machineId={mid} from={win.fromISO} to={win.toISO} />}
@@ -279,41 +265,6 @@ export default function Reports() {
           )
         )}
 
-        {/* ---- PLANTS ---- */}
-        {tab === 'plants' && (
-          <div className="space-y-5">
-            {(plantData || []).length === 0 ? (
-              <div className="panel p-10 text-center text-steel">No plant data yet.</div>
-            ) : (
-              <div className="grid md:grid-cols-3 gap-4">
-                {(plantData || []).map((p) => (
-                  <div key={p.plant} className="panel p-5">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="font-semibold">{p.plant}</h3>
-                      <span className="label">{p.total} machines</span>
-                    </div>
-                    <div className="space-y-2">
-                      <PlantRow label="Running" value={p.running} total={p.total} color={ACCENT} />
-                      <PlantRow label="Idle" value={p.idle} total={p.total} color={IDLE} />
-                      <PlantRow label="Stopped" value={p.stopped} total={p.total} color={STOPPED} />
-                      <PlantRow label="Offline" value={p.offline} total={p.total} color={STEEL} />
-                    </div>
-                    <div className="mt-4 pt-3 border-t border-line grid grid-cols-2 gap-2 text-center">
-                      <div>
-                        <div className="data text-lg font-bold text-accent">{fmtNum(p.totalOutput)}</div>
-                        <div className="label">Output</div>
-                      </div>
-                      <div>
-                        <div className="data text-lg font-bold" style={{ color: p.avgEfficiency > 60 ? ACCENT : IDLE }}>{p.avgEfficiency}%</div>
-                        <div className="label">Avg OEE</div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
         {/* ---- FLEET ---- */}
         {tab === 'fleet' && (
           fleetLoading ? <Spinner /> : (
@@ -413,27 +364,6 @@ export default function Reports() {
   );
 }
 
-interface PlantRowProps {
-  label: string;
-  value: number;
-  total: number;
-  color: string;
-}
-
-function PlantRow({ label, value, total, color }: PlantRowProps) {
-  const pct = total ? (value / total) * 100 : 0;
-  return (
-    <div>
-      <div className="flex justify-between text-xs mb-0.5">
-        <span className="text-steel">{label}</span>
-        <span className="data" style={{ color }}>{value}</span>
-      </div>
-      <div className="h-1 bg-line rounded-full overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
-      </div>
-    </div>
-  );
-}
 
 // Recharts injects `active`, `payload`, and `label` into a custom <Tooltip content>.
 interface ChartTooltipProps {

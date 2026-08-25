@@ -537,17 +537,6 @@ export interface DowntimeReport {
   byMachine: DowntimeReportMachineRow[];
 }
 
-export interface PlantReport {
-  plant: string;
-  total: number;
-  running: number;
-  idle: number;
-  stopped: number;
-  offline: number;
-  totalOutput: number;
-  avgEfficiency: number;
-}
-
 // ─── Org chart ─────────────────────────────────────────────────────────────
 export type OrgChartUser = User;
 

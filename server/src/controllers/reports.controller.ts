@@ -56,11 +56,6 @@ async function requestedMachine(
 type PopulatedMachine = Omit<IMachine, 'plant'> & { plant?: { name?: string } | null };
 
 // Resolve a grouped-by-plant pipeline tail: _id is a plant ObjectId.
-const resolvePlantName: PipelineStage[] = [
-  { $lookup: { from: 'plants', localField: '_id', foreignField: '_id', as: '_plant' } },
-  { $addFields: { plantName: { $ifNull: [{ $first: '$_plant.name' }, null] } } },
-  { $project: { _plant: 0 } },
-];
 
 // Human labels for the health-engine alert categories (the "error statuses").
 const ERROR_LABELS: Record<string, string> = {
@@ -226,37 +221,6 @@ export const downtimeReport = asyncHandler(async (req, res) => {
   ]);
 
   return ok(res, { totals: totals[0] || { totalEvents: 0, totalMs: 0 }, byType, byMachine });
-});
-
-// GET /reports/plants — plant-level status + output rollup
-export const plantsReport = asyncHandler(async (req, res) => {
-  const plants = await Machine.aggregate([
-    {
-      $group: {
-        _id: '$plant',
-        total:        { $sum: 1 },
-        running:      { $sum: { $cond: [{ $eq: ['$status', 'running'] }, 1, 0] } },
-        idle:         { $sum: { $cond: [{ $eq: ['$status', 'idle'] }, 1, 0] } },
-        stopped:      { $sum: { $cond: [{ $eq: ['$status', 'stopped'] }, 1, 0] } },
-        offline:      { $sum: { $cond: [{ $eq: ['$status', 'offline'] }, 1, 0] } },
-        totalOutput:  { $sum: num('$totalOutput') },
-        avgOee:       { $avg: num('$oee') },
-      },
-    },
-    ...resolvePlantName,
-    { $sort: { totalOutput: -1 } },
-  ]);
-
-  return ok(res, plants.map((p) => ({
-    plant:         p.plantName || 'Unassigned',
-    total:         p.total,
-    running:       p.running,
-    idle:          p.idle,
-    stopped:       p.stopped,
-    offline:       p.offline,
-    totalOutput:   Math.round(p.totalOutput),
-    avgEfficiency: Math.round(p.avgOee || 0),
-  })));
 });
 
 // GET /reports/fleet — per-machine performance (health-scored) + per-class rollup.

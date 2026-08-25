@@ -23,7 +23,6 @@ import type {
   AlertsResponse,
   ProductionReport,
   DowntimeReport,
-  PlantReport,
   FleetReport,
   ReliabilityReport,
   OverviewReport,
@@ -109,7 +108,6 @@ export const reportsApi = {
   overview: (params?: Params) => get<OverviewReport>('/reports/overview', params),
   production: (params?: Params) => get<ProductionReport>('/reports/production', params),
   downtime: (params?: Params) => get<DowntimeReport>('/reports/downtime', params),
-  plants: (params?: Params) => get<PlantReport[]>('/reports/plants', params),
   fleet: (params?: Params) => get<FleetReport>('/reports/fleet', params),
   reliability: (params?: Params) => get<ReliabilityReport>('/reports/reliability', params),
 };
