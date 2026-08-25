@@ -282,15 +282,20 @@ export async function computeActivity(
         .filter((x) => !!x.key || !!x.books.run);
 
       const NUMERIC = ['int', 'long', 'double', 'decimal'];
-      const pick = (field: (k: Keyed) => string | null) => ({
-        $switch: {
-          branches: keyed.filter((k) => field(k)).map((k) => ({
-            case: { $eq: ['$machineId', k.id] },
-            then: { $getField: { field: field(k) as string, input: '$data' } },
-          })),
-          default: null,
-        },
-      });
+      // $switch with an empty branch list is a SERVER ERROR, not an empty result:
+      // "$switch requires at least one branch". It fires the moment a scope holds
+      // no machine with the key being picked — one machine that counts pieces but
+      // publishes no run/idle/stop signal is enough, which is most of this fleet,
+      // so every single-machine query (the per-machine report filter, a machine's
+      // own shift panel) died with a 500. No machine has the key => the column is
+      // null for everyone.
+      const pick = (field: (k: Keyed) => string | null) => {
+        const branches = keyed.filter((k) => field(k)).map((k) => ({
+          case: { $eq: ['$machineId', k.id] },
+          then: { $getField: { field: field(k) as string, input: '$data' } },
+        }));
+        return branches.length ? { $switch: { branches, default: null } } : null;
+      };
 
       const made = keyed.length ? await Telemetry.aggregate([
         { $match: { machineId: { $in: keyed.map((k) => k.id) }, timestamp: { $gte: fromD, $lte: endD } } },
