@@ -16,6 +16,7 @@ import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { computeActivity } from '../services/activity.service.js';
 import { cached } from '../utils/cache.js';
+import { readingSignature, pickColumns } from '../utils/history.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -522,9 +523,9 @@ export const machineHistory = asyncHandler(async (req, res) => {
   const m = await findMachine(req.params.code);
   if (!inUserScope(req.user as ScopeUser, req.params.code, m?.code, m?.machineId)) return fail(res, 403, 'You are not assigned to this machine');
   const ref = m ? ((m.code as string) || (m.machineId as string) || String(m._id)) : req.params.code;
-  const { from, to, page = 1, limit = 50 } = req.query as Record<string, string | undefined>;
-  const lim  = Math.min(Number(limit) || 50, 200);
-  const skip = (Number(page) - 1) * lim;
+  const { from, to, page = 1, limit = 25 } = req.query as Record<string, string | undefined>;
+  const lim  = Math.min(Math.max(Number(limit) || 25, 1), 200);
+  const skip = (Math.max(Number(page) || 1, 1) - 1) * lim;
 
   const q: FilterQuery<Record<string, unknown>> = { machineId: ref };
   if (from || to) {
@@ -534,49 +535,74 @@ export const machineHistory = asyncHandler(async (req, res) => {
     q.timestamp = range;
   }
 
-  // Only readings where something CHANGED. A machine posting every fraction of a
-  // second fills page after page with the identical row — BOTTOMMILLING04 sent
-  // 13,599 readings in one morning and every one of them said 7,000 / 800 / 800.
-  // A run of identical payloads collapses to the reading where that value FIRST
-  // appeared, so the table reads as "this is when it became this", and a value
-  // that changes twice inside one second still shows twice.
+  // Only readings where something CHANGED — a machine posting every second fills
+  // page after page with the same row (BOTTOMMILLING04 sent 13,599 readings in
+  // one morning, all of them 7,000 / 800 / 800). A run of identical payloads
+  // collapses to the reading where that value FIRST appeared, so the table reads
+  // as "this is when it became this". Clocks don't count as change: see
+  // utils/history#readingSignature.
   //
-  // Streamed with a cursor in index order ({machineId, timestamp:-1}) rather than
-  // loaded whole: the scan can be hundreds of thousands of readings, but what
-  // survives it is small. Cached briefly so paging doesn't rescan the range.
-  const MAX_ROWS = 5000;
-  const cacheKey = 'rawchanges:' + ref + ':' + (from || '') + ':' + (to || '');
+  // The scan stops as soon as THIS page is full. The old shape walked the whole
+  // range — up to 5,000 changes — before it could return page 1, and that scan
+  // is what the log spent its "Loading…" seconds on. Rows are gathered a block
+  // at a time so paging forward reuses one scan instead of starting over.
+  const BLOCK = 500;
+  const need  = skip + lim + 1;                       // +1 answers "is there a next page?"
+  const block = Math.ceil(need / BLOCK) * BLOCK;
+  // Two ceilings, because a machine that NEVER changes would otherwise be scanned
+  // to the end of the range: BOTTOMMILLING2 has posted the same {"status":"idle"}
+  // since 21 Aug. Whichever ceiling comes first wins, and the page says so.
+  const MAX_SCAN = 60_000;
+  const DEADLINE = Date.now() + 8_000;
+  const cacheKey = `rawchanges:${ref}:${from || ''}:${to || ''}:${block}`;
   const changes = await cached(cacheKey, 30_000, async () => {
     const cursor = Telemetry.find(q).sort({ timestamp: -1 })
-      .select({ timestamp: 1, data: 1, machineId: 1 }).lean().cursor();
+      .select({ timestamp: 1, data: 1 }).maxTimeMS(20_000).batchSize(500).lean().cursor();
     const rows: Record<string, unknown>[] = [];
     let prevSig: string | null = null;
     let runOldest: Record<string, unknown> | null = null;
     let scanned = 0;
-    let capped = false;
-    for await (const doc of cursor) {
-      scanned += 1;
-      const data = flattenData((doc as { data?: Record<string, unknown> }).data);
-      const sig = JSON.stringify(data);
-      if (sig !== prevSig) {
-        // Scanning newest -> oldest, the run we just left ends at its OLDEST
-        // reading: the moment that value came up.
-        if (runOldest) {
-          rows.push(runOldest);
-          if (rows.length >= MAX_ROWS) { capped = true; break; }
+    let exhausted = true;      // the cursor ran out => the row count is exact
+    let scanCapped = false;
+    try {
+      for await (const doc of cursor) {
+        scanned += 1;
+        const data = flattenData((doc as { data?: Record<string, unknown> }).data);
+        const sig = readingSignature(data);
+        if (sig !== prevSig) {
+          // Scanning newest -> oldest, the run we just left ends at its OLDEST
+          // reading: the moment that value came up.
+          if (runOldest) rows.push(runOldest);
+          prevSig = sig;
         }
-        prevSig = sig;
+        runOldest = { ...(doc as Record<string, unknown>), data };
+        if (rows.length >= block) { exhausted = false; break; }
+        if (scanned >= MAX_SCAN || Date.now() > DEADLINE) { exhausted = false; scanCapped = true; break; }
       }
-      runOldest = { ...(doc as Record<string, unknown>), data };
+    } catch (err) {
+      // A stalled cursor mid-scan (this DB lives on a VPS link that drops) should
+      // hand back the changes already found, not a 500 over a page that was
+      // nearly ready. Nothing found at all is still a real failure.
+      if (!rows.length) throw err;
+      exhausted = false; scanCapped = true;
     }
-    if (!capped && runOldest && rows.length < MAX_ROWS) rows.push(runOldest);
-    await cursor.close();
-    return { rows, scanned, capped };
+    if (exhausted && runOldest) rows.push(runOldest);
+    await cursor.close().catch(() => {});
+    return { rows, scanned, exhausted, scanCapped };
   });
 
-  const total = changes.rows.length;
-  return ok(res, changes.rows.slice(skip, skip + lim), {
-    total, page: Number(page), limit: lim,
-    scanned: changes.scanned, capped: changes.capped,
+  const rows = changes.rows.slice(skip, skip + lim);
+  return ok(res, rows, {
+    // `total` is exact only when the scan reached the end of the range; short of
+    // that it is what has been found SO FAR, and the client pages by hasMore
+    // rather than printing a page count it would have to invent.
+    total: changes.rows.length,
+    exact: changes.exhausted,
+    hasMore: !changes.exhausted || changes.rows.length > skip + lim,
+    page: Math.max(Number(page) || 1, 1),
+    limit: lim,
+    scanned: changes.scanned,
+    scanCapped: changes.scanCapped,
+    columns: pickColumns(changes.rows.map((r) => (r as { data: Record<string, unknown> }).data)),
   });
 });

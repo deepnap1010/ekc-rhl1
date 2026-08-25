@@ -6,7 +6,7 @@
 // "Raw readings" mode keeps the full per-reading telemetry browser (complete
 // telemetry stays available; it just no longer masquerades as history).
 import { useState, useEffect, Fragment, type ReactNode } from 'react';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
   Download, History as HistoryIcon, BarChart3, ListTree, Database,
@@ -17,13 +17,13 @@ import { Spinner, StatusPill, FreshnessPill } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import PageHeader from '../components/PageHeader';
 import RangeFilter from '../components/RangeFilter';
+import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import { useRangeFilter } from '../hooks/useRangeFilter';
 import { fmtTime, prettyKey, fmtNum, fmtMetric, fmtDuration, prettyType } from '../lib/format';
 import { effectiveStatus } from '../lib/machineStatus';
 import { isFault, isRegisterKey, isMetaKey } from '../lib/metrics';
 import type { ApiMeta, MetricStat, MetricValue, MachineEventRow } from '../types/api';
 
-const PAGE = 50;
 
 export default function History() {
   const [mode, setMode] = useState<'events' | 'raw'>('events');
@@ -76,6 +76,8 @@ function EventsArchive(): JSX.Element {
   const [type, setType] = useState('');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
+  const qc = useQueryClient();
 
   const { data: machines } = useQuery({
     queryKey: ['machines', 'selector'],
@@ -102,9 +104,12 @@ function EventsArchive(): JSX.Element {
     placeholderData: keepPreviousData,
   });
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['events', 'global', machineId, from, to, type, page],
-    queryFn: () => eventsApi.list({ ...params, page, limit: PAGE }),
+  const eventsPage = (p: number) => ({
+    queryKey: ['events', 'global', machineId, from, to, type, size, p],
+    queryFn: () => eventsApi.list({ ...params, page: p, limit: size }),
+  });
+  const { data, isLoading, isFetching } = useQuery({
+    ...eventsPage(page),
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
   });
@@ -120,7 +125,13 @@ function EventsArchive(): JSX.Element {
         || (e.paramKey || '').toLowerCase().includes(ql))
     : all;
   const total = data?.meta?.total || 0;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE));
+  const pageCount = Math.max(1, Math.ceil(total / size));
+
+  // Fetch the next page while this one is being read, so Next paints instantly
+  // instead of spinning over rows the server could have sent already.
+  useEffect(() => {
+    if (page < pageCount) qc.prefetchQuery({ ...eventsPage(page + 1), staleTime: 30_000 });
+  }, [page, pageCount, machineId, from, to, type, size]);
 
   // CSV of the FILTERED dataset (not the whole database): walks the filter's
   // pages up to a sane cap.
@@ -240,12 +251,9 @@ function EventsArchive(): JSX.Element {
         )}
       </div>
 
-      {pageCount > 1 && (
-        <div className="flex items-center justify-end gap-2 text-sm">
-          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Prev</button>
-          <span className="px-2 py-1.5 text-steel text-xs">Page <span className="data">{page}</span> of <span className="data">{pageCount}</span></span>
-          <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Next</button>
-        </div>
+      {total > 0 && (
+        <Pager page={page} size={size} onPage={setPage} onSize={setSize}
+          total={total} loading={isFetching && !isLoading} noun="events" />
       )}
     </div>
   );
@@ -303,7 +311,9 @@ function RawArchive(): JSX.Element {
   const from = win.fromISO || '';
   const to = win.toISO || '';
   const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const qc = useQueryClient();
 
   const { data: machines } = useQuery({
     queryKey: ['machines', 'list-all'],
@@ -327,23 +337,39 @@ function RawArchive(): JSX.Element {
     enabled: !!code,
   });
 
+  const historyPage = (p: number) => ({
+    queryKey: ['history', code, from, to, size, p],
+    queryFn: () => machineApi.history(code, { from: from || undefined, to: to || undefined, page: p, limit: size }),
+  });
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['history', code, from, to, page],
-    queryFn: () => machineApi.history(code, { from: from || undefined, to: to || undefined, page, limit: PAGE }),
+    ...historyPage(page),
     enabled: !!code,
+    placeholderData: keepPreviousData,   // the table stays put while the next page loads
   });
 
   const records = data?.data || [];
   const meta = data?.meta ?? ({} as ApiMeta);
-  // How many raw readings the change list was distilled from, and whether the
-  // scan hit its ceiling — both come back with the page.
-  const rawMeta = data?.meta as (ApiMeta & { scanned?: number; capped?: boolean }) | undefined;
+  // How many raw readings this page's changes were distilled from, whether the
+  // scan hit its ceiling, and which columns are worth showing — all decided by
+  // the server, which is the side that saw every reading.
+  const rawMeta = data?.meta as (ApiMeta & {
+    scanned?: number; scanCapped?: boolean; exact?: boolean; hasMore?: boolean; columns?: string[];
+  }) | undefined;
   const scanned = rawMeta?.scanned ?? 0;
-  const capped = !!rawMeta?.capped;
+  const scanCapped = !!rawMeta?.scanCapped;
+  const exact = rawMeta?.exact !== false;
+  const hasMore = !!rawMeta?.hasMore;
   const metrics = stats?.metrics || [];
-  // Raw-log columns derive from the (server-flattened) telemetry payload itself.
-  const metricKeys = Object.keys(records[0]?.data || {}).slice(0, 12);
-  const pageCount = Math.max(1, Math.ceil((meta.total || 0) / PAGE));
+  // Columns come from the server (the keys that actually MOVE); the payload's
+  // own key order is the fallback for an older response.
+  const metricKeys = rawMeta?.columns?.length
+    ? rawMeta.columns
+    : Object.keys(records[0]?.data || {}).slice(0, 12);
+
+  // Warm the next page while this one is being read.
+  useEffect(() => {
+    if (code && hasMore) qc.prefetchQuery({ ...historyPage(page + 1), staleTime: 30_000 });
+  }, [code, from, to, size, page, hasMore]);
 
   const exportCsv = () => {
     if (!records.length) return;
@@ -442,9 +468,9 @@ function RawArchive(): JSX.Element {
               {/* The table lists CHANGES, so say so — "827 of 14,027" is the useful
                   fact, not a page count over rows that all said the same thing. */}
               <span>
-                {fmtNum(meta.total)} change{meta.total === 1 ? '' : 's'}{from || to ? ' in range' : ''}
+                {exact ? '' : 'at least '}{fmtNum(meta.total)} change{meta.total === 1 ? '' : 's'}{from || to ? ' in range' : ''}
                 {scanned > meta.total ? ` · ${fmtNum(scanned)} readings, repeats collapsed` : ''}
-                {capped ? ' · showing the most recent 5,000' : ''} — page {page} of {pageCount}
+                {scanCapped ? ' · scanned as far back as the ceiling allows' : ''}
               </span>
               <span className="flex items-center gap-3">
                 {isFetching && <span className="text-accent">Refreshing…</span>}
@@ -497,15 +523,10 @@ function RawArchive(): JSX.Element {
             </table>
           </div>
 
-          {pageCount > 1 && (
-            <div className="flex items-center justify-between text-sm flex-wrap gap-2">
-              <span className="text-steel">{fmtNum(meta.total)} total readings</span>
-              <div className="flex items-center gap-2">
-                <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Prev</button>
-                <span className="px-2 py-1.5 text-steel">Page <span className="data">{page}</span> of <span className="data">{pageCount}</span></span>
-                <button disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Next</button>
-              </div>
-            </div>
+          {(meta.total || 0) > 0 && (
+            <Pager page={page} size={size} onPage={setPage} onSize={setSize}
+              total={meta.total} exact={exact} hasMore={hasMore}
+              loading={isFetching && !isLoading} noun="changes" />
           )}
         </>
       )}

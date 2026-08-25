@@ -7,6 +7,7 @@ import { useAuthStore } from '../store/auth';
 import { StatCard, Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import RangeFilter from '../components/RangeFilter';
+import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import { useRangeFilter } from '../hooks/useRangeFilter';
 import { presetLabel } from '../store/filters';
 import { fmtDuration, fmtTime, fmtNum, prettyType } from '../lib/format';
@@ -16,7 +17,6 @@ const TYPES = ['all', 'idle', 'stopped', 'offline'];
 const STATUS_OPTS = ['all', 'open', 'closed'];
 const REVIEW_OPTS = ['all', 'unacknowledged', 'acknowledged'];
 // Bounding every query by a time window keeps it index-backed at production scale.
-const PAGE_SIZE = 25;
 
 export default function Downtime() {
   const qc = useQueryClient();
@@ -25,6 +25,7 @@ export default function Downtime() {
   const [status, setStatus] = useState('all');
   const [review, setReview] = useState('all');
   const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [reasonModal, setReasonModal] = useState<DowntimeEvent | null>(null);
   // The shared window control — the same presets and the same custom date+time
   // popup as everywhere else, instead of this page's own 7D/30D/90D buttons.
@@ -60,8 +61,8 @@ export default function Downtime() {
     enabled: customReady,
   });
 
-  const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['downtime', 'list', win, machineId, from, to, type, status, review, page],
+  const listPage = (p: number) => ({
+    queryKey: ['downtime', 'list', win, machineId, from, to, type, status, review, size, p],
     queryFn: () => downtimeApi.list({
       from,
       to,
@@ -69,9 +70,12 @@ export default function Downtime() {
       type: type !== 'all' ? type : undefined,
       status: status !== 'all' ? status : undefined,
       acknowledged: review === 'unacknowledged' ? 'false' : review === 'acknowledged' ? 'true' : undefined,
-      page,
-      limit: PAGE_SIZE,
+      page: p,
+      limit: size,
     }),
+  });
+  const { data, isLoading, isFetching } = useQuery({
+    ...listPage(page),
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
     enabled: customReady,
@@ -80,8 +84,11 @@ export default function Downtime() {
   const events = data?.data || [];
   const meta = data?.meta ?? ({} as ApiMeta);
   const pages = meta.pages || 1;
-  const rangeStart = meta.total ? (page - 1) * PAGE_SIZE + 1 : 0;
-  const rangeEnd = Math.min(page * PAGE_SIZE, meta.total || 0);
+
+  // Warm the next page while this one is on screen.
+  useEffect(() => {
+    if (customReady && page < pages) qc.prefetchQuery({ ...listPage(page + 1), staleTime: 30_000 });
+  }, [customReady, page, pages, size, win, machineId, from, to, type, status, review]);
 
   // Filter chips reflect the states actually present in the window (incl. 'offline').
   const typeOpts = useMemo(() => {
@@ -236,16 +243,8 @@ export default function Downtime() {
 
             {/* Pagination */}
             {meta.total > 0 && (
-              <div className="flex items-center justify-between text-sm flex-wrap gap-2">
-                <span className="text-steel">{rangeStart}–{rangeEnd} of <span className="data">{fmtNum(meta.total)}</span> events</span>
-                {pages > 1 && (
-                  <div className="flex items-center gap-2">
-                    <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Prev</button>
-                    <span className="px-2 py-1.5 text-steel">Page <span className="data">{page}</span> of <span className="data">{pages}</span></span>
-                    <button disabled={page >= pages} onClick={() => setPage((p) => p + 1)} className="px-3 py-1.5 rounded-lg bg-surface border border-line disabled:opacity-40 hover:bg-base">Next</button>
-                  </div>
-                )}
-              </div>
+              <Pager page={page} size={size} onPage={setPage} onSize={setSize}
+                total={meta.total} loading={isFetching && !isLoading} noun="events" />
             )}
           </>
         )}
