@@ -1,5 +1,11 @@
 // client/src/components/Modal.tsx — accessible centered modal with backdrop + Esc close.
+// Rendered through a PORTAL onto document.body: `position: fixed` is measured
+// against the nearest ancestor with a transform/backdrop-filter, and this app's
+// sticky page headers use backdrop-blur — a modal opened from inside one (the
+// machine header's DIA chip) was trapped and clipped inside that header instead
+// of covering the screen.
 import { useEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { X, type LucideIcon } from 'lucide-react';
 
 interface ModalProps {
@@ -19,7 +25,7 @@ export default function Modal({ title, subtitle, icon: Icon, onClose, children, 
     return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-4 bg-slate-900/50 backdrop-blur-sm overflow-y-auto" onClick={onClose}>
       <div className={`panel w-full ${maxW} my-4 sm:my-8 max-h-[90vh] flex flex-col`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-line shrink-0">
@@ -34,6 +40,7 @@ export default function Modal({ title, subtitle, icon: Icon, onClose, children, 
         </div>
         <div className="p-5 overflow-y-auto">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
