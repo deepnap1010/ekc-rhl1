@@ -9,9 +9,10 @@
 // current assignments; the target math is the same net-assigned-seconds ÷
 // processing-seconds every other surface uses. Clicking a ring opens the
 // machine, where the hourly bars break the same day down hour by hour.
-import { Link } from 'react-router-dom';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Target } from 'lucide-react';
+import TargetDrilldown from './TargetDrilldown';
 import { productionApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -21,13 +22,15 @@ import type { MachineActivityRow } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626';
 
-export default function TargetsBoard({ rows, from, to }: {
+export default function TargetsBoard({ rows, from, to, windowMs }: {
   rows: MachineActivityRow[];
   from?: string;
   to?: string;
+  windowMs?: number;
 }): JSX.Element | null {
   const can = useAuthStore((s) => s.can);
   const { breaks } = useAppConfig();
+  const [drill, setDrill] = useState<string | null>(null);   // machineRef of the open drilldown
   const { data: asgData } = useQuery({
     queryKey: ['assignments', 'current'],
     queryFn: () => productionApi.currentAssignments().then((r) => r.data),
@@ -80,24 +83,37 @@ export default function TargetsBoard({ rows, from, to }: {
         </span>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-        {tiles.map((t) => <RingTile key={t.code} t={t} />)}
+        {tiles.map((t) => <RingTile key={t.code} t={t} onOpen={() => setDrill(t.code)} />)}
       </div>
+
+      {drill && (() => {
+        const t = tiles.find((x) => x.code === drill);
+        const row = rowBy.get(drill.toUpperCase());
+        const a = asgData.find((x) => x.machineRef === drill);
+        if (!t || !row || !a) return null;
+        return (
+          <TargetDrilldown code={drill} row={row} assignment={a}
+            from={from} to={to} windowMs={windowMs || (winTo - winFrom)}
+            produced={t.produced} target={t.target} pct={t.pct}
+            onClose={() => setDrill(null)} />
+        );
+      })()}
     </div>
   );
 }
 
-function RingTile({ t }: { t: {
+function RingTile({ t, onOpen }: { t: {
   code: string; dia: string; rate: number; produced: number | null; target: number;
   pct: number | null; downMs: number; borrowed: string | null;
-} }): JSX.Element {
+}; onOpen: () => void }): JSX.Element {
   const color = t.pct == null ? '#94A3B8' : t.pct >= 100 ? TEAL : t.pct >= 50 ? AMBER : RED;
   const R = 26, C = 2 * Math.PI * R;
   const fill = t.pct == null ? 0 : Math.min(t.pct, 100) / 100;
   return (
-    <Link
-      to={`/machines/${encodeURIComponent(t.code)}`}
-      title={`${t.code} — ${t.produced ?? '—'} of ${fmtTarget(t.target)} · open for the hour-by-hour view`}
-      className="rounded-xl border border-line bg-base p-3 flex flex-col items-center text-center hover:border-accent/40 hover:-translate-y-0.5 transition-all"
+    <button
+      onClick={onOpen}
+      title={`${t.code} — ${t.produced ?? '—'} of ${fmtTarget(t.target)} · click for the ${'hour-by-hour'} story`}
+      className="rounded-xl border border-line bg-base p-3 flex flex-col items-center text-center hover:border-accent/40 hover:-translate-y-0.5 transition-all cursor-pointer"
     >
       <span className="data text-xs font-bold text-primary truncate max-w-full">{t.code}</span>
       <span className="text-[10px] text-steel truncate max-w-full mb-1.5">{t.dia}</span>
@@ -125,6 +141,6 @@ function RingTile({ t }: { t: {
         {t.downMs >= 60_000 ? `${fmtDuration(t.downMs)} down` : 'no downtime'}
         {t.borrowed ? ` · from ${t.borrowed}` : ''}
       </span>
-    </Link>
+    </button>
   );
 }

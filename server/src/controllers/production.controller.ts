@@ -250,11 +250,12 @@ export const targetsReport = asyncHandler(async (req, res) => {
   const refs = one ? [one] : scope;
 
   const groupBy = q.groupBy === 'hour' ? 'hour' : 'day';
+  const basis = q.basis === 'window' ? 'window' as const : 'assignment' as const;
   const lim = Math.min(Math.max(Number(q.limit) || 50, 1), 2000);
   const page = Math.max(Number(q.page) || 1, 1);
 
-  const key = `targets:${fromD.toISOString()}:${toD.toISOString()}:${(refs || []).join(',') || '*'}`;
-  const { rows: hourly, machines } = await cached(key, 60_000, () => computeTargets(fromD, toD, refs ?? null));
+  const key = `targets:${basis}:${fromD.toISOString()}:${toD.toISOString()}:${(refs || []).join(',') || '*'}`;
+  const { rows: hourly, machines } = await cached(key, 60_000, () => computeTargets(fromD, toD, refs ?? null, basis));
 
   let rows = groupBy === 'day' ? rollupToDays(hourly) : hourly;
   // Everyone who appears in the window — feeds the report's operator filter.

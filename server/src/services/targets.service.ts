@@ -175,13 +175,23 @@ export function rollupToDays(rows: TargetRow[]): TargetRow[] {
  *  filter); null = every machine with an overlapping assignment. */
 export async function computeTargets(
   fromD: Date, toD: Date, refs: string[] | null,
+  basis: 'assignment' | 'window' = 'assignment',
 ): Promise<{ rows: TargetRow[]; machines: string[] }> {
-  const asgQ: Record<string, unknown> = {
-    effectiveFrom: { $lte: toD },
-    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: fromD } }],
-  };
+  const asgQ: Record<string, unknown> = basis === 'window'
+    // 'window' basis: the machine's CURRENT assignment held over the WHOLE
+    // window — the live-surface question ("how did it perform against the rate
+    // it is held to, across my filter"). 'assignment' basis stays the report's
+    // historical truth: targets exist only where an assignment actually did.
+    ? { effectiveTo: null }
+    : {
+      effectiveFrom: { $lte: toD },
+      $or: [{ effectiveTo: null }, { effectiveTo: { $gte: fromD } }],
+    };
   if (refs) asgQ.machineRef = { $in: refs };
-  const assignments = await MachineAssignment.find(asgQ).lean();
+  let assignments = await MachineAssignment.find(asgQ).lean();
+  if (basis === 'window') {
+    assignments = assignments.map((a) => ({ ...a, effectiveFrom: fromD, effectiveTo: null }));
+  }
   const machines = [...new Set(assignments.map((a) => a.machineRef))];
   if (!machines.length) return { rows: [], machines: [] };
 

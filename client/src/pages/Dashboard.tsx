@@ -236,7 +236,7 @@ export default function Dashboard() {
         {/* Who is making rate — one ring per machine holding a DIA. Renders only
             once at least one machine has an assignment, so a plant that hasn't
             configured targets loses no space to it. */}
-        <TargetsBoard rows={rows} from={fromISO} to={toISO} />
+        <TargetsBoard rows={rows} from={fromISO} to={toISO} windowMs={windowMs} />
 
         <MachineGroups key={resetTick} rows={rows} windowMs={windowMs} windowLabel={windowLabel}
           from={fromISO} to={toISO} signals={signals} loading={actLoading} />
