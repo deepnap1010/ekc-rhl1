@@ -48,7 +48,23 @@ export function breakOverlapMs(s: number, e: number, breaks: { start: string; en
   return sum;
 }
 
-/** Assigned time NET of planned breaks — what targets divide by. */
+/** The FILTER WINDOW itself — clipped to now, net of planned breaks. Live
+ *  surfaces (dashboard board, machine cards, the target panel) hold a machine
+ *  to its DIA's rate for the whole window being viewed: a 1-hour filter at
+ *  3 min/unit means a target of 20, a full production day means the day's
+ *  quota — regardless of when the assignment row was created. Without this, a
+ *  machine assigned ten minutes ago showed "56 / 2 · 2783%": a day of pieces
+ *  against ten minutes of target. The assignment decides WHICH rate applies
+ *  and THAT a target exists; the window decides how much.
+ *  (The Targets report keeps assignment-exact attribution — history stays
+ *  honest there; this is the live "are we making rate" view.) */
+export function windowNetMs(winFrom: number, winTo: number, breaks: { start: string; end: string }[] = []): number {
+  const e = Math.min(winTo, Date.now());
+  if (e <= winFrom) return 0;
+  return Math.max(0, (e - winFrom) - breakOverlapMs(winFrom, e, breaks));
+}
+
+/** Assigned time NET of planned breaks — what the REPORT'S targets divide by. */
 export function netAssignedMs(a: AssignmentRange, winFrom: number, winTo: number, breaks: { start: string; end: string }[] = []): number {
   const s = Math.max(new Date(a.effectiveFrom).getTime(), winFrom);
   const e = Math.min(a.effectiveTo ? new Date(a.effectiveTo).getTime() : winTo, winTo);

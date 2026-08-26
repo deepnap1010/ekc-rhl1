@@ -14,7 +14,7 @@ import { useAuthStore } from '../../store/auth';
 import { toast } from '../../store/toast';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtNum } from '../../lib/format';
-import { netAssignedMs, targetUnits, achievementPct, fmtTarget, fmtProcessing } from '../../lib/targets';
+import { windowNetMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from '../../lib/targets';
 import type { MachineActivityRow, OperatorSession } from '../../types/api';
 
 export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
@@ -50,7 +50,10 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
 
   const winFrom = new Date(dayFrom).getTime();
   const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
-  const ms = netAssignedMs(current, winFrom, winTo, breaks);
+  // The DAY at this DIA's rate — the quota is the day's, no matter what time
+  // the assignment row was created (otherwise a machine assigned at 17:50
+  // reads "56 of 2 · 2783%": a day of pieces against ten minutes of target).
+  const ms = windowNetMs(winFrom, winTo, breaks);
   const sec = current.snapshot.processingSec;
   const target = targetUnits(sec, ms);
   const produced = actRow?.production ?? null;
@@ -69,7 +72,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
         <Target size={15} className="text-accent" />
         <h3 className="font-semibold text-sm text-primary flex-1">Today's Target</h3>
         <span className="text-[11px] text-steel">
-          {current.snapshot.diaName}{current.snapshot.dims ? ` · ${current.snapshot.dims}` : ''} — {current.snapshot.stageName} · {fmtProcessing(sec)}/unit
+          {current.snapshot.diaName}{current.snapshot.dims ? ` · ${current.snapshot.dims}` : ''} — {current.snapshot.stageName} · {fmtProcessing(sec)}/unit → {fmtTarget(hourlyRate(sec))}/hr
         </span>
         <OperatorBadge code={code} />
       </div>

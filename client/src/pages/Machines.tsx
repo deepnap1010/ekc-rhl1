@@ -11,7 +11,7 @@ import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
-import { netAssignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
+import { windowNetMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
 import { useAuthStore } from '../store/auth';
 import { AssignDiaModal } from '../components/machine/AssignDia';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
@@ -623,9 +623,10 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         )}
       </div>
 
-      {/* Produced vs target when a DIA is assigned; the DIA label (or "Set DIA")
-          opens the assignment modal RIGHT HERE for anyone who may assign —
-          no trip into the machine needed. Below 60% runs amber. */}
+      {/* Produced vs target when a DIA is assigned. Target = the DIA's rate over
+          the card's whole day window (net of breaks) — when it was assigned is
+          irrelevant to the quota. The DIA label (or "Set DIA") opens the
+          assignment modal right here. Below 60% runs amber. */}
       {!furnace && (assignment || canSetDia) && (() => {
         const setBtn = canSetDia ? (
           <button
@@ -648,7 +649,7 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         }
         const winFrom = new Date(dayFrom).getTime();
         const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
-        const ms = netAssignedMs(assignment, winFrom, winTo, breaks);
+        const ms = windowNetMs(winFrom, winTo, breaks);
         const target = targetUnits(assignment.snapshot.processingSec, ms);
         const pct = achievementPct(activity.production, assignment.snapshot.processingSec, ms);
         if (target <= 0) return canSetDia ? <div className="mb-3 -mt-1">{setBtn}</div> : null;

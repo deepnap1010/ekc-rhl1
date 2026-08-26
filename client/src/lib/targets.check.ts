@@ -1,5 +1,5 @@
 // client/src/lib/targets.check.ts — run: npx tsx client/src/lib/targets.check.ts
-import { assignedMs, netAssignedMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from './targets.js';
+import { assignedMs, netAssignedMs, windowNetMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from './targets.js';
 
 const eq = (a: unknown, b: unknown, m: string): void => {
   if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
@@ -53,5 +53,11 @@ eq(breakOverlapMs(H10IST, H10IST + HOUR, tea), 15 * 60_000, 'tea break measured'
 eq(netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, tea), 45 * 60_000, 'net assigned excludes the break');
 close(targetUnits(180, netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, tea)), 15, 'target over the break-hour is 15, not 20');
 eq(netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, []), HOUR, 'no breaks → net equals gross');
+
+// Live-surface window target: the window itself, whenever the assignment began.
+eq(windowNetMs(H10IST, H10IST + HOUR, []), HOUR, 'past 1-hour window → the full hour');
+close(targetUnits(180, windowNetMs(H10IST, H10IST + HOUR, [])), 20, '1-hour filter at 3 min/unit → target 20');
+eq(windowNetMs(H10IST, H10IST + HOUR, tea), 45 * 60_000, 'window target excludes breaks too');
+close(targetUnits(180, windowNetMs(H10IST, H10IST + 8 * HOUR, [])), 160, '8-hour filter → 160');
 
 console.log('targets: all checks passed');

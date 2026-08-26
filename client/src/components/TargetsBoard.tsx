@@ -16,7 +16,7 @@ import { productionApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { fmtNum, fmtDuration } from '../lib/format';
-import { netAssignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
+import { windowNetMs, targetUnits, achievementPct, fmtTarget, hourlyRate } from '../lib/targets';
 import type { MachineActivityRow } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626';
@@ -45,7 +45,10 @@ export default function TargetsBoard({ rows, from, to }: {
   const tiles = asgData.map((a) => {
     const row = rowBy.get(a.machineRef.toUpperCase());
     if (!row) return null;                       // outside scope / window
-    const ms = netAssignedMs(a, winFrom, winTo, breaks);
+    // The whole filter window at the DIA's rate — a 1-hour filter asks for the
+    // hourly rate, a day asks for the day's quota. The assignment only decides
+    // WHICH rate this machine is held to.
+    const ms = windowNetMs(winFrom, winTo, breaks);
     const target = targetUnits(a.snapshot.processingSec, ms);
     if (target <= 0) return null;
     const produced = row.production;
@@ -53,12 +56,13 @@ export default function TargetsBoard({ rows, from, to }: {
     return {
       code: a.machineRef,
       dia: `${a.snapshot.diaName} · ${a.snapshot.stageName}`,
+      rate: hourlyRate(a.snapshot.processingSec),
       produced, target, pct,
       downMs: row.idleMs + row.stoppedMs,
       borrowed: row.productionFrom || null,
     };
   }).filter(Boolean) as {
-    code: string; dia: string; produced: number | null; target: number;
+    code: string; dia: string; rate: number; produced: number | null; target: number;
     pct: number | null; downMs: number; borrowed: string | null;
   }[];
   if (!tiles.length) return null;
@@ -83,7 +87,7 @@ export default function TargetsBoard({ rows, from, to }: {
 }
 
 function RingTile({ t }: { t: {
-  code: string; dia: string; produced: number | null; target: number;
+  code: string; dia: string; rate: number; produced: number | null; target: number;
   pct: number | null; downMs: number; borrowed: string | null;
 } }): JSX.Element {
   const color = t.pct == null ? '#94A3B8' : t.pct >= 100 ? TEAL : t.pct >= 50 ? AMBER : RED;
@@ -109,7 +113,7 @@ function RingTile({ t }: { t: {
       </span>
       <span className="mt-1.5 text-[11px]">
         <span className="data font-bold text-primary">{t.produced != null ? fmtNum(t.produced) : '—'}</span>
-        <span className="text-steel"> / {fmtTarget(t.target)}</span>
+        <span className="text-steel"> / {fmtTarget(t.target)} @ {fmtTarget(t.rate)}/hr</span>
       </span>
       <span className="text-[10px] text-steel">
         {t.downMs >= 60_000 ? `${fmtDuration(t.downMs)} down` : 'no downtime'}
