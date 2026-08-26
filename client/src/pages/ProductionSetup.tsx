@@ -110,6 +110,7 @@ export default function ProductionSetup(): JSX.Element {
       {editing && (
         <DiaModal
           dia={editing === 'new' ? null : editing}
+          template={dias || []}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
         />
@@ -344,12 +345,27 @@ const toDraft = (s: DiaStage): StageDraft => ({
 });
 const draftSec = (s: StageDraft): number => (Number(s.min) || 0) * 60 + (Number(s.sec) || 0);
 
-function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: () => void; onSaved: () => void }): JSX.Element {
+function DiaModal({ dia, template, onClose, onSaved }: {
+  dia: DiaConfig | null; template?: DiaConfig[]; onClose: () => void; onSaved: () => void;
+}): JSX.Element {
   const [name, setName] = useState(dia?.name || '');
   const [capacity, setCapacity] = useState(dia?.capacity || '');
   const [dims, setDims] = useState(dia?.dims || '');
+  // A NEW DIA starts from the stages the plant already uses — the most recently
+  // edited DIA's list, times included, every field editable. The user described
+  // exactly this: 40L and 50L share Cutting/Spinning, only the minutes differ.
+  // Keys are NOT copied (each DIA owns its stage identities; the server slugs
+  // fresh ones from the names).
+  const source = !dia && template?.length
+    ? [...template].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
+    : null;
+  const seeded = source ? source.stages.filter((st) => st.active).map((st) => ({
+    name: st.name, min: String(Math.floor(st.processingSec / 60)), sec: String(st.processingSec % 60), active: true,
+  })) : null;
   const [stages, setStages] = useState<StageDraft[]>(
-    dia ? dia.stages.map(toDraft) : [{ name: '', min: '3', sec: '0', active: true }],
+    dia ? dia.stages.map(toDraft)
+      : seeded?.length ? seeded
+        : [{ name: '', min: '3', sec: '0', active: true }],
   );
 
   const saveMut = useMutation({
@@ -412,6 +428,12 @@ function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: (
           </div>
           <button onClick={() => setStages((p) => [...p, { name: '', min: '3', sec: '0', active: true }])}
             className="mt-2 flex items-center gap-1 text-xs text-accent hover:underline"><Plus size={12} /> Add stage</button>
+          {source && (
+            <p className="text-[11px] text-steel mt-2">
+              Stages copied from <span className="font-medium text-primary">{source.name}</span> — set this DIA's own times,
+              rename or remove whatever doesn't apply.
+            </p>
+          )}
         </div>
 
         {dia && (dia.usedOn || 0) > 0 && (
