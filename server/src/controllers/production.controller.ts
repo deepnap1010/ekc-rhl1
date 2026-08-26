@@ -9,6 +9,8 @@ import { MachineAssignment } from '../models/MachineAssignment.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { ok, created, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
+import { cached } from '../utils/cache.js';
+import { computeTargets, rollupToDays, type TargetRow } from '../services/targets.service.js';
 
 interface ScopedUser { _id?: unknown; name?: string; isSuperAdmin?: boolean; assignedMachines?: string[] }
 
@@ -217,6 +219,61 @@ export const listAssignments = asyncHandler(async (req, res) => {
   const rows = await MachineAssignment.find(q)
     .sort({ effectiveFrom: -1 }).limit(Math.min(Number(limit) || 50, 200)).lean();
   return ok(res, rows);
+});
+
+// GET /production/targets?from&to&machineId&groupBy=hour|day&page&limit
+// Target-vs-actual rows plus per-DIA and grand rollups. Targets and actuals are
+// both DERIVED at read time (frozen snapshots ÷ assigned seconds; confirmed
+// counter steps) — see services/targets.service. downtimeSec ships with every
+// row so "subtract downtime from targets" can be a client-side VIEW, not a
+// different report.
+export const targetsReport = asyncHandler(async (req, res) => {
+  const q = req.query as Record<string, string | undefined>;
+  const fromD = q.from ? new Date(q.from) : null;
+  const toRaw = q.to ? new Date(q.to) : new Date();
+  if (!fromD || Number.isNaN(fromD.getTime()) || Number.isNaN(toRaw.getTime())) {
+    return fail(res, 400, 'from (and optionally to) must be valid dates');
+  }
+  const toD = new Date(Math.min(toRaw.getTime(), Date.now()));
+  if (toD <= fromD) return fail(res, 400, 'from must be before to');
+  if (toD.getTime() - fromD.getTime() > 92 * 24 * 3_600_000) {
+    return fail(res, 400, 'This report covers at most 92 days at a time');
+  }
+
+  const scope = machineScope(req.user as ScopedUser);
+  const one = q.machineId?.trim();
+  if (one && scope && !scope.includes(one)) return ok(res, [], { total: 0, page: 1, limit: 0 });
+  const refs = one ? [one] : scope;
+
+  const groupBy = q.groupBy === 'hour' ? 'hour' : 'day';
+  const lim = Math.min(Math.max(Number(q.limit) || 50, 1), 2000);
+  const page = Math.max(Number(q.page) || 1, 1);
+
+  const key = `targets:${fromD.toISOString()}:${toD.toISOString()}:${(refs || []).join(',') || '*'}`;
+  const { rows: hourly, machines } = await cached(key, 60_000, () => computeTargets(fromD, toD, refs ?? null));
+
+  const rows = groupBy === 'day' ? rollupToDays(hourly) : hourly;
+  rows.sort((a, b) => b.bucket.localeCompare(a.bucket) || a.machineRef.localeCompare(b.machineRef));
+
+  // Rollups cover the WHOLE window, whatever page the table is on.
+  const byDiaMap = new Map<string, { dia: string; dims: string; target: number; targetAdj: number; actual: number; downtimeSec: number; machines: Set<string> }>();
+  const totals = { target: 0, targetAdj: 0, actual: 0, downtimeSec: 0 };
+  for (const r of hourly) {
+    totals.target += r.target; totals.targetAdj += r.targetAdj; totals.actual += r.actual; totals.downtimeSec += r.downtimeSec;
+    const d = byDiaMap.get(r.dia) || { dia: r.dia, dims: r.dims, target: 0, targetAdj: 0, actual: 0, downtimeSec: 0, machines: new Set<string>() };
+    d.target += r.target; d.targetAdj += r.targetAdj; d.actual += r.actual; d.downtimeSec += r.downtimeSec; d.machines.add(r.machineRef);
+    byDiaMap.set(r.dia, d);
+  }
+  const byDia = [...byDiaMap.values()]
+    .map((d) => ({ dia: d.dia, dims: d.dims, target: d.target, targetAdj: d.targetAdj, actual: d.actual, downtimeSec: d.downtimeSec, machines: d.machines.size }))
+    .sort((a, b) => b.actual - a.actual || a.dia.localeCompare(b.dia));
+
+  const skip = (page - 1) * lim;
+  return ok(res, rows.slice(skip, skip + lim) as TargetRow[], {
+    total: rows.length, page, limit: lim, groupBy,
+    from: fromD.toISOString(), to: toD.toISOString(),
+    machines: machines.length, byDia, totals,
+  });
 });
 
 // GET /production/audit — the change history, newest first.

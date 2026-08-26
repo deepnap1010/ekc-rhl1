@@ -579,6 +579,39 @@ export interface MachineAssignment {
   note?: string;
 }
 
+// One row of the targets report: (hour|day) × machine × assignment.
+export interface TargetRow {
+  bucket: string;          // ISO start of the hour / production day
+  machineRef: string;
+  dia: string;
+  dims: string;
+  stage: string;
+  processingSec: number;
+  assignedSec: number;
+  downtimeSec: number;
+  actual: number;
+  target: number;          // exact — display rounds
+  targetAdj: number;       // downtime-adjusted target
+}
+export interface TargetsDiaRollup {
+  dia: string; dims: string; target: number; targetAdj: number; actual: number; downtimeSec: number; machines: number;
+}
+export interface TargetsMeta extends ApiMeta {
+  groupBy: 'hour' | 'day';
+  from: string; to: string; machines: number;
+  byDia: TargetsDiaRollup[];
+  totals: { target: number; targetAdj: number; actual: number; downtimeSec: number };
+}
+export interface AuditRow {
+  _id: string;
+  at: string;
+  user: { id?: string; name?: string };
+  action: string;
+  entity: { type: string; id?: string; label?: string };
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+}
+
 // ─── Org chart ─────────────────────────────────────────────────────────────
 export type OrgChartUser = User;
 

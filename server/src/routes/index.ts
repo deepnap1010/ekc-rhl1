@@ -66,6 +66,7 @@ r.get('/production/assignments/current', authorize('production'), prod.currentAs
 r.get('/production/assignments', authorize('production'), prod.listAssignments);
 r.post('/production/assignments', authorize('production', 'update'), prod.assignMachine);
 r.delete('/production/assignments/current/:machineRef', authorize('production', 'update'), prod.unassignMachine);
+r.get('/production/targets', authorize('production'), prod.targetsReport);
 r.get('/production/audit', authorize('production', 'admin'), prod.listAudit);
 
 // Reports

@@ -15,6 +15,7 @@ import { useRangeFilter } from '../hooks/useRangeFilter';
 import { fmtNum, fmtDuration, prettyType, prettyKey } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
 import { borrowedFrom } from '../lib/production';
+import TargetsReport from '../components/TargetsReport';
 import type { MetricValue } from '../types/api';
 import type { ReactNode } from 'react';
 
@@ -98,7 +99,8 @@ export default function Reports() {
       download([header, ...rows].join('\n'), `reliability_report${suffix}.csv`);
     }
   };
-  const exportable = tab !== 'overview';
+  // Targets carries its own export (its CSV depends on tab-local state).
+  const exportable = tab !== 'overview' && tab !== 'targets';
 
   return (
     <div>
@@ -130,7 +132,7 @@ export default function Reports() {
           <RangeFilter value={win.value} onChange={win.setValue} range={win.range}
             title="Which period these reports cover" />
           <div className="flex gap-1 bg-base rounded-lg p-0.5 border border-line">
-            {['overview', 'production', 'downtime', 'fleet', 'reliability'].map((t) => (
+            {['overview', 'production', 'targets', 'downtime', 'fleet', 'reliability'].map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -144,6 +146,9 @@ export default function Reports() {
 
         {/* ---- OVERVIEW ---- */}
         {tab === 'overview' && <OverviewReport machineId={mid} from={win.fromISO} to={win.toISO} />}
+
+        {/* ---- TARGETS ---- */}
+        {tab === 'targets' && <TargetsReport machineId={mid} from={win.fromISO} to={win.toISO} />}
 
         {/* ---- PRODUCTION ---- */}
         {tab === 'production' && (

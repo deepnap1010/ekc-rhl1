@@ -14,7 +14,9 @@ import Modal from '../components/Modal';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
 import { fmtTarget, fmtProcessing, hourlyRate } from '../lib/targets';
-import type { DiaConfig, DiaStage } from '../types/api';
+import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
+import { fmtTime } from '../lib/format';
+import type { DiaConfig, DiaStage, AuditRow } from '../types/api';
 
 export default function ProductionSetup(): JSX.Element {
   const qc = useQueryClient();
@@ -98,12 +100,76 @@ export default function ProductionSetup(): JSX.Element {
         )}
       </div>
 
+      {can('production', 'admin') && <AuditTrail />}
+
       {editing && (
         <DiaModal
           dia={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Audit trail — who changed what, before → after ───────────────────────────
+function AuditTrail(): JSX.Element | null {
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
+  const { data } = useQuery({
+    queryKey: ['production-audit', page, size],
+    queryFn: () => productionApi.audit({ page, limit: size }),
+    retry: false,
+  });
+  const rows: AuditRow[] = data?.data || [];
+  const total = data?.meta?.total || 0;
+  if (!rows.length && page === 1) return null;
+
+  // The one line a reader needs per change: what moved, from what, to what.
+  const diff = (r: AuditRow): string => {
+    const b = r.before || {}, a = r.after || {};
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(a)])]
+      .filter((k) => JSON.stringify(b[k]) !== JSON.stringify(a[k]));
+    return keys.slice(0, 3).map((k) => {
+      const short = (v: unknown): string => {
+        if (v === undefined || v === null) return '—';
+        const s = typeof v === 'string' ? v : JSON.stringify(v);
+        return s.length > 40 ? s.slice(0, 40) + '…' : s;
+      };
+      return `${k}: ${short(b[k])} → ${short(a[k])}`;
+    }).join(' · ');
+  };
+
+  return (
+    <div className="px-4 sm:px-6 pb-8 space-y-3">
+      <h2 className="font-semibold text-sm text-primary">Change history</h2>
+      <div className="panel overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead className="bg-base">
+            <tr className="text-steel">
+              <th className="text-left label px-4 py-2.5">When</th>
+              <th className="text-left label px-4 py-2.5">Who</th>
+              <th className="text-left label px-4 py-2.5">Action</th>
+              <th className="text-left label px-4 py-2.5">What</th>
+              <th className="text-left label px-4 py-2.5">Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r._id} className="border-t border-line hover:bg-base/60">
+                <td className="px-4 py-2 data text-xs">{fmtTime(r.at)}</td>
+                <td className="px-4 py-2 text-xs">{r.user?.name || '—'}</td>
+                <td className="px-4 py-2"><span className="pill bg-accent/10 text-accent !text-[10px]">{r.action}</span></td>
+                <td className="px-4 py-2 text-xs text-primary">{r.entity?.label || '—'}</td>
+                <td className="px-4 py-2 text-xs text-steel max-w-[380px] truncate" title={diff(r)}>{diff(r) || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {total > size && (
+        <Pager page={page} size={size} onPage={setPage} onSize={setSize} total={total} noun="changes" />
       )}
     </div>
   );

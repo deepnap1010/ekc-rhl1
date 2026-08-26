@@ -5,6 +5,8 @@
 // same verified counter steps every other surface shows. Over 100% keeps
 // filling — beating the target is the good case, not an error.
 import { Target } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { productionApi } from '../../api/endpoints';
 import { useCurrentAssignment } from './AssignDia';
 import { fmtNum } from '../../lib/format';
 import { assignedMs, targetUnits, achievementPct, fmtTarget, fmtProcessing } from '../../lib/targets';
@@ -17,6 +19,27 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
   dayTo: string;
 }): JSX.Element | null {
   const current = useCurrentAssignment(code);
+
+  // Hour-by-hour actual vs target for the day — the operator's pacing view.
+  // Same report the Targets tab reads, scoped to this machine and today.
+  const { data: hourData } = useQuery({
+    queryKey: ['targets-report', code, dayFrom, dayTo, 'hour', 48, 1],
+    queryFn: () => productionApi.targets({ from: dayFrom, to: dayTo, machineId: code, groupBy: 'hour', limit: 48 }),
+    enabled: !!current,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  // Two assignments in one hour → one bar: sum both halves.
+  const hours = (() => {
+    const by = new Map<string, { t: number; actual: number; target: number }>();
+    for (const r of hourData?.data || []) {
+      const acc = by.get(r.bucket) || { t: new Date(r.bucket).getTime(), actual: 0, target: 0 };
+      acc.actual += r.actual; acc.target += r.target;
+      by.set(r.bucket, acc);
+    }
+    return [...by.values()].sort((a, b) => a.t - b.t);
+  })();
+
   if (!current) return null;            // unassigned machines add no target noise
 
   const winFrom = new Date(dayFrom).getTime();
@@ -79,6 +102,42 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
           </div>
         </div>
       </div>
+
+      {/* Hour by hour — amber = that hour missed its target, teal = made it.
+          The dotted line is the full-hour target. */}
+      {hours.length >= 2 && (() => {
+        const max = Math.max(...hours.map((h) => Math.max(h.actual, h.target)), 1);
+        return (
+          <div className="mt-5 pt-4 border-t border-line">
+            <div className="text-[10px] uppercase tracking-wide text-steel mb-2">Hourly production</div>
+            <div className="flex items-end gap-1.5 h-24 overflow-x-auto pb-1">
+              {hours.map((h) => {
+                const made = h.actual >= h.target * 0.999;
+                return (
+                  <div key={h.t} className="flex flex-col items-center gap-1 min-w-[34px] flex-1 h-full"
+                    title={`${new Date(h.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${h.actual} of ${fmtTarget(h.target)}`}>
+                    <span className="data text-[10px] leading-none" style={{ color: made ? '#0D9488' : '#D97706' }}>{h.actual}</span>
+                    <div className="w-full flex-1 relative">
+                      <div className="absolute bottom-0 left-0 right-0 rounded-t" style={{
+                        height: `${Math.max((h.actual / max) * 100, 2)}%`,
+                        background: made ? '#0D9488' : '#D97706', opacity: 0.85,
+                      }} />
+                      {h.target > 0 && (
+                        // the hour's target, on the same scale — the bar chases this line
+                        <div className="absolute left-0 right-0 border-t border-dashed border-steel/70"
+                          style={{ bottom: `${Math.min((h.target / max) * 100, 100)}%` }} />
+                      )}
+                    </div>
+                    <span className="text-[9px] text-steel leading-none">
+                      {new Date(h.t).toLocaleTimeString([], { hour: 'numeric' }).replace(' ', '').toLowerCase()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

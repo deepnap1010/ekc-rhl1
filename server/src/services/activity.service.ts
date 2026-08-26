@@ -85,19 +85,27 @@ export type Span = { type: 'idle' | 'stopped' | 'offline'; s: number; e: number 
  *  and unconfirmed, each would have fabricated hundreds of pieces.
  *  ponytail: a one-sample lookahead is the whole heuristic; a counter that stays
  *  wrong for two consecutive samples still fools it. */
-export function countStepsOf(series: { t: number; v: number }[]): number {
-  const v = [...series].sort((a, b) => a.t - b.t).map((p) => p.v);
-  if (v.length < 2) return 0;
-  let made = 0, high = v[0];
-  for (let i = 1; i < v.length; i += 1) {
-    const cur = v[i], next = i + 1 < v.length ? v[i + 1] : null;
+export function stepEvents(series: { t: number; v: number }[]): { t: number; made: number }[] {
+  const pts = [...series].sort((a, b) => a.t - b.t);
+  if (pts.length < 2) return [];
+  const out: { t: number; made: number }[] = [];
+  let high = pts[0].v;
+  for (let i = 1; i < pts.length; i += 1) {
+    const cur = pts[i].v, next = i + 1 < pts.length ? pts[i + 1].v : null;
     if (cur > high) {
-      if (next === null || next >= cur) { made += cur - high; high = cur; }   // confirmed climb
+      if (next === null || next >= cur) { out.push({ t: pts[i].t, made: cur - high }); high = cur; }  // confirmed climb
     } else if (cur < high && next !== null && next < high) {
       high = cur;                                                             // confirmed reset
     }
   }
-  return made;
+  return out;
+}
+
+export function countStepsOf(series: { t: number; v: number }[]): number {
+  // The sum of the step events IS the count — one confirmation logic, two views.
+  // stepEvents additionally says WHEN each piece landed, which is what per-hour
+  // target attribution needs.
+  return stepEvents(series).reduce((n, e) => n + e.made, 0);
 }
 
 /** Milliseconds the MACHINE says it was running, from its own signal.

@@ -33,6 +33,9 @@ import type {
   UserWritePayload,
   DiaConfig,
   MachineAssignment,
+  TargetRow,
+  TargetsMeta,
+  AuditRow,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -129,6 +132,8 @@ export const productionApi = {
   assign: (b: { machineRef: string; diaId: string; stageKey: string; note?: string }) =>
     post<MachineAssignment>('/production/assignments', b),
   unassign: (machineRef: string) => del<{ ended: boolean }>(`/production/assignments/current/${encodeURIComponent(machineRef)}`),
+  targets: (params: Params) => get<TargetRow[], TargetsMeta>('/production/targets', params),
+  audit: (params?: Params) => get<AuditRow[]>('/production/audit', params),
 };
 
 export const rbacApi = {

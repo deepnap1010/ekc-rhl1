@@ -1,0 +1,226 @@
+// server/src/services/targets.service.ts
+// Target-vs-actual over a window, one row per (hour × machine × assignment).
+//
+// Target  = assigned seconds ÷ the assignment's FROZEN processing seconds —
+//           the same formula every card uses, so a report row and the card it
+//           describes can never disagree.
+// Actual  = confirmed counter steps (activity engine's stepEvents), attributed
+//           to the hour the confirming sample landed in. A machine reassigned
+//           at 10:30 gets two rows for that hour, and each row's pieces are the
+//           ones counted while THAT assignment was live.
+// Downtime is reported per row (overlap of the machine's clipped downtime
+// spans) so the client can offer "subtract downtime from targets" as a VIEW —
+// both numbers ship, nothing is decided for the reader.
+//
+// Hours and production days follow the plant's clock: hour buckets on IST hour
+// boundaries (UTC buckets would put the plant's 10:00–11:00 into two rows),
+// days rolling at 07:00 IST like everything else in this app.
+import { Telemetry } from '../models/Telemetry.js';
+import { MachineAssignment } from '../models/MachineAssignment.js';
+import { DowntimeEvent } from '../models/DowntimeEvent.js';
+import { flattenData } from '../utils/flatten.js';
+import { pickProductionKey } from '../utils/production.js';
+import { stepEvents, clipSpans, type Span } from './activity.service.js';
+
+const IST_MS = 5.5 * 3_600_000;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+export const hourStart = (t: number): number => Math.floor((t + IST_MS) / HOUR) * HOUR - IST_MS;
+export const dayStart = (t: number): number => Math.floor((t + IST_MS - 7 * HOUR) / DAY) * DAY + 7 * HOUR - IST_MS;
+
+export interface TargetRow {
+  bucket: string;        // ISO start of the hour (or production day)
+  machineRef: string;
+  dia: string;
+  dims: string;
+  stage: string;
+  processingSec: number;
+  assignedSec: number;
+  downtimeSec: number;
+  actual: number;
+  target: number;        // EXACT — assignedSec / processingSec; display rounds
+  targetAdj: number;     // downtime-adjusted: (assignedSec − downtimeSec) ÷ processingSec
+}
+
+interface AsgLike {
+  machineRef: string;
+  effectiveFrom: Date | string;
+  effectiveTo: Date | string | null;
+  snapshot: { diaName: string; dims: string; stageName: string; processingSec: number };
+}
+
+/** Pure row builder — everything time-based happens here, so the self-check
+ *  can drive it with synthetic data. */
+export function buildTargetRows(
+  assignments: AsgLike[],
+  eventsBy: Map<string, { t: number; made: number }[]>,   // sorted asc
+  spansBy: Map<string, Span[]>,                           // clipped
+  fromMs: number, toMs: number,
+): TargetRow[] {
+  const rows: TargetRow[] = [];
+  for (const a of assignments) {
+    const aStart = Math.max(new Date(a.effectiveFrom).getTime(), fromMs);
+    const aEnd = Math.min(a.effectiveTo ? new Date(a.effectiveTo).getTime() : toMs, toMs);
+    if (aEnd <= aStart || !a.snapshot?.processingSec) continue;
+    const events = eventsBy.get(a.machineRef) || [];
+    const spans = spansBy.get(a.machineRef) || [];
+    for (let h = hourStart(aStart); h < aEnd; h += HOUR) {
+      const s = Math.max(h, aStart), e = Math.min(h + HOUR, aEnd);
+      if (e <= s) continue;
+      const assignedSec = (e - s) / 1000;
+      const actual = events.reduce((n, ev) => (ev.t >= s && ev.t < e ? n + ev.made : n), 0);
+      const downtimeSec = spans.reduce((n, sp) => n + Math.max(0, Math.min(sp.e, e) - Math.max(sp.s, s)), 0) / 1000;
+      rows.push({
+        bucket: new Date(h).toISOString(),
+        machineRef: a.machineRef,
+        dia: a.snapshot.diaName, dims: a.snapshot.dims || '', stage: a.snapshot.stageName,
+        processingSec: a.snapshot.processingSec,
+        assignedSec, downtimeSec, actual,
+        target: assignedSec / a.snapshot.processingSec,
+        targetAdj: Math.max(0, assignedSec - downtimeSec) / a.snapshot.processingSec,
+      });
+    }
+  }
+  return rows;
+}
+
+/** Hour rows → production-day rows (07:00 IST roll), same shape. */
+export function rollupToDays(rows: TargetRow[]): TargetRow[] {
+  const by = new Map<string, TargetRow>();
+  for (const r of rows) {
+    const day = new Date(dayStart(new Date(r.bucket).getTime())).toISOString();
+    const key = `${day}|${r.machineRef}|${r.dia}|${r.stage}|${r.processingSec}`;
+    const acc = by.get(key);
+    if (!acc) by.set(key, { ...r, bucket: day });
+    else {
+      acc.assignedSec += r.assignedSec;
+      acc.downtimeSec += r.downtimeSec;
+      acc.actual += r.actual;
+      acc.target += r.target;
+      acc.targetAdj += r.targetAdj;
+    }
+  }
+  return [...by.values()];
+}
+
+/** The DB-facing pass: assignments in window → per-machine step events +
+ *  clipped downtime spans → rows. `refs` limits to given machines (scope /
+ *  filter); null = every machine with an overlapping assignment. */
+export async function computeTargets(
+  fromD: Date, toD: Date, refs: string[] | null,
+): Promise<{ rows: TargetRow[]; machines: string[] }> {
+  const asgQ: Record<string, unknown> = {
+    effectiveFrom: { $lte: toD },
+    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: fromD } }],
+  };
+  if (refs) asgQ.machineRef = { $in: refs };
+  const assignments = await MachineAssignment.find(asgQ).lean();
+  const machines = [...new Set(assignments.map((a) => a.machineRef))];
+  if (!machines.length) return { rows: [], machines: [] };
+
+  // Per-machine counter key from the latest payload — same picker as everywhere.
+  const keyed: { ref: string; key: string }[] = [];
+  for (const ref of machines) {
+    const last = await Telemetry.findOne({ machineId: ref }).sort({ timestamp: -1 })
+      .select({ data: 1 }).lean();
+    const key = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
+    if (key && !key.includes('.')) keyed.push({ ref, key });
+  }
+
+  // Per-bin MAX of each machine's counter (replay-proof), stepped in Node.
+  // Bin width scales with the span — 5-minute bins keep a month's pipeline
+  // inside what this Atlas tier tolerates, and hour attribution only needs
+  // sub-hour resolution anyway. NO post-$group sort (tier ignores allowDiskUse).
+  const spanMs = toD.getTime() - fromD.getTime();
+  const binMinutes = spanMs > 2 * DAY ? 5 : 1;
+  const NUMERIC = ['int', 'long', 'double', 'decimal'];
+  const eventsBy = new Map<string, { t: number; made: number }[]>();
+  if (keyed.length) {
+    const agg = await Telemetry.aggregate([
+      { $match: { machineId: { $in: keyed.map((k) => k.ref) }, timestamp: { $gte: fromD, $lte: toD } } },
+      { $addFields: { pv: { $switch: {
+        branches: keyed.map((k) => ({
+          case: { $eq: ['$machineId', k.ref] },
+          then: { $getField: { field: k.key, input: '$data' } },
+        })),
+        default: null,
+      } } } },
+      { $match: { pv: { $type: NUMERIC } } },
+      { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute', binSize: binMinutes } } }, pv: { $max: '$pv' } } },
+      { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv' } } } },
+    ]).option({ maxTimeMS: 30_000 }).exec() as { _id: string; pts: { t: Date; v: number }[] }[];
+    for (const m of agg) {
+      const series = m.pts.map((p) => ({ t: new Date(p.t).getTime(), v: Number(p.v) }))
+        .filter((p) => Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
+      eventsBy.set(m._id, stepEvents(series));
+    }
+  }
+
+  // Clipped downtime spans per machine, window-clipped.
+  const evts = await DowntimeEvent.find({
+    machineId: { $in: machines },
+    startedAt: { $lte: toD },
+    $or: [{ endedAt: null }, { endedAt: { $gte: fromD } }],
+  }).select({ machineId: 1, type: 1, startedAt: 1, endedAt: 1 }).maxTimeMS(20_000).lean();
+  const rawSpans = new Map<string, Span[]>();
+  for (const ev of evts) {
+    const s = Math.max(new Date(ev.startedAt).getTime(), fromD.getTime());
+    const e = Math.min(ev.endedAt ? new Date(ev.endedAt).getTime() : toD.getTime(), toD.getTime());
+    if (e <= s) continue;
+    const arr = rawSpans.get(ev.machineId) || [];
+    arr.push({ type: ev.type as Span['type'], s, e });
+    rawSpans.set(ev.machineId, arr);
+  }
+  const spansBy = new Map([...rawSpans].map(([ref, sp]) => [ref, clipSpans(sp)]));
+
+  return { rows: buildTargetRows(assignments, eventsBy, spansBy, fromD.getTime(), toD.getTime()), machines };
+}
+
+// ── Self-check ────────────────────────────────────────────────────────────────
+if (process.argv[1]?.includes('targets.service')) {
+  const eq = (a: unknown, b: unknown, m: string): void => {
+    if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
+  };
+  const close = (a: number, b: number, m: string): void => {
+    if (Math.abs(a - b) > 1e-9) throw new Error(`${m}: ${a} != ${b}`);
+  };
+  // 10:00 IST on a fixed day = 04:30 UTC.
+  const H10 = Date.parse('2026-08-26T04:30:00Z');
+  const snap = (sec: number) => ({ diaName: '40L', dims: '316 x 40', stageName: 'Cutting', processingSec: sec });
+  // Reassigned mid-hour: 180s/unit until 10:30, then 300s/unit.
+  const asgs: AsgLike[] = [
+    { machineRef: 'M', effectiveFrom: new Date(H10 - 5 * HOUR), effectiveTo: new Date(H10 + HOUR / 2), snapshot: snap(180) },
+    { machineRef: 'M', effectiveFrom: new Date(H10 + HOUR / 2), effectiveTo: null, snapshot: snap(300) },
+  ];
+  const events = new Map([['M', [
+    { t: H10 + 10 * 60_000, made: 2 },   // counted under the first assignment
+    { t: H10 + 40 * 60_000, made: 3 },   // counted under the second
+  ]]]);
+  const spans = new Map([['M', [{ type: 'idle' as const, s: H10 + 50 * 60_000, e: H10 + 55 * 60_000 }]]]);
+
+  const rows = buildTargetRows(asgs, events, spans, H10, H10 + HOUR);
+  eq(rows.length, 2, 'mid-hour reassignment → two rows for the hour');
+  close(rows[0].target, 10, 'first half: 1800s / 180s = 10');
+  eq(rows[0].actual, 2, 'first half gets ITS pieces');
+  close(rows[1].target, 6, 'second half: 1800s / 300s = 6');
+  eq(rows[1].actual, 3, 'second half gets ITS pieces');
+  eq(rows[0].downtimeSec, 0, 'idle span is in the second half only');
+  eq(rows[1].downtimeSec, 300, '5 min downtime lands on the second row');
+  close(rows[1].targetAdj, 1500 / 300, 'adjusted target excludes the 5 down minutes');
+  close(rows[0].targetAdj, rows[0].target, 'no downtime → adjusted equals plain');
+  eq(rows[0].bucket === rows[1].bucket, true, 'both rows share the hour bucket');
+  eq(new Date(rows[0].bucket).getTime(), H10, 'bucket sits on the IST hour boundary');
+
+  // Days roll at 07:00 IST: 06:59 belongs to yesterday, 07:00 to today.
+  const at0700 = Date.parse('2026-08-26T01:30:00Z');
+  eq(dayStart(at0700), at0700, '07:00 IST starts its own day');
+  eq(dayStart(at0700 - 1) < at0700, true, '06:59:59 IST belongs to the previous day');
+
+  const days = rollupToDays(rows);
+  eq(days.length, 2, 'day rollup keeps the two assignments separate');
+  close(days[0].target + days[1].target, 16, 'day targets sum the hour targets');
+
+  // No assignment overlap → no rows, never a 0-target row.
+  eq(buildTargetRows(asgs, events, spans, H10 - 10 * HOUR, H10 - 9 * HOUR).length, 0, 'outside every assignment → no rows');
+  console.log('targets.service: all checks passed');
+}
