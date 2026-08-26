@@ -115,7 +115,13 @@ function RingTile({ t }: { t: {
         <span className="data font-bold text-primary">{t.produced != null ? fmtNum(t.produced) : '—'}</span>
         <span className="text-steel"> / {fmtTarget(t.target)} @ {fmtTarget(t.rate)}/hr</span>
       </span>
-      <span className="text-[10px] text-steel">
+      {/* the same progress, horizontal — the bar the eye tracks across tiles */}
+      <span className="block w-full h-1.5 bg-line rounded-full overflow-hidden mt-1.5">
+        <span className="block h-full rounded-full transition-all" style={{
+          width: `${Math.min(t.pct ?? 0, 100)}%`, background: color,
+        }} />
+      </span>
+      <span className="mt-1 text-[10px] text-steel">
         {t.downMs >= 60_000 ? `${fmtDuration(t.downMs)} down` : 'no downtime'}
         {t.borrowed ? ` · from ${t.borrowed}` : ''}
       </span>
