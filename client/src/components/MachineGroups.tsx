@@ -1,7 +1,8 @@
 // client/src/components/MachineGroups.tsx
 // Machines seen as FAMILIES: all cutting machines together, all SPGs together…
-// Each group shows its COMBINED output + time split for the selected window and
-// then its machines as cards (three at a time, the rest behind "view all").
+// Each group is a SUMMARY first: combined output + time split for the selected
+// window. The machines themselves stay folded until the group is clicked — a
+// supervisor scans five family panels, not sixty cards.
 //
 // Membership is derived from the machine code (lib/machineOrder#groupOf), never
 // configured — a machine added tomorrow lands in the right group by itself, and
@@ -28,8 +29,6 @@ import type { ShiftTiming } from '../lib/settings';
 import type { MachineActivityRow } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', DEEP_RED = '#991B1B', SLATE = '#94A3B8', INDIGO = '#6366F1';
-
-const PREVIEW = 3;   // cards shown before "view all"
 
 interface Props {
   rows: MachineActivityRow[];   // reconstructed activity for the page's window
@@ -149,8 +148,8 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
   const showOutput = isFurnaceRef(label) || t.reportedProduction > 0;
   const scopeLabel = ownRows && override ? presetLabel(override) : windowLabel;
 
-  const visible = open ? shown : shown.slice(0, PREVIEW);
-  const hidden = shown.length - visible.length;
+  // Folded = the summary alone. The cards exist only once the group is opened.
+  const visible = open ? shown : [];
 
   return (
     <div className="panel p-4">
@@ -218,22 +217,22 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
 
       <SplitBar running={t.runningMs} idle={t.idleMs} stopped={t.stoppedMs} offline={t.offlineMs} />
 
-      {/* Machines — three across; the rest open on demand */}
-      <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-3.5">
-        {visible.map((r) => (
-          <MachineMiniCard key={r.code} row={r}
-            signal={signals?.[r.code.toUpperCase()]} avg={avgBy.get(r.code.toUpperCase())} />
-        ))}
-      </div>
-
-      {(hidden > 0 || open) && (
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="mt-3 w-full rounded-xl border border-dashed border-line py-2 text-xs font-medium text-steel hover:text-accent hover:border-accent/40 transition-colors"
-        >
-          {open ? 'Show less' : `View all ${shown.length} machines (+${hidden} more)`}
-        </button>
+      {/* Machines — only once the family is opened */}
+      {open && (
+        <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mt-3.5">
+          {visible.map((r) => (
+            <MachineMiniCard key={r.code} row={r}
+              signal={signals?.[r.code.toUpperCase()]} avg={avgBy.get(r.code.toUpperCase())} />
+          ))}
+        </div>
       )}
+
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="mt-3 w-full rounded-xl border border-dashed border-line py-2 text-xs font-medium text-steel hover:text-accent hover:border-accent/40 transition-colors"
+      >
+        {open ? 'Hide machines' : `Show ${shown.length} machine${shown.length === 1 ? '' : 's'}`}
+      </button>
     </div>
   );
 }
