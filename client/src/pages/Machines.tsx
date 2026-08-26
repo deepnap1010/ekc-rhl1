@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Target, ChevronDown, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Target, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -15,7 +15,7 @@ import { netAssignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/ta
 import { useAuthStore } from '../store/auth';
 import { AssignDiaModal } from '../components/machine/AssignDia';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
-import { processCompare, groupMachines } from '../lib/machineOrder';
+import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
@@ -397,34 +397,17 @@ export default function Machines() {
             <div className="text-sm text-steel">No machines match the current filter.</div>
           </div>
         ) : (
-          // Families, folded to a summary line — same reading order as the
-          // dashboard groups. A search or status filter opens every matching
-          // family by itself, because a filter's whole point is seeing the hits.
-          <div className="space-y-4">
-            {groupMachines(machines).map((g) => (
-              <MachineGroupSection key={g.key} label={g.label} forcedOpen={!!q || status !== 'all'}
-                machines={g.machines}
-                render={(m) => {
-                  const ref = m.code || m.machineId || '';
-                  return (
-                    <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
-                      activity={actBy.get(ref)}
-                      assignment={asgBy.get(String(ref).toUpperCase())}
-                      dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks}
-                      onParams={() => setParamsFor(m)} />
-                  );
-                }}
-                summary={(() => {
-                  const rows = g.machines.map((m) => actBy.get(m.code || m.machineId || '')).filter(Boolean) as MachineActivityRow[];
-                  const production = rows.reduce((n, r) => n + (r.production ?? 0), 0);
-                  const counters = rows.filter((r) => r.production != null).length;
-                  const runningMs = rows.reduce((n, r) => n + r.runningMs, 0);
-                  const downMs = rows.reduce((n, r) => n + r.idleMs + r.stoppedMs, 0);
-                  const running = g.machines.filter((m) => displayStatus(m) === 'running').length;
-                  return { production, counters, runningMs, downMs, running };
-                })()}
-              />
-            ))}
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {machines.map((m) => {
+              const ref = m.code || m.machineId || '';
+              return (
+                <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
+                  activity={actBy.get(ref)}
+                  assignment={asgBy.get(String(ref).toUpperCase())}
+                  dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks}
+                  onParams={() => setParamsFor(m)} />
+              );
+            })}
           </div>
         )}
       </div>
@@ -722,57 +705,6 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
     </Link>
     {diaOpen && <AssignDiaModal code={String(code).toUpperCase()} current={assignment ?? null} onClose={() => setDiaOpen(false)} />}
     </>
-  );
-}
-
-// One folded FAMILY on the machines page: identity + today's summary on the
-// header, the full cards only once it's opened. Mirrors the dashboard groups.
-function MachineGroupSection({ label, machines, summary, render, forcedOpen }: {
-  label: string;
-  machines: Machine[];
-  summary: { production: number; counters: number; runningMs: number; downMs: number; running: number };
-  render: (m: Machine) => JSX.Element;
-  forcedOpen: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const isOpen = open || forcedOpen;
-  return (
-    <div className="panel p-4">
-      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-3 text-left group/g" title={isOpen ? 'Collapse' : `Show ${machines.length} machines`}>
-        <span className="w-9 h-9 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-          <Layers size={16} className="text-accent" />
-        </span>
-        <span className="min-w-0">
-          <span className="flex items-center gap-1.5">
-            <span className="font-semibold text-sm text-primary truncate group-hover/g:text-accent transition-colors">{label}</span>
-            <ChevronDown size={14} className={`text-steel transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-          </span>
-          <span className="block text-[11px] text-steel mt-0.5">{machines.length} machine{machines.length === 1 ? '' : 's'} · {summary.running} running</span>
-        </span>
-        <span className="ml-auto flex items-center gap-4 text-right shrink-0">
-          {summary.counters > 0 && (
-            <span>
-              <span className="block label">Production</span>
-              <span className="data text-sm font-bold text-accent">{fmtNum(summary.production)} pcs</span>
-            </span>
-          )}
-          <span className="hidden sm:block">
-            <span className="block label">Uptime</span>
-            <span className="data text-sm font-bold" style={{ color: TEAL }}>{fmtDuration(summary.runningMs)}</span>
-          </span>
-          <span className="hidden sm:block">
-            <span className="block label">Downtime</span>
-            <span className="data text-sm font-bold" style={{ color: summary.downMs ? '#991B1B' : '#94A3B8' }}>{fmtDuration(summary.downMs)}</span>
-          </span>
-        </span>
-      </button>
-
-      {isOpen && (
-        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4 mt-4">
-          {machines.map(render)}
-        </div>
-      )}
-    </div>
   );
 }
 
