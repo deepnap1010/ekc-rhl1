@@ -22,6 +22,7 @@ import PageHeader from '../components/PageHeader';
 import AnalyticsModal from '../components/AnalyticsModal';
 import { CustomRangeModal } from '../components/RangeFilter';
 import MachineGroups from '../components/MachineGroups';
+import TargetsBoard from '../components/TargetsBoard';
 import { Donut, Legend } from '../components/charts';
 import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
@@ -232,6 +233,11 @@ export default function Dashboard() {
         {/* ── By group ────────────────────────────────────────────────────── */}
         <SectionHead icon={Boxes} title={f.machineId ? scopeLabel : 'Machine groups'}
           sub={`${t.machines} machine${t.machines === 1 ? '' : 's'} · ${t.reported} reported data · ${windowLabel}${stale ? ' · updating…' : ''}`} />
+        {/* Who is making rate — one ring per machine holding a DIA. Renders only
+            once at least one machine has an assignment, so a plant that hasn't
+            configured targets loses no space to it. */}
+        <TargetsBoard rows={rows} from={fromISO} to={toISO} />
+
         <MachineGroups key={resetTick} rows={rows} windowMs={windowMs} windowLabel={windowLabel}
           from={fromISO} to={toISO} signals={signals} loading={actLoading} />
 
