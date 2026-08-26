@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Target, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -13,6 +13,7 @@ import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
 import { assignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
 import { useAuthStore } from '../store/auth';
+import { AssignDiaModal } from '../components/machine/AssignDia';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
@@ -461,6 +462,8 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
   const cfg = useMachineConfig(mkey);
   const customName = (cfg.displayName || '').trim();
   const [editing, setEditing] = useState(false);
+  const [diaOpen, setDiaOpen] = useState(false);          // Assign-DIA modal, right from the card
+  const canSetDia = useAuthStore((st) => st.can)('production', 'update');
   const [draft, setDraft] = useState('');
   const startEdit = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
@@ -545,6 +548,7 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
   const trend = cardStats?.metrics?.[0];
 
   return (
+    <>
     <Link
       to={`/machines/${id}`}
       className="card p-4 flex flex-col transition-all hover:shadow-md hover:border-accent/30 hover:-translate-y-0.5 group"
@@ -618,20 +622,40 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         )}
       </div>
 
-      {/* Produced vs target — only when a DIA is assigned. Target = the day's
-          assigned seconds on the FROZEN snapshot; below 60% runs amber. */}
-      {assignment && dayFrom && dayTo && !furnace && activity?.production != null && (() => {
+      {/* Produced vs target when a DIA is assigned; the DIA label (or "Set DIA")
+          opens the assignment modal RIGHT HERE for anyone who may assign —
+          no trip into the machine needed. Below 60% runs amber. */}
+      {!furnace && (assignment || canSetDia) && (() => {
+        const setBtn = canSetDia ? (
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDiaOpen(true); }}
+            title={assignment ? 'Change this machine’s DIA / target' : 'Assign a DIA to give this machine a target'}
+            className="inline-flex items-center gap-1 text-[10px] text-steel hover:text-accent truncate"
+          >
+            <Target size={10} className="shrink-0" />
+            {assignment ? `${assignment.snapshot.diaName} · ${assignment.snapshot.stageName}` : 'Set DIA'}
+          </button>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[10px] text-steel truncate">
+            <Target size={10} className="shrink-0" />
+            {assignment ? `${assignment.snapshot.diaName} · ${assignment.snapshot.stageName}` : ''}
+          </span>
+        );
+        if (!(assignment && dayFrom && dayTo && activity?.production != null)) {
+          // No target maths to show — just the assign affordance.
+          return canSetDia ? <div className="mb-3 -mt-1">{setBtn}</div> : null;
+        }
         const winFrom = new Date(dayFrom).getTime();
         const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
         const ms = assignedMs(assignment, winFrom, winTo);
         const target = targetUnits(assignment.snapshot.processingSec, ms);
         const pct = achievementPct(activity.production, assignment.snapshot.processingSec, ms);
-        if (target <= 0) return null;
+        if (target <= 0) return canSetDia ? <div className="mb-3 -mt-1">{setBtn}</div> : null;
         return (
           <div className="mb-3 -mt-1">
-            <div className="flex items-baseline justify-between text-[10px] mb-1">
-              <span className="text-steel truncate">{assignment.snapshot.diaName} · {assignment.snapshot.stageName}</span>
-              <span className="data font-semibold" style={{ color: pct != null && pct < 60 ? '#D97706' : '#0D9488' }}>
+            <div className="flex items-baseline justify-between gap-2 text-[10px] mb-1">
+              {setBtn}
+              <span className="data font-semibold shrink-0" style={{ color: pct != null && pct < 60 ? '#D97706' : '#0D9488' }}>
                 {fmtNum(activity.production)} / {fmtTarget(target)}{pct != null ? ` · ${Math.round(pct)}%` : ''}
               </span>
             </div>
@@ -678,6 +702,8 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         </span>
       </div>
     </Link>
+    {diaOpen && <AssignDiaModal code={String(code).toUpperCase()} current={assignment ?? null} onClose={() => setDiaOpen(false)} />}
+    </>
   );
 }
 
