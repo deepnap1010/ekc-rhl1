@@ -398,6 +398,7 @@ export interface OvCapabilityBlocked { name: string; needs: string }
 // Shared (server-side) config — same shifts/products/stages on every desktop.
 export interface AppConfigShape {
   shifts: { name: string; start: string; end: string }[];
+  breaks?: BreakWindow[];   // planned daily pauses — targets exclude them
   products: string[];
   processStages: string[];
   stored: boolean;
@@ -589,9 +590,11 @@ export interface TargetRow {
   processingSec: number;
   assignedSec: number;
   downtimeSec: number;
+  breakSec: number;        // planned daily breaks — excluded from BOTH targets
   actual: number;
   target: number;          // exact — display rounds
   targetAdj: number;       // downtime-adjusted target
+  operator: string | null; // who was on the machine, when sessions are recorded
 }
 export interface TargetsDiaRollup {
   dia: string; dims: string; target: number; targetAdj: number; actual: number; downtimeSec: number; machines: number;
@@ -601,7 +604,32 @@ export interface TargetsMeta extends ApiMeta {
   from: string; to: string; machines: number;
   byDia: TargetsDiaRollup[];
   totals: { target: number; targetAdj: number; actual: number; downtimeSec: number };
+  operators: string[];     // everyone appearing in the window — feeds the filter
 }
+export interface ProductionOrder {
+  _id: string;
+  orderNo: string;
+  diaId: string;
+  diaName: string;
+  quantity: number;
+  status: 'open' | 'done' | 'cancelled';
+  notes: string;
+  startedAt: string;
+  closedAt: string | null;
+  produced: number;        // derived — counted pieces since the order opened
+  createdBy?: { id?: string; name?: string };
+  createdAt?: string;
+}
+export interface OperatorSession {
+  _id: string;
+  machineRef: string;
+  userId: string;
+  userName: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+export interface BreakWindow { name: string; start: string; end: string }
+
 export interface AuditRow {
   _id: string;
   at: string;

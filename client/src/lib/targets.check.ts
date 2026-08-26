@@ -1,5 +1,5 @@
 // client/src/lib/targets.check.ts — run: npx tsx client/src/lib/targets.check.ts
-import { assignedMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from './targets.js';
+import { assignedMs, netAssignedMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from './targets.js';
 
 const eq = (a: unknown, b: unknown, m: string): void => {
   if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
@@ -45,5 +45,13 @@ eq(fmtTarget(20), '20', 'whole targets stay whole');
 eq(fmtProcessing(180), '3m', '180s → 3m');
 eq(fmtProcessing(150), '2m 30s', '150s → 2m 30s');
 eq(fmtProcessing(45), '45s', '45s → 45s');
+
+// Breaks: 10:00-11:00 IST with a 10:15-10:30 tea break → 45 productive minutes.
+const H10IST = Date.parse('2026-08-26T04:30:00Z');
+const tea = [{ start: '10:15', end: '10:30' }];
+eq(breakOverlapMs(H10IST, H10IST + HOUR, tea), 15 * 60_000, 'tea break measured');
+eq(netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, tea), 45 * 60_000, 'net assigned excludes the break');
+close(targetUnits(180, netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, tea)), 15, 'target over the break-hour is 15, not 20');
+eq(netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, []), HOUR, 'no breaks → net equals gross');
 
 console.log('targets: all checks passed');

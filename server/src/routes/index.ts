@@ -67,6 +67,13 @@ r.get('/production/assignments', authorize('production'), prod.listAssignments);
 r.post('/production/assignments', authorize('production', 'update'), prod.assignMachine);
 r.delete('/production/assignments/current/:machineRef', authorize('production', 'update'), prod.unassignMachine);
 r.get('/production/targets', authorize('production'), prod.targetsReport);
+r.put('/production/breaks', authorize('production', 'update'), prod.setBreaks);
+r.get('/production/orders', authorize('production'), prod.listOrders);
+r.post('/production/orders', authorize('production', 'create'), prod.createOrder);
+r.patch('/production/orders/:id', authorize('production', 'update'), prod.updateOrder);
+r.get('/production/operators/current', authorize('production'), prod.currentOperators);
+r.post('/production/operators', authorize('production', 'update'), prod.setOperator);
+r.delete('/production/operators/current/:machineRef', authorize('production', 'update'), prod.endOperator);
 r.get('/production/audit', authorize('production', 'admin'), prod.listAudit);
 
 // Reports

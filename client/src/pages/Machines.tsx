@@ -11,7 +11,7 @@ import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
-import { assignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
+import { netAssignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
 import { useAuthStore } from '../store/auth';
 import { AssignDiaModal } from '../components/machine/AssignDia';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
@@ -104,7 +104,7 @@ export default function Machines() {
   // the PLC itself stamps into SHIFT_DATE), the same one the machine Overview
   // and the Full-day filter use, so a card and the page it opens can never
   // disagree. `to` is minute-rounded for stable query keys.
-  const { shifts: cfgShifts } = useAppConfig();
+  const { shifts: cfgShifts, breaks: cfgBreaks } = useAppConfig();
   const day = todayWindow(cfgShifts);
   const dayFromISO = day.from.toISOString();
   const dayToISO = day.to.toISOString();
@@ -404,7 +404,7 @@ export default function Machines() {
                 <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
                   activity={actBy.get(ref)}
                   assignment={asgBy.get(String(ref).toUpperCase())}
-                  dayFrom={dayFromISO} dayTo={dayToISO}
+                  dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks}
                   onParams={() => setParamsFor(m)} />
               );
             })}
@@ -437,10 +437,11 @@ interface MachineCardProps {
   assignment?: MachineAssignment;       // current DIA + frozen processing time
   dayFrom?: string;                     // the production-day window `activity` covers
   dayTo?: string;
+  breaks?: { name: string; start: string; end: string }[];   // planned pauses — off the target
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, breaks, onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -647,7 +648,7 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         }
         const winFrom = new Date(dayFrom).getTime();
         const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
-        const ms = assignedMs(assignment, winFrom, winTo);
+        const ms = netAssignedMs(assignment, winFrom, winTo, breaks);
         const target = targetUnits(assignment.snapshot.processingSec, ms);
         const pct = achievementPct(activity.production, assignment.snapshot.processingSec, ms);
         if (target <= 0) return canSetDia ? <div className="mb-3 -mt-1">{setBtn}</div> : null;

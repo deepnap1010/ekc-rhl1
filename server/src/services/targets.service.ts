@@ -18,6 +18,8 @@
 import { Telemetry } from '../models/Telemetry.js';
 import { MachineAssignment } from '../models/MachineAssignment.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
+import { AppConfig, type IBreak } from '../models/AppConfig.js';
+import { OperatorSession } from '../models/OperatorSession.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { stepEvents, clipSpans, type Span } from './activity.service.js';
@@ -37,9 +39,53 @@ export interface TargetRow {
   processingSec: number;
   assignedSec: number;
   downtimeSec: number;
+  breakSec: number;      // planned daily breaks inside this row — excluded from BOTH targets
   actual: number;
-  target: number;        // EXACT — assignedSec / processingSec; display rounds
-  targetAdj: number;     // downtime-adjusted: (assignedSec − downtimeSec) ÷ processingSec
+  target: number;        // EXACT — (assignedSec − breakSec) ÷ processingSec; display rounds
+  targetAdj: number;     // additionally excludes measured downtime outside breaks
+  operator: string | null;   // who was on the machine (operator session), if recorded
+}
+
+/** Overlap of [s, e) with the plant's DAILY break windows (HH:MM, IST). A break
+ *  whose end precedes its start wraps midnight. */
+export function breakOverlapMs(s: number, e: number, breaks: Pick<IBreak, 'start' | 'end'>[]): number {
+  if (!breaks.length || e <= s) return 0;
+  const hm = (v: string): number => {
+    const [h, m] = v.split(':').map(Number);
+    return (h * 60 + (m || 0)) * 60_000;
+  };
+  let sum = 0;
+  // Check each break on the interval's own IST day and its neighbours (wraps).
+  const base0 = Math.floor((s + IST_MS) / DAY) * DAY - IST_MS;
+  for (const base of [base0 - DAY, base0, base0 + DAY]) {
+    for (const b of breaks) {
+      const bs = base + hm(b.start);
+      let be = base + hm(b.end);
+      if (be <= bs) be += DAY;
+      sum += Math.max(0, Math.min(be, e) - Math.max(bs, s));
+    }
+  }
+  return sum;
+}
+
+export interface OpInterval { s: number; e: number; name: string }
+
+/** Cut [s, e) at operator-session boundaries into labelled segments. Time
+ *  nobody was signed on stays a segment with operator null. */
+export function splitByOperator(s: number, e: number, ops: OpInterval[]): { s: number; e: number; operator: string | null }[] {
+  const cuts = new Set<number>([s, e]);
+  for (const o of ops) {
+    if (o.s > s && o.s < e) cuts.add(o.s);
+    if (o.e > s && o.e < e) cuts.add(o.e);
+  }
+  const pts = [...cuts].sort((a, b) => a - b);
+  const out: { s: number; e: number; operator: string | null }[] = [];
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const mid = (pts[i] + pts[i + 1]) / 2;
+    const op = ops.find((o) => mid >= o.s && mid < o.e);
+    out.push({ s: pts[i], e: pts[i + 1], operator: op ? op.name : null });
+  }
+  return out;
 }
 
 interface AsgLike {
@@ -56,6 +102,8 @@ export function buildTargetRows(
   eventsBy: Map<string, { t: number; made: number }[]>,   // sorted asc
   spansBy: Map<string, Span[]>,                           // clipped
   fromMs: number, toMs: number,
+  breaks: Pick<IBreak, 'start' | 'end'>[] = [],
+  opsBy: Map<string, OpInterval[]> = new Map(),
 ): TargetRow[] {
   const rows: TargetRow[] = [];
   for (const a of assignments) {
@@ -64,21 +112,39 @@ export function buildTargetRows(
     if (aEnd <= aStart || !a.snapshot?.processingSec) continue;
     const events = eventsBy.get(a.machineRef) || [];
     const spans = spansBy.get(a.machineRef) || [];
+    const ops = opsBy.get(a.machineRef) || [];
     for (let h = hourStart(aStart); h < aEnd; h += HOUR) {
-      const s = Math.max(h, aStart), e = Math.min(h + HOUR, aEnd);
-      if (e <= s) continue;
-      const assignedSec = (e - s) / 1000;
-      const actual = events.reduce((n, ev) => (ev.t >= s && ev.t < e ? n + ev.made : n), 0);
-      const downtimeSec = spans.reduce((n, sp) => n + Math.max(0, Math.min(sp.e, e) - Math.max(sp.s, s)), 0) / 1000;
-      rows.push({
-        bucket: new Date(h).toISOString(),
-        machineRef: a.machineRef,
-        dia: a.snapshot.diaName, dims: a.snapshot.dims || '', stage: a.snapshot.stageName,
-        processingSec: a.snapshot.processingSec,
-        assignedSec, downtimeSec, actual,
-        target: assignedSec / a.snapshot.processingSec,
-        targetAdj: Math.max(0, assignedSec - downtimeSec) / a.snapshot.processingSec,
-      });
+      const hs = Math.max(h, aStart), he = Math.min(h + HOUR, aEnd);
+      if (he <= hs) continue;
+      // A handover mid-hour splits the row exactly like a reassignment does —
+      // each person answers for the pieces counted on their watch.
+      for (const seg of splitByOperator(hs, he, ops)) {
+        const { s, e, operator } = seg;
+        const assignedSec = (e - s) / 1000;
+        const breakSec = breakOverlapMs(s, e, breaks) / 1000;
+        const actual = events.reduce((n, ev) => (ev.t >= s && ev.t < e ? n + ev.made : n), 0);
+        // Downtime measured in this segment, and the part of it that fell inside
+        // a planned break — that part must not be subtracted twice.
+        let dtMs = 0, dtInBreakMs = 0;
+        for (const sp of spans) {
+          const os = Math.max(sp.s, s), oe = Math.min(sp.e, e);
+          if (oe <= os) continue;
+          dtMs += oe - os;
+          dtInBreakMs += breakOverlapMs(os, oe, breaks);
+        }
+        const downtimeSec = dtMs / 1000;
+        const netSec = Math.max(0, assignedSec - breakSec);
+        rows.push({
+          bucket: new Date(h).toISOString(),
+          machineRef: a.machineRef,
+          dia: a.snapshot.diaName, dims: a.snapshot.dims || '', stage: a.snapshot.stageName,
+          processingSec: a.snapshot.processingSec,
+          assignedSec, downtimeSec, breakSec, actual,
+          target: netSec / a.snapshot.processingSec,
+          targetAdj: Math.max(0, netSec - (dtMs - dtInBreakMs) / 1000) / a.snapshot.processingSec,
+          operator,
+        });
+      }
     }
   }
   return rows;
@@ -89,12 +155,13 @@ export function rollupToDays(rows: TargetRow[]): TargetRow[] {
   const by = new Map<string, TargetRow>();
   for (const r of rows) {
     const day = new Date(dayStart(new Date(r.bucket).getTime())).toISOString();
-    const key = `${day}|${r.machineRef}|${r.dia}|${r.stage}|${r.processingSec}`;
+    const key = `${day}|${r.machineRef}|${r.dia}|${r.stage}|${r.processingSec}|${r.operator || ''}`;
     const acc = by.get(key);
     if (!acc) by.set(key, { ...r, bucket: day });
     else {
       acc.assignedSec += r.assignedSec;
       acc.downtimeSec += r.downtimeSec;
+      acc.breakSec += r.breakSec;
       acc.actual += r.actual;
       acc.target += r.target;
       acc.targetAdj += r.targetAdj;
@@ -173,7 +240,29 @@ export async function computeTargets(
   }
   const spansBy = new Map([...rawSpans].map(([ref, sp]) => [ref, clipSpans(sp)]));
 
-  return { rows: buildTargetRows(assignments, eventsBy, spansBy, fromD.getTime(), toD.getTime()), machines };
+  // Planned daily breaks (targets exclude them) and operator sessions (rows are
+  // labelled — and split — by who was on the machine).
+  const cfg = await AppConfig.findOne({ key: 'global' }).select({ breaks: 1 }).lean();
+  const sessions = await OperatorSession.find({
+    machineRef: { $in: machines },
+    startedAt: { $lte: toD },
+    $or: [{ endedAt: null }, { endedAt: { $gte: fromD } }],
+  }).lean();
+  const opsBy = new Map<string, OpInterval[]>();
+  for (const ss of sessions) {
+    const arr = opsBy.get(ss.machineRef) || [];
+    arr.push({
+      s: Math.max(new Date(ss.startedAt).getTime(), fromD.getTime()),
+      e: Math.min(ss.endedAt ? new Date(ss.endedAt).getTime() : toD.getTime(), toD.getTime()),
+      name: ss.userName,
+    });
+    opsBy.set(ss.machineRef, arr);
+  }
+
+  return {
+    rows: buildTargetRows(assignments, eventsBy, spansBy, fromD.getTime(), toD.getTime(), cfg && cfg.breaks ? cfg.breaks : [], opsBy),
+    machines,
+  };
 }
 
 // ── Self-check ────────────────────────────────────────────────────────────────
@@ -219,6 +308,34 @@ if (process.argv[1]?.includes('targets.service')) {
   const days = rollupToDays(rows);
   eq(days.length, 2, 'day rollup keeps the two assignments separate');
   close(days[0].target + days[1].target, 16, 'day targets sum the hour targets');
+
+  // Breaks: a 15-minute tea break inside the hour comes off BOTH targets.
+  const bAsg: AsgLike[] = [{ machineRef: 'B', effectiveFrom: new Date(H10 - HOUR), effectiveTo: null, snapshot: snap(180) }];
+  const withBreak = buildTargetRows(bAsg, new Map(), new Map(), H10, H10 + HOUR, [{ start: '10:15', end: '10:30' }]);
+  eq(withBreak.length, 1, 'a break does not split the row');
+  eq(withBreak[0].breakSec, 900, '15-minute break measured');
+  close(withBreak[0].target, (3600 - 900) / 180, 'plain target excludes the break');
+  close(withBreak[0].targetAdj, withBreak[0].target, 'no downtime: adjusted equals plain, break already out');
+
+  // Downtime INSIDE a break is not subtracted twice.
+  const dtInBreak = buildTargetRows(
+    bAsg, new Map(),
+    new Map([['B', [{ type: 'idle' as const, s: H10 + 15 * 60_000, e: H10 + 30 * 60_000 }]]]),
+    H10, H10 + HOUR, [{ start: '10:15', end: '10:30' }],
+  );
+  close(dtInBreak[0].targetAdj, dtInBreak[0].target, 'idle during lunch does not shrink the target again');
+
+  // Operator handover at 10:20 splits the hour; each side keeps its pieces.
+  const opRows = buildTargetRows(
+    [{ machineRef: 'M', effectiveFrom: new Date(H10 - HOUR), effectiveTo: null, snapshot: snap(180) }],
+    events, new Map(), H10, H10 + HOUR, [],
+    new Map([['M', [{ s: H10, e: H10 + 20 * 60_000, name: 'Ramesh' }]]]),
+  );
+  eq(opRows.length, 2, 'handover splits the hour');
+  eq(opRows[0].operator, 'Ramesh', 'first segment carries the operator');
+  eq(opRows[0].actual, 2, 'their pieces stay theirs');
+  eq(opRows[1].operator, null, 'unattended time stays unlabelled');
+  eq(opRows[1].actual, 3, 'later pieces fall in the open segment');
 
   // No assignment overlap → no rows, never a 0-target row.
   eq(buildTargetRows(asgs, events, spans, H10 - 10 * HOUR, H10 - 9 * HOUR).length, 0, 'outside every assignment → no rows');

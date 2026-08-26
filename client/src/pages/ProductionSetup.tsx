@@ -6,7 +6,7 @@
 // page is the catalogue.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Target, ArrowUp, ArrowDown, X } from 'lucide-react';
+import { Plus, Pencil, Target, ArrowUp, ArrowDown, X, ClipboardList, Coffee } from 'lucide-react';
 import { productionApi } from '../api/endpoints';
 import { Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
@@ -16,7 +16,8 @@ import { toast } from '../store/toast';
 import { fmtTarget, fmtProcessing, hourlyRate } from '../lib/targets';
 import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import { fmtTime } from '../lib/format';
-import type { DiaConfig, DiaStage, AuditRow } from '../types/api';
+import { useAppConfig } from '../hooks/useAppConfig';
+import type { DiaConfig, DiaStage, AuditRow, BreakWindow } from '../types/api';
 
 export default function ProductionSetup(): JSX.Element {
   const qc = useQueryClient();
@@ -100,6 +101,10 @@ export default function ProductionSetup(): JSX.Element {
         )}
       </div>
 
+      <OrdersSection dias={dias || []} />
+
+      {can('production', 'update') && <BreaksSection />}
+
       {can('production', 'admin') && <AuditTrail />}
 
       {editing && (
@@ -109,6 +114,162 @@ export default function ProductionSetup(): JSX.Element {
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
         />
       )}
+    </div>
+  );
+}
+
+// ── Orders — make N pieces of one DIA; progress is COUNTED, never typed ──────
+function OrdersSection({ dias }: { dias: DiaConfig[] }): JSX.Element | null {
+  const qc = useQueryClient();
+  const can = useAuthStore((s) => s.can);
+  const [creating, setCreating] = useState(false);
+  const [orderNo, setOrderNo] = useState('');
+  const [diaId, setDiaId] = useState('');
+  const [qty, setQty] = useState('');
+
+  const { data: orders } = useQuery({
+    queryKey: ['production-orders'],
+    queryFn: () => productionApi.orders().then((r) => r.data),
+    refetchInterval: 60_000,
+    retry: false,
+  });
+
+  const refresh = () => qc.invalidateQueries({ queryKey: ['production-orders'] });
+  const createMut = useMutation({
+    mutationFn: () => productionApi.createOrder({ orderNo, diaId, quantity: Number(qty) }),
+    onSuccess: () => { toast.success(`Order ${orderNo} opened`); setCreating(false); setOrderNo(''); setDiaId(''); setQty(''); refresh(); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not create order'),
+  });
+  const statusMut = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'open' | 'done' | 'cancelled' }) => productionApi.updateOrder(id, status),
+    onSuccess: refresh,
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not update order'),
+  });
+
+  if (!(orders || []).length && !can('production', 'create')) return null;
+  return (
+    <div className="px-4 sm:px-6 pb-2 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-sm text-primary flex items-center gap-1.5"><ClipboardList size={15} className="text-accent" /> Orders</h2>
+        {can('production', 'create') && (
+          <button onClick={() => setCreating(true)} className="flex items-center gap-1 text-xs text-accent hover:underline"><Plus size={12} /> New order</button>
+        )}
+      </div>
+      {!(orders || []).length ? (
+        <p className="text-xs text-steel">No orders yet. An order tracks counted pieces of one DIA against a quantity — progress comes from the machines, never from typing.</p>
+      ) : (
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {(orders || []).map((o) => {
+            const p = o.quantity > 0 ? Math.min((o.produced / o.quantity) * 100, 100) : 0;
+            const donePct = o.quantity > 0 ? Math.round((o.produced / o.quantity) * 1000) / 10 : 0;
+            return (
+              <div key={o._id} className={`panel p-4 ${o.status !== 'open' ? 'opacity-60' : ''}`}>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="data font-bold text-sm text-primary truncate">{o.orderNo}</span>
+                  <span className={`pill !text-[10px] shrink-0 ${
+                    o.status === 'open' ? 'bg-accent/10 text-accent' : o.status === 'done' ? 'bg-line text-steel' : 'bg-stopped/10 text-stopped'
+                  }`}>{o.status}</span>
+                </div>
+                <div className="text-xs text-steel mb-2">{o.diaName}</div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="data text-xl font-bold text-primary">{fmtNumLocal(o.produced)}</span>
+                  <span className="text-steel text-xs">of</span>
+                  <span className="data text-xl font-bold text-accent">{fmtNumLocal(o.quantity)}</span>
+                  <span className="data text-xs font-semibold ml-auto" style={{ color: donePct >= 100 ? '#0D9488' : '#64748B' }}>{donePct}%</span>
+                </div>
+                <div className="h-1.5 bg-line rounded-full overflow-hidden mt-2">
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${p}%` }} />
+                </div>
+                {can('production', 'update') && o.status === 'open' && (
+                  <div className="mt-3 pt-2 border-t border-line flex gap-3 text-xs">
+                    <button onClick={() => statusMut.mutate({ id: o._id, status: 'done' })} className="text-accent hover:underline">Mark done</button>
+                    <button onClick={() => statusMut.mutate({ id: o._id, status: 'cancelled' })} className="text-steel hover:text-stopped">Cancel</button>
+                  </div>
+                )}
+                {can('production', 'update') && o.status !== 'open' && (
+                  <div className="mt-3 pt-2 border-t border-line text-xs">
+                    <button onClick={() => statusMut.mutate({ id: o._id, status: 'open' })} className="text-steel hover:text-accent">Reopen</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {creating && (
+        <Modal title="New order" subtitle="Progress counts pieces made from the moment it opens" icon={ClipboardList} onClose={() => setCreating(false)} maxW="max-w-sm">
+          <div className="space-y-3">
+            <Field label="Order number" value={orderNo} onChange={setOrderNo} placeholder="ORD-1001" />
+            <div>
+              <div className="label mb-1.5">DIA</div>
+              <select value={diaId} onChange={(e) => setDiaId(e.target.value)}
+                className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                <option value="">Select…</option>
+                {dias.filter((d) => d.active).map((d) => <option key={d._id} value={d._id}>{d.name}{d.dims ? ` · ${d.dims}` : ''}</option>)}
+              </select>
+            </div>
+            <Field label="Quantity (pieces)" value={qty} onChange={(v) => setQty(v.replace(/\D/g, ''))} placeholder="500" />
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setCreating(false)} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Cancel</button>
+              <button onClick={() => createMut.mutate()} disabled={!orderNo.trim() || !diaId || !Number(qty) || createMut.isPending}
+                className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
+                {createMut.isPending ? 'Opening…' : 'Open order'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const fmtNumLocal = (n: number): string => new Intl.NumberFormat('en-IN').format(n);
+
+// ── Break schedule — planned daily pauses, excluded from every target ────────
+function BreaksSection(): JSX.Element {
+  const qc = useQueryClient();
+  const { breaks: saved } = useAppConfig();
+  const [draft, setDraft] = useState<BreakWindow[] | null>(null);   // null = mirror server
+  const rows = draft ?? saved;
+
+  const saveMut = useMutation({
+    mutationFn: (b: BreakWindow[]) => productionApi.setBreaks(b),
+    onSuccess: () => { toast.success('Break schedule saved — targets now exclude these windows'); setDraft(null); qc.invalidateQueries({ queryKey: ['app-config'] }); qc.invalidateQueries({ queryKey: ['targets-report'] }); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not save breaks'),
+  });
+  const patch = (i: number, p: Partial<BreakWindow>) =>
+    setDraft((rows.map((b, k) => (k === i ? { ...b, ...p } : b))));
+  const valid = rows.every((b) => b.name.trim() && /^\d{2}:\d{2}$/.test(b.start) && /^\d{2}:\d{2}$/.test(b.end));
+
+  return (
+    <div className="px-4 sm:px-6 pb-2 space-y-3">
+      <h2 className="font-semibold text-sm text-primary flex items-center gap-1.5"><Coffee size={15} className="text-accent" /> Break schedule</h2>
+      <div className="panel p-4 space-y-2">
+        <p className="text-xs text-steel">Daily planned pauses (plant clock). Targets exclude these windows everywhere — lunch never reads as "behind target".</p>
+        {rows.map((b, i) => (
+          <div key={i} className="flex items-center gap-2 flex-wrap">
+            <input value={b.name} onChange={(e) => patch(i, { name: e.target.value })} placeholder="Lunch"
+              className="flex-1 min-w-[120px] bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
+            <input type="time" value={b.start} onChange={(e) => patch(i, { start: e.target.value })}
+              className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm outline-none focus:border-accent" />
+            <span className="text-steel text-xs">to</span>
+            <input type="time" value={b.end} onChange={(e) => patch(i, { end: e.target.value })}
+              className="bg-base border border-line rounded-lg px-2 py-1.5 text-sm outline-none focus:border-accent" />
+            <button onClick={() => setDraft(rows.filter((_, k) => k !== i))} title="Remove" className="p-1.5 text-steel hover:text-stopped"><X size={13} /></button>
+          </div>
+        ))}
+        <div className="flex items-center justify-between pt-1">
+          <button onClick={() => setDraft([...rows, { name: '', start: '13:00', end: '13:30' }])}
+            className="flex items-center gap-1 text-xs text-accent hover:underline"><Plus size={12} /> Add break</button>
+          {draft !== null && (
+            <button onClick={() => saveMut.mutate(rows)} disabled={!valid || saveMut.isPending}
+              className="px-3.5 py-1.5 rounded-lg bg-accent text-white text-xs font-medium disabled:opacity-50">
+              {saveMut.isPending ? 'Saving…' : 'Save schedule'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

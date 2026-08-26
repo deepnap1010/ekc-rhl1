@@ -36,6 +36,9 @@ import type {
   TargetRow,
   TargetsMeta,
   AuditRow,
+  ProductionOrder,
+  OperatorSession,
+  BreakWindow,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -134,6 +137,13 @@ export const productionApi = {
   unassign: (machineRef: string) => del<{ ended: boolean }>(`/production/assignments/current/${encodeURIComponent(machineRef)}`),
   targets: (params: Params) => get<TargetRow[], TargetsMeta>('/production/targets', params),
   audit: (params?: Params) => get<AuditRow[]>('/production/audit', params),
+  setBreaks: (breaks: BreakWindow[]) => api.put('/production/breaks', { breaks }) as unknown as Promise<ApiResponse<{ breaks: BreakWindow[] }>>,
+  orders: () => get<ProductionOrder[]>('/production/orders'),
+  createOrder: (b: { orderNo: string; diaId: string; quantity: number; notes?: string }) => post<ProductionOrder>('/production/orders', b),
+  updateOrder: (id: string, status: 'open' | 'done' | 'cancelled') => patch<ProductionOrder>(`/production/orders/${id}`, { status }),
+  currentOperators: () => get<OperatorSession[]>('/production/operators/current'),
+  setOperator: (b: { machineRef: string; userId: string }) => post<OperatorSession>('/production/operators', b),
+  endOperator: (machineRef: string) => del<{ ended: boolean }>(`/production/operators/current/${encodeURIComponent(machineRef)}`),
 };
 
 export const rbacApi = {

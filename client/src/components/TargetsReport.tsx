@@ -30,13 +30,14 @@ function TargetsReportInner({ machineId, from, to }: {
   const qc = useQueryClient();
   const [groupBy, setGroupBy] = useState<'day' | 'hour'>('day');
   const [adjust, setAdjust] = useState(false);
+  const [operator, setOperator] = useState('');
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [machineId, from, to, groupBy]);
+  useEffect(() => { setPage(1); }, [machineId, from, to, groupBy, operator]);
 
-  const params = { from, to, machineId: machineId || undefined, groupBy };
+  const params = { from, to, machineId: machineId || undefined, groupBy, operator: operator || undefined };
   const pageQ = (p: number) => ({
-    queryKey: ['targets-report', machineId, from, to, groupBy, size, p],
+    queryKey: ['targets-report', machineId, from, to, groupBy, operator, size, p],
     queryFn: () => productionApi.targets({ ...params, page: p, limit: size }),
   });
   const { data, isLoading, isFetching } = useQuery({
@@ -58,9 +59,9 @@ function TargetsReportInner({ machineId, from, to }: {
     setExporting(true);
     try {
       const all = await productionApi.targets({ ...params, page: 1, limit: 2000 }).then((r) => r.data);
-      const header = 'Bucket,Machine,DIA,Stage,Assigned (s),Downtime (s),Target,Target (downtime-adjusted),Actual,Achievement (%)';
+      const header = 'Bucket,Machine,DIA,Stage,Operator,Assigned (s),Break (s),Downtime (s),Target,Target (downtime-adjusted),Actual,Achievement (%)';
       const lines = (all || []).map((r) => [
-        r.bucket, r.machineRef, r.dia, r.stage, Math.round(r.assignedSec), Math.round(r.downtimeSec),
+        r.bucket, r.machineRef, r.dia, r.stage, r.operator || '', Math.round(r.assignedSec), Math.round(r.breakSec), Math.round(r.downtimeSec),
         r.target.toFixed(2), r.targetAdj.toFixed(2), r.actual,
         pct(r.actual, tOf(r))?.toFixed(1) ?? '',
       ].join(','));
@@ -121,6 +122,14 @@ function TargetsReportInner({ machineId, from, to }: {
                 </button>
               ))}
             </div>
+            {(meta?.operators || []).length > 0 && (
+              <select value={operator} onChange={(e) => setOperator(e.target.value)}
+                className="bg-base border border-line rounded-lg px-2.5 py-1.5 outline-none focus:border-accent/50"
+                title="Only rows from this operator's sessions">
+                <option value="">All operators</option>
+                {(meta?.operators || []).map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            )}
             <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Target counts only the time the machine was not idle/stopped/offline">
               <input type="checkbox" checked={adjust} onChange={(e) => setAdjust(e.target.checked)} className="accent-[#0D9488]" />
               <span className="text-steel">Subtract downtime from targets</span>
@@ -142,6 +151,7 @@ function TargetsReportInner({ machineId, from, to }: {
                   <th className="text-left label px-4 py-2.5">{groupBy === 'day' ? 'Day' : 'Hour'}</th>
                   <th className="text-left label px-4 py-2.5">Machine</th>
                   <th className="text-left label px-4 py-2.5">DIA · Stage</th>
+                  {(meta?.operators || []).length > 0 && <th className="text-left label px-4 py-2.5">Operator</th>}
                   <th className="text-right label px-4 py-2.5">Target</th>
                   <th className="text-right label px-4 py-2.5">Actual</th>
                   <th className="text-right label px-4 py-2.5">Achievement</th>
@@ -157,6 +167,9 @@ function TargetsReportInner({ machineId, from, to }: {
                       <td className="px-4 py-2.5 data text-xs">{groupBy === 'day' ? fmtDate(r.bucket) : fmtTime(r.bucket)}</td>
                       <td className="px-4 py-2.5 data text-xs font-medium">{r.machineRef}</td>
                       <td className="px-4 py-2.5 text-xs text-steel">{r.dia} · {r.stage}</td>
+                      {(meta?.operators || []).length > 0 && (
+                        <td className="px-4 py-2.5 text-xs">{r.operator || <span className="text-steel/50">—</span>}</td>
+                      )}
                       <td className="px-4 py-2.5 data text-xs text-right">{fmtTarget(t)}</td>
                       <td className="px-4 py-2.5 data text-xs text-right font-semibold">{fmtNum(r.actual)}</td>
                       <td className="px-4 py-2.5 data text-xs text-right font-semibold" style={{ color: pctColor(p) }}>

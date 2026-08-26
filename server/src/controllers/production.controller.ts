@@ -11,6 +11,10 @@ import { ok, created, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
 import { cached } from '../utils/cache.js';
 import { computeTargets, rollupToDays, type TargetRow } from '../services/targets.service.js';
+import { Order } from '../models/Order.js';
+import { OperatorSession } from '../models/OperatorSession.js';
+import { AppConfig } from '../models/AppConfig.js';
+import { User } from '../models/User.js';
 
 interface ScopedUser { _id?: unknown; name?: string; isSuperAdmin?: boolean; assignedMachines?: string[] }
 
@@ -252,7 +256,10 @@ export const targetsReport = asyncHandler(async (req, res) => {
   const key = `targets:${fromD.toISOString()}:${toD.toISOString()}:${(refs || []).join(',') || '*'}`;
   const { rows: hourly, machines } = await cached(key, 60_000, () => computeTargets(fromD, toD, refs ?? null));
 
-  const rows = groupBy === 'day' ? rollupToDays(hourly) : hourly;
+  let rows = groupBy === 'day' ? rollupToDays(hourly) : hourly;
+  // Everyone who appears in the window — feeds the report's operator filter.
+  const operators = [...new Set(hourly.map((r) => r.operator).filter(Boolean))].sort() as string[];
+  if (q.operator) rows = rows.filter((r) => r.operator === q.operator);
   rows.sort((a, b) => b.bucket.localeCompare(a.bucket) || a.machineRef.localeCompare(b.machineRef));
 
   // Rollups cover the WHOLE window, whatever page the table is on.
@@ -272,8 +279,146 @@ export const targetsReport = asyncHandler(async (req, res) => {
   return ok(res, rows.slice(skip, skip + lim) as TargetRow[], {
     total: rows.length, page, limit: lim, groupBy,
     from: fromD.toISOString(), to: toD.toISOString(),
-    machines: machines.length, byDia, totals,
+    machines: machines.length, byDia, totals, operators,
   });
+});
+
+// ── Break schedule ───────────────────────────────────────────────────────────
+
+// PUT /production/breaks { breaks: [{name, start, end}] } — the plant's daily
+// planned pauses. Targets exclude them (see targets.service), so lunch never
+// reads as "behind target". Lives in app_config; gated by production.update
+// because it changes what every target means.
+const TIME_RE = /^\d{2}:\d{2}$/;
+export const setBreaks = asyncHandler(async (req, res) => {
+  const breaks = (req.body as { breaks?: unknown })?.breaks;
+  if (!Array.isArray(breaks) || breaks.length > 10) return fail(res, 400, 'breaks must be a list of at most 10 entries');
+  for (const b of breaks as { name?: string; start?: string; end?: string }[]) {
+    if (!b?.name?.trim() || !TIME_RE.test(b.start || '') || !TIME_RE.test(b.end || '')) {
+      return fail(res, 400, 'each break needs a name and HH:MM start/end');
+    }
+  }
+  const clean = (breaks as { name: string; start: string; end: string }[])
+    .map((b) => ({ name: b.name.trim(), start: b.start, end: b.end }));
+  const beforeDoc = await AppConfig.findOne({ key: 'global' }).select({ breaks: 1 }).lean();
+  const doc = await AppConfig.findOneAndUpdate(
+    { key: 'global' }, { $set: { breaks: clean } }, { new: true, upsert: true },
+  ).lean();
+  audit(req.user as ScopedUser, 'breaks.update', { type: 'config', label: 'Break schedule' },
+    { breaks: beforeDoc?.breaks || [] }, { breaks: clean });
+  return ok(res, { breaks: doc.breaks });
+});
+
+// ── Orders ───────────────────────────────────────────────────────────────────
+
+// Progress is DERIVED: pieces counted on machines running the order's DIA since
+// the order opened. Capped at 92 days of lookback (same as the report).
+async function orderProgress(o: { _id: unknown; diaName: string; startedAt: Date; closedAt: Date | null }): Promise<number> {
+  const from = new Date(o.startedAt);
+  const to = new Date(Math.min(o.closedAt ? new Date(o.closedAt).getTime() : Date.now(), from.getTime() + 92 * 24 * 3_600_000, Date.now()));
+  if (to <= from) return 0;
+  return cached(`orderprog:${String(o._id)}:${to.getTime() > Date.now() - 120_000 ? 'live' : to.toISOString()}`, 60_000, async () => {
+    const { rows } = await computeTargets(from, to, null);
+    return rows.filter((r) => r.dia === o.diaName).reduce((n, r) => n + r.actual, 0);
+  });
+}
+
+// GET /production/orders — newest first, with derived progress.
+export const listOrders = asyncHandler(async (_req, res) => {
+  const orders = await Order.find().sort({ status: 1, createdAt: -1 }).limit(100).lean();
+  const out = [];
+  for (const o of orders) {
+    out.push({ ...o, produced: await orderProgress(o) });
+  }
+  return ok(res, out);
+});
+
+// POST /production/orders { orderNo, diaId, quantity, notes }
+export const createOrder = asyncHandler(async (req, res) => {
+  const { orderNo, diaId, quantity, notes } = req.body as Record<string, unknown>;
+  const no = String(orderNo || '').trim();
+  const qty = Number(quantity);
+  if (!no) return fail(res, 400, 'Order number is required');
+  if (!Number.isInteger(qty) || qty < 1 || qty > 1_000_000) return fail(res, 400, 'Quantity must be a whole number of pieces');
+  if (!mongoose.isValidObjectId(String(diaId || ''))) return fail(res, 400, 'Pick a DIA');
+  const dia = await DiaConfig.findById(String(diaId)).lean();
+  if (!dia) return fail(res, 404, 'DIA not found');
+  const who = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
+  try {
+    const doc = await Order.create({
+      orderNo: no, diaId: dia._id, diaName: dia.name, quantity: qty,
+      notes: String(notes || ''), startedAt: new Date(), createdBy: who,
+    });
+    audit(req.user as ScopedUser, 'order.create', { type: 'order', id: String(doc._id), label: `${no} — ${dia.name} × ${qty}` }, null, { orderNo: no, dia: dia.name, quantity: qty });
+    return created(res, { ...doc.toObject(), produced: 0 });
+  } catch (e: unknown) {
+    if ((e as { code?: number })?.code === 11000) return fail(res, 409, `Order "${no}" already exists`);
+    throw e;
+  }
+});
+
+// PATCH /production/orders/:id { status } — done / cancelled / reopen.
+export const updateOrder = asyncHandler(async (req, res) => {
+  const { status } = req.body as { status?: string };
+  if (!['open', 'done', 'cancelled'].includes(String(status))) return fail(res, 400, 'status must be open, done or cancelled');
+  const doc = await Order.findById(req.params.id);
+  if (!doc) return fail(res, 404, 'Order not found');
+  const before = doc.status;
+  doc.status = status as 'open' | 'done' | 'cancelled';
+  doc.closedAt = status === 'open' ? null : new Date();
+  await doc.save();
+  audit(req.user as ScopedUser, 'order.status', { type: 'order', id: String(doc._id), label: doc.orderNo },
+    { status: before }, { status });
+  return ok(res, { ...doc.toObject(), produced: await orderProgress(doc) });
+});
+
+// ── Operator sessions ────────────────────────────────────────────────────────
+
+// GET /production/operators/current — who is on which machine right now.
+export const currentOperators = asyncHandler(async (req, res) => {
+  const scope = machineScope(req.user as ScopedUser);
+  const q: Record<string, unknown> = { endedAt: null };
+  if (scope) q.machineRef = { $in: scope };
+  return ok(res, await OperatorSession.find(q).sort({ machineRef: 1 }).lean());
+});
+
+// POST /production/operators { machineRef, userId } — handover: closes the
+// machine's open session, starts the new one. The report splits its rows at
+// this instant, so each person answers for their own pieces.
+export const setOperator = asyncHandler(async (req, res) => {
+  const { machineRef, userId } = req.body as Record<string, string | undefined>;
+  const ref = String(machineRef || '').trim();
+  if (!ref || !userId) return fail(res, 400, 'machineRef and userId are required');
+  const scope = machineScope(req.user as ScopedUser);
+  if (scope && !scope.includes(ref)) return fail(res, 403, 'You are not assigned to this machine');
+  const user = await User.findById(userId).select({ name: 1 }).lean();
+  if (!user) return fail(res, 404, 'Employee not found');
+  const now = new Date();
+  const prev = await OperatorSession.findOneAndUpdate(
+    { machineRef: ref, endedAt: null }, { $set: { endedAt: now } },
+  ).lean();
+  const who = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
+  const doc = await OperatorSession.create({
+    machineRef: ref, userId: String(userId), userName: user.name || 'Unknown',
+    startedAt: now, endedAt: null, startedBy: who,
+  });
+  audit(req.user as ScopedUser, 'operator.start', { type: 'operator', id: String(doc._id), label: `${ref} → ${user.name}` },
+    prev ? { operator: prev.userName } : null, { operator: user.name });
+  return created(res, doc.toObject());
+});
+
+// DELETE /production/operators/current/:machineRef — nobody on the machine.
+export const endOperator = asyncHandler(async (req, res) => {
+  const ref = String(req.params.machineRef || '').trim();
+  const scope = machineScope(req.user as ScopedUser);
+  if (scope && !scope.includes(ref)) return fail(res, 403, 'You are not assigned to this machine');
+  const prev = await OperatorSession.findOneAndUpdate(
+    { machineRef: ref, endedAt: null }, { $set: { endedAt: new Date() } },
+  ).lean();
+  if (!prev) return fail(res, 404, 'No operator is signed on to this machine');
+  audit(req.user as ScopedUser, 'operator.end', { type: 'operator', id: String(prev._id), label: `${ref} — ${prev.userName}` },
+    { operator: prev.userName }, null);
+  return ok(res, { ended: true });
 });
 
 // GET /production/audit — the change history, newest first.

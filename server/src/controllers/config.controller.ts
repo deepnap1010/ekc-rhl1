@@ -35,6 +35,7 @@ export const getConfig = asyncHandler(async (_req, res) => {
   const doc = await AppConfig.findOne({ key: 'global' }).lean();
   return ok(res, {
     shifts: doc?.shifts?.length ? doc.shifts : DEFAULTS.shifts,
+    breaks: doc?.breaks || [],
     products: doc?.products?.length ? doc.products : DEFAULTS.products,
     processStages: doc?.processStages?.length ? doc.processStages : DEFAULTS.processStages,
     stored: !!doc,

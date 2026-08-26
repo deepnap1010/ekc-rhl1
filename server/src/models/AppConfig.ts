@@ -6,10 +6,13 @@
 import mongoose from 'mongoose';
 
 export interface IShift { name: string; start: string; end: string }
+// A planned daily pause (lunch, tea) — HH:MM, plant clock. Targets exclude it.
+export interface IBreak { name: string; start: string; end: string }
 
 export interface IAppConfig {
   key: string;                 // always 'global' (singleton)
   shifts: IShift[];
+  breaks: IBreak[];
   products: string[];
   processStages: string[];
   updatedBy?: string;
@@ -24,6 +27,7 @@ const appConfigSchema = new mongoose.Schema<IAppConfig>(
   {
     key:           { type: String, required: true, unique: true },
     shifts:        { type: [shiftSchema], default: [] },
+    breaks:        { type: [shiftSchema], default: [] },   // same {name,start,end} shape
     products:      { type: [String], default: [] },
     processStages: { type: [String], default: [] },
     updatedBy:     { type: String },

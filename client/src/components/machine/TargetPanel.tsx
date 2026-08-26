@@ -4,13 +4,18 @@
 // assigned seconds ÷ the assignment's frozen processing time; produced = the
 // same verified counter steps every other surface shows. Over 100% keeps
 // filling — beating the target is the good case, not an error.
-import { Target } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
-import { productionApi } from '../../api/endpoints';
+import { useState } from 'react';
+import { Target, UserRound } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { productionApi, userApi } from '../../api/endpoints';
 import { useCurrentAssignment } from './AssignDia';
+import Modal from '../Modal';
+import { useAuthStore } from '../../store/auth';
+import { toast } from '../../store/toast';
+import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtNum } from '../../lib/format';
-import { assignedMs, targetUnits, achievementPct, fmtTarget, fmtProcessing } from '../../lib/targets';
-import type { MachineActivityRow } from '../../types/api';
+import { netAssignedMs, targetUnits, achievementPct, fmtTarget, fmtProcessing } from '../../lib/targets';
+import type { MachineActivityRow, OperatorSession } from '../../types/api';
 
 export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
   code: string;
@@ -19,6 +24,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
   dayTo: string;
 }): JSX.Element | null {
   const current = useCurrentAssignment(code);
+  const { breaks } = useAppConfig();   // planned pauses — targets exclude them
 
   // Hour-by-hour actual vs target for the day — the operator's pacing view.
   // Same report the Targets tab reads, scoped to this machine and today.
@@ -44,7 +50,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
 
   const winFrom = new Date(dayFrom).getTime();
   const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
-  const ms = assignedMs(current, winFrom, winTo);
+  const ms = netAssignedMs(current, winFrom, winTo, breaks);
   const sec = current.snapshot.processingSec;
   const target = targetUnits(sec, ms);
   const produced = actRow?.production ?? null;
@@ -65,6 +71,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
         <span className="text-[11px] text-steel">
           {current.snapshot.diaName}{current.snapshot.dims ? ` · ${current.snapshot.dims}` : ''} — {current.snapshot.stageName} · {fmtProcessing(sec)}/unit
         </span>
+        <OperatorBadge code={code} />
       </div>
 
       <div className="flex items-center gap-6 flex-wrap">
@@ -139,5 +146,88 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
         );
       })()}
     </div>
+  );
+}
+
+// ── Who is on the machine ────────────────────────────────────────────────────
+// The handover flow: starting a session closes the previous one, and the
+// targets report splits its rows at that instant — each person answers for the
+// pieces counted on their watch. Holders of production.update change it;
+// everyone else just sees the name.
+function OperatorBadge({ code }: { code: string }): JSX.Element | null {
+  const can = useAuthStore((s) => s.can);
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [userId, setUserId] = useState('');
+  const editable = can('production', 'update');
+
+  const { data: sessions } = useQuery({
+    queryKey: ['operators', 'current'],
+    queryFn: () => productionApi.currentOperators().then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const mine: OperatorSession | undefined =
+    (sessions || []).find((s) => s.machineRef.toUpperCase() === code.toUpperCase());
+
+  const { data: users } = useQuery({
+    queryKey: ['users', 'operator-pick'],
+    queryFn: () => userApi.list({ limit: 200 }).then((r) => r.data),
+    enabled: open,
+  });
+
+  const done = () => { qc.invalidateQueries({ queryKey: ['operators'] }); qc.invalidateQueries({ queryKey: ['targets-report'] }); setOpen(false); };
+  const setMut = useMutation({
+    mutationFn: () => productionApi.setOperator({ machineRef: code, userId }),
+    onSuccess: (r) => { toast.success(`${r.data.userName} is on ${code}`); done(); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not set operator'),
+  });
+  const endMut = useMutation({
+    mutationFn: () => productionApi.endOperator(code),
+    onSuccess: () => { toast.success('Session ended'); done(); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not end session'),
+  });
+
+  if (!mine && !editable) return null;
+  return (
+    <>
+      <button
+        onClick={editable ? () => setOpen(true) : undefined} disabled={!editable}
+        title={editable ? 'Hand the machine over' : undefined}
+        className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${
+          mine ? 'border-accent/30 bg-accent/10 text-accent' : 'border-line bg-base text-steel'
+        } ${editable ? 'hover:border-accent cursor-pointer' : 'cursor-default'}`}
+      >
+        <UserRound size={11} /> {mine ? mine.userName : 'No operator'}
+      </button>
+      {open && (
+        <Modal title={`Operator — ${code}`} subtitle="Report rows split at every handover" icon={UserRound} onClose={() => setOpen(false)} maxW="max-w-sm">
+          <div className="space-y-4">
+            <div>
+              <div className="label mb-1.5">Employee</div>
+              <select value={userId} onChange={(e) => setUserId(e.target.value)}
+                className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                <option value="">Select…</option>
+                {(users || []).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              {mine ? (
+                <button onClick={() => endMut.mutate()} disabled={endMut.isPending}
+                  className="text-xs text-stopped hover:underline disabled:opacity-50">End {mine.userName}'s session</button>
+              ) : <span />}
+              <span className="flex gap-2">
+                <button onClick={() => setOpen(false)} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Cancel</button>
+                <button onClick={() => setMut.mutate()} disabled={!userId || setMut.isPending}
+                  className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
+                  {setMut.isPending ? 'Starting…' : mine ? 'Hand over' : 'Start session'}
+                </button>
+              </span>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }

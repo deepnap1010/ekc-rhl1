@@ -23,6 +23,39 @@ export function assignedMs(a: AssignmentRange, winFrom: number, winTo: number): 
   return Math.max(0, e - s);
 }
 
+const IST_MS = 5.5 * 3_600_000;
+const DAY_MS = 24 * 3_600_000;
+
+/** Overlap of [s, e) with the plant's DAILY break windows (HH:MM, plant clock).
+ *  Mirrors the server (services/targets.service#breakOverlapMs) so a card and
+ *  the report can never disagree about what lunch costs a target. */
+export function breakOverlapMs(s: number, e: number, breaks: { start: string; end: string }[]): number {
+  if (!breaks?.length || e <= s) return 0;
+  const hm = (v: string): number => {
+    const [h, m] = v.split(':').map(Number);
+    return (h * 60 + (m || 0)) * 60_000;
+  };
+  let sum = 0;
+  const base0 = Math.floor((s + IST_MS) / DAY_MS) * DAY_MS - IST_MS;
+  for (const base of [base0 - DAY_MS, base0, base0 + DAY_MS]) {
+    for (const b of breaks) {
+      const bs = base + hm(b.start);
+      let be = base + hm(b.end);
+      if (be <= bs) be += DAY_MS;
+      sum += Math.max(0, Math.min(be, e) - Math.max(bs, s));
+    }
+  }
+  return sum;
+}
+
+/** Assigned time NET of planned breaks — what targets divide by. */
+export function netAssignedMs(a: AssignmentRange, winFrom: number, winTo: number, breaks: { start: string; end: string }[] = []): number {
+  const s = Math.max(new Date(a.effectiveFrom).getTime(), winFrom);
+  const e = Math.min(a.effectiveTo ? new Date(a.effectiveTo).getTime() : winTo, winTo);
+  if (e <= s) return 0;
+  return Math.max(0, (e - s) - breakOverlapMs(s, e, breaks));
+}
+
 /** Exact target units for a stretch of assigned time. */
 export const targetUnits = (processingSec: number, ms: number): number =>
   processingSec > 0 ? (ms / 1000) / processingSec : 0;
