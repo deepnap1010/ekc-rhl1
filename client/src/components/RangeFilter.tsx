@@ -30,7 +30,18 @@ interface RangeFilterProps {
 export default function RangeFilter({ value, onChange, range, className = '', title = 'Change the window' }: RangeFilterProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [picking, setPicking] = useState(false);
+  // The menu opens toward the side with room. It used to be right-aligned
+  // unconditionally, which suits the dashboard's top-right button — but on the
+  // machine History tab the button sits at the CONTENT'S LEFT edge, so a 224px
+  // menu hung leftward under the sidebar and only its last letters showed.
+  const [alignLeft, setAlignLeft] = useState(false);
   const box = useRef<HTMLDivElement | null>(null);
+
+  const toggle = () => {
+    const r = box.current?.getBoundingClientRect();
+    if (r) setAlignLeft(window.innerWidth - r.left >= 240);   // menu width + breathing room
+    setOpen((v) => !v);
+  };
 
   // Close on outside click / Escape — a menu that traps the page is worse than
   // no menu. Listeners only exist while it's open.
@@ -50,7 +61,7 @@ export default function RangeFilter({ value, onChange, range, className = '', ti
   return (
     <div ref={box} className={`relative ${className}`}>
       <button
-        type="button" onClick={() => setOpen((v) => !v)} title={title}
+        type="button" onClick={toggle} title={title}
         className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-base px-2.5 py-1.5 text-sm text-primary hover:border-accent/40 transition-colors max-w-full"
       >
         <Calendar size={14} className="text-accent shrink-0" />
@@ -59,7 +70,7 @@ export default function RangeFilter({ value, onChange, range, className = '', ti
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-56 panel p-1 shadow-lg">
+        <div className={`absolute ${alignLeft ? 'left-0' : 'right-0'} z-30 mt-1 w-56 panel p-1 shadow-lg`}>
           {DATE_PRESETS.map((p) => (
             <MenuItem key={p.value} active={value.preset === p.value} onClick={() => { onChange({ ...value, preset: p.value }); setOpen(false); }}>
               {p.label}
