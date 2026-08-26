@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../api/endpoints';
 import { StatusPill, Spinner, FreshnessPill } from '../components/ui';
+import { DiaChip } from '../components/machine/AssignDia';
 import ConfigurePanel from '../components/machine/ConfigurePanel';
 import MachineOverview from '../components/machine/MachineOverview';
 import ParametersModal from '../components/machine/MachineParameters';
@@ -84,6 +85,7 @@ export default function MachineDetail() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <DiaChip code={String(id)} />
             <FreshnessPill lastSeenAt={lastSeenAt} />
             <StatusPill status={status} />
           </div>

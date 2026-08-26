@@ -541,6 +541,44 @@ export interface DowntimeReport {
   byMachine: DowntimeReportMachineRow[];
 }
 
+// ─── Production targets (DIA) ─────────────────────────────────────────────
+export interface DiaStage {
+  key: string;
+  name: string;
+  seq: number;
+  processingSec: number;   // per unit
+  active: boolean;
+}
+export interface DiaConfig {
+  _id: string;
+  name: string;
+  capacity: string;
+  dims: string;
+  active: boolean;
+  stages: DiaStage[];
+  usedOn?: number;         // machines currently assigned to it
+  updatedAt?: string;
+  updatedBy?: { id?: string; name?: string };
+}
+export interface AssignmentSnapshot {
+  diaName: string;
+  capacity: string;
+  dims: string;
+  stageName: string;
+  processingSec: number;   // FROZEN at assignment time
+}
+export interface MachineAssignment {
+  _id: string;
+  machineRef: string;
+  diaId: string;
+  stageKey: string;
+  snapshot: AssignmentSnapshot;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  assignedBy?: { id?: string; name?: string };
+  note?: string;
+}
+
 // ─── Org chart ─────────────────────────────────────────────────────────────
 export type OrgChartUser = User;
 

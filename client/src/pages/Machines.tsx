@@ -3,7 +3,7 @@ import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, type LucideIcon } from 'lucide-react';
-import { machineApi } from '../api/endpoints';
+import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
@@ -11,6 +11,8 @@ import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
+import { assignedMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
+import { useAuthStore } from '../store/auth';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
@@ -20,7 +22,7 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { todayWindow } from '../store/filters';
 import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
 import ParametersModal from '../components/machine/MachineParameters';
-import type { Machine, MachineTick, MachineActivityRow } from '../types/api';
+import type { Machine, MachineTick, MachineActivityRow, MachineAssignment } from '../types/api';
 
 const TEAL = '#0D9488';
 const AMBER = '#D97706';
@@ -112,6 +114,19 @@ export default function Machines() {
     refetchInterval: 60000,
   });
   const actBy = new Map((dayAct?.data || []).map((r) => [r.code, r]));
+
+  // Current DIA assignment per machine — one fetch for the whole grid. The card
+  // turns TODAY's production into produced-vs-target the moment one exists.
+  const canProd = useAuthStore((s) => s.can)('production', 'view');
+  const { data: asgData } = useQuery({
+    queryKey: ['assignments', 'current'],
+    queryFn: () => productionApi.currentAssignments().then((r) => r.data),
+    enabled: canProd,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const asgBy = new Map((asgData || []).map((a) => [a.machineRef.toUpperCase(), a]));
 
   const allMachines = data?.data || [];
 
@@ -387,6 +402,8 @@ export default function Machines() {
               return (
                 <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
                   activity={actBy.get(ref)}
+                  assignment={asgBy.get(String(ref).toUpperCase())}
+                  dayFrom={dayFromISO} dayTo={dayToISO}
                   onParams={() => setParamsFor(m)} />
               );
             })}
@@ -416,10 +433,13 @@ interface MachineCardProps {
   machine: Machine;
   liveTick?: MachineTick;
   activity?: MachineActivityRow;        // rolling 24h uptime/downtime/idle
+  assignment?: MachineAssignment;       // current DIA + frozen processing time
+  dayFrom?: string;                     // the production-day window `activity` covers
+  dayTo?: string;
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, activity, onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -597,6 +617,33 @@ function MachineCard({ machine, liveTick, activity, onParams }: MachineCardProps
           <div className="w-28 h-12 shrink-0 self-center"><Sparkline data={trend.spark} height={48} color={TEAL} /></div>
         )}
       </div>
+
+      {/* Produced vs target — only when a DIA is assigned. Target = the day's
+          assigned seconds on the FROZEN snapshot; below 60% runs amber. */}
+      {assignment && dayFrom && dayTo && !furnace && activity?.production != null && (() => {
+        const winFrom = new Date(dayFrom).getTime();
+        const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
+        const ms = assignedMs(assignment, winFrom, winTo);
+        const target = targetUnits(assignment.snapshot.processingSec, ms);
+        const pct = achievementPct(activity.production, assignment.snapshot.processingSec, ms);
+        if (target <= 0) return null;
+        return (
+          <div className="mb-3 -mt-1">
+            <div className="flex items-baseline justify-between text-[10px] mb-1">
+              <span className="text-steel truncate">{assignment.snapshot.diaName} · {assignment.snapshot.stageName}</span>
+              <span className="data font-semibold" style={{ color: pct != null && pct < 60 ? '#D97706' : '#0D9488' }}>
+                {fmtNum(activity.production)} / {fmtTarget(target)}{pct != null ? ` · ${Math.round(pct)}%` : ''}
+              </span>
+            </div>
+            <div className="h-1 bg-line rounded-full overflow-hidden">
+              <div className="h-full rounded-full" style={{
+                width: `${Math.min(pct ?? 0, 100)}%`,
+                background: pct != null && pct < 60 ? '#D97706' : '#0D9488',
+              }} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* TODAY's breakdown: uptime, idle, stopped, and the downtime TOTAL
           (idle + stopped + signal-lost). */}

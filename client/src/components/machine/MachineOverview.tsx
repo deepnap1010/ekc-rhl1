@@ -12,6 +12,7 @@ import {
   ArrowRight, Search, BarChart3, Bell, ChevronRight, ChevronDown, LineChart, Calendar,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../../api/endpoints';
+import TargetPanel from './TargetPanel';
 import { StatusPill } from '../ui';
 import PressureRing from '../PressureRing';
 import Sparkline from '../Sparkline';
@@ -138,6 +139,9 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           </div>
         </div>
       </div>
+
+      {/* Operator target — what am I making, what's the target, how far am I */}
+      <TargetPanel code={String(id)} actRow={actRow} dayFrom={dayFromISO} dayTo={dayToISO} />
 
       {/* Row 1 — equal-height cards (grid stretches each card in the row to match) */}
       <div className="grid lg:grid-cols-3 gap-4">

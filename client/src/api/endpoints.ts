@@ -31,6 +31,8 @@ import type {
   PermissionMatrix,
   OrgChartUser,
   UserWritePayload,
+  DiaConfig,
+  MachineAssignment,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -110,6 +112,23 @@ export const reportsApi = {
   downtime: (params?: Params) => get<DowntimeReport>('/reports/downtime', params),
   fleet: (params?: Params) => get<FleetReport>('/reports/fleet', params),
   reliability: (params?: Params) => get<ReliabilityReport>('/reports/reliability', params),
+};
+
+export interface DiaWritePayload {
+  name?: string; capacity?: string; dims?: string;
+  // seq is assigned server-side from list order; key omitted on new stages
+  stages?: { key?: string; name: string; processingSec: number; active?: boolean }[];
+}
+export const productionApi = {
+  dia: () => get<DiaConfig[]>('/production/dia'),
+  createDia: (b: DiaWritePayload) => post<DiaConfig>('/production/dia', b),
+  updateDia: (id: string, b: DiaWritePayload) => api.put(`/production/dia/${id}`, b) as unknown as Promise<ApiResponse<DiaConfig>>,
+  setDiaActive: (id: string, active: boolean) => post<DiaConfig>(`/production/dia/${id}/active`, { active }),
+  currentAssignments: () => get<MachineAssignment[]>('/production/assignments/current'),
+  assignments: (params?: Params) => get<MachineAssignment[]>('/production/assignments', params),
+  assign: (b: { machineRef: string; diaId: string; stageKey: string; note?: string }) =>
+    post<MachineAssignment>('/production/assignments', b),
+  unassign: (machineRef: string) => del<{ ended: boolean }>(`/production/assignments/current/${encodeURIComponent(machineRef)}`),
 };
 
 export const rbacApi = {

@@ -18,6 +18,7 @@ import {
 } from '../../lib/machineConfig';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import type { Machine } from '../../types/api';
+import DiaAssignmentSection from './DiaAssignmentSection';
 
 const numOrU = (v: string): number | undefined => (v === '' ? undefined : Number(v));
 
@@ -66,6 +67,11 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
           {online ? <Wifi size={13} /> : <WifiOff size={13} />} {online ? 'Online' : 'Offline'} · last seen {fmtTime(lastSeen)}
         </span>
       </div>
+
+      {/* DIA + target assignment — the one Configure section that writes to the
+          SERVER (assignment history + audit), because targets must survive this
+          browser. Everything below it stays local-only. */}
+      <DiaAssignmentSection code={String(id).toUpperCase()} />
 
       {/* Current readings (live, real) */}
       {preview.length > 0 && (

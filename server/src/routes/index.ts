@@ -11,6 +11,7 @@ import * as reports from '../controllers/reports.controller.js';
 import * as alerts from '../controllers/alerts.controller.js';
 import * as events from '../controllers/events.controller.js';
 import * as config from '../controllers/config.controller.js';
+import * as prod from '../controllers/production.controller.js';
 
 const r = Router();
 
@@ -55,6 +56,17 @@ r.get('/downtime', authorize('downtime'), downtime.listDowntime);
 r.get('/downtime/summary', authorize('downtime'), downtime.downtimeSummary);
 r.patch('/downtime/:id/reason', authorize('downtime', 'update'), downtime.updateReason);
 r.patch('/downtime/:id/ack', authorize('downtime', 'update'), downtime.acknowledgeDowntime);
+
+// Production targets - DIA products, stages, machine assignments (module: production)
+r.get('/production/dia', authorize('production'), prod.listDia);
+r.post('/production/dia', authorize('production', 'create'), prod.createDia);
+r.put('/production/dia/:id', authorize('production', 'update'), prod.updateDia);
+r.post('/production/dia/:id/active', authorize('production', 'delete'), prod.setDiaActive);
+r.get('/production/assignments/current', authorize('production'), prod.currentAssignments);
+r.get('/production/assignments', authorize('production'), prod.listAssignments);
+r.post('/production/assignments', authorize('production', 'update'), prod.assignMachine);
+r.delete('/production/assignments/current/:machineRef', authorize('production', 'update'), prod.unassignMachine);
+r.get('/production/audit', authorize('production', 'admin'), prod.listAudit);
 
 // Reports
 r.get('/reports/overview', authorize('reports'), reports.overviewReport);

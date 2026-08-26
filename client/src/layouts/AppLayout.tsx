@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
-  Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon,
+  Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
@@ -28,6 +28,7 @@ const NAV: NavItem[] = [
   { to: '/history',   label: 'History Log',        icon: History,     module: 'history',   section: 'Monitoring' },
   { to: '/reports',   label: 'Reports',            icon: FileBarChart,module: 'reports',   section: 'Monitoring' },
   { to: '/alerts',    label: 'Alerts',             icon: Bell,        module: 'alerts',    section: 'Monitoring' },
+  { to: '/production',label: 'Production Targets', icon: Target,      module: 'production',section: 'Management' },
   { to: '/employees', label: 'Employees',          icon: Users,       module: 'employees', section: 'Management' },
   { to: '/orgchart',  label: 'Org Chart',          icon: Network,     module: 'orgchart',  section: 'Management' },
   { to: '/departments',label: 'Departments',       icon: Building2,   module: 'orgchart',  section: 'Management' },
