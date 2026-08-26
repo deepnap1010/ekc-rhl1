@@ -11,9 +11,9 @@
 // Window: every group follows the dashboard's date filter, and can be switched
 // to its own (today / yesterday / this week / … ) without disturbing the page.
 //
-// The page opens on the production LINES — the families that hold more than one
-// machine (cutting, SPG, bottom milling today). One-off machines wait behind
-// "View all machine groups" so fifteen panels don't bury the three that matter.
+// The families sit in a row of CIRCLES — one badge per group, production lines
+// first, with a live running-count dot. Clicking a circle opens that family's
+// panel (summary + machines) below; one family on screen at a time.
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
@@ -43,16 +43,18 @@ interface Props {
 }
 
 export default function MachineGroups({ rows, windowMs, windowLabel, from, to, signals, loading }: Props): JSX.Element {
-  const [showAll, setShowAll] = useState(false);
   const groups = groupMachines(rows);
-
-  // Derived, not configured: a family is any kind with more than one machine, so
-  // a second CNC lathe promotes that group to the front page by itself.
+  // Production lines (families with more than one machine) lead the row; the
+  // one-off machines follow as their own circles. Derived, never configured.
   const lines = groups.filter((g) => g.machines.length > 1);
   const singles = groups.filter((g) => g.machines.length === 1);
-  // Nothing to hide (or nothing but one-offs) → show everything, no button.
-  const collapsible = lines.length > 0 && singles.length > 0;
-  const visible = collapsible && !showAll ? lines : [...lines, ...singles];
+  const ordered = [...lines, ...singles];
+
+  // Which family is open. '' = none (all circles idle); the first line opens by
+  // default so the page never greets a supervisor with an empty space.
+  const [selected, setSelected] = useState<string | null>(null);
+  const activeKey = selected ?? ordered[0]?.key ?? '';
+  const active = ordered.find((g) => g.key === activeKey);
 
   if (loading && rows.length === 0) {
     return <div className="panel p-10 text-center text-sm text-steel">Reconstructing machine activity…</div>;
@@ -68,22 +70,42 @@ export default function MachineGroups({ rows, windowMs, windowLabel, from, to, s
 
   return (
     <div className="space-y-4">
-      {visible.map((g) => (
-        <GroupPanel key={g.key} label={g.label} rows={g.machines}
+      {/* The circle row — one badge per family, click to open it below */}
+      <div className="panel px-4 py-3 flex gap-1 overflow-x-auto">
+        {ordered.map((g) => {
+          const isActive = g.key === activeKey;
+          const running = g.machines.filter((m) => m.status === 'running').length;
+          return (
+            <button
+              key={g.key}
+              onClick={() => setSelected(g.key)}
+              title={`${g.label} — ${g.machines.length} machine${g.machines.length === 1 ? '' : 's'}, ${running} running`}
+              className="flex flex-col items-center gap-1.5 px-2.5 py-1 shrink-0 group/c"
+            >
+              <span className={`relative w-14 h-14 rounded-full flex items-center justify-center transition-all ${
+                isActive
+                  ? 'bg-accent/15 ring-2 ring-accent ring-offset-2 ring-offset-surface'
+                  : 'bg-base border border-line group-hover/c:border-accent/50'
+              }`}>
+                <Boxes size={22} className={isActive ? 'text-accent' : 'text-steel group-hover/c:text-accent'} />
+                {/* machine count, running state as the badge color */}
+                <span className={`absolute -bottom-0.5 -right-0.5 min-w-[20px] h-5 px-1 rounded-full text-[10px] font-bold flex items-center justify-center border-2 border-surface ${
+                  running > 0 ? 'bg-accent text-white' : 'bg-line text-steel'
+                }`}>{g.machines.length}</span>
+              </span>
+              <span className={`text-[11px] leading-tight max-w-[84px] truncate ${
+                isActive ? 'text-accent font-semibold' : 'text-steel group-hover/c:text-primary'
+              }`}>{g.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The chosen family — summary + its machines */}
+      {active && (
+        <GroupPanel key={active.key} label={active.label} rows={active.machines}
           windowMs={windowMs} windowLabel={windowLabel}
           pageFrom={from} pageTo={to} signals={signals} />
-      ))}
-
-      {/* Hidden groups append BELOW — expanding never reshuffles what's on screen */}
-      {collapsible && (
-        <button
-          onClick={() => setShowAll((v) => !v)}
-          className="w-full panel py-3 text-xs font-medium text-accent hover:bg-accent/5 border-dashed transition-colors inline-flex items-center justify-center gap-1.5"
-        >
-          {showAll
-            ? <>Show fewer groups <ChevronDown size={13} className="rotate-180" /></>
-            : <>View all machine groups (+{singles.length} more) <ChevronDown size={13} /></>}
-        </button>
       )}
     </div>
   );
@@ -94,7 +116,7 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
   label: string; rows: MachineActivityRow[]; windowMs: number; windowLabel: string;
   pageFrom?: string; pageTo?: string; signals?: Record<string, { key: string; label: string; unit?: string }>;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);   // the circle click was the open gesture
   // '' = follow the page filter. An override re-fetches ONLY this group's window.
   const [override, setOverride] = useState<DatePreset | ''>('');
 
