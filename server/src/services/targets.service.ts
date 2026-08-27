@@ -22,7 +22,7 @@ import { AppConfig, type IBreak } from '../models/AppConfig.js';
 import { OperatorSession } from '../models/OperatorSession.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
-import { stepEvents, clipSpans, type Span } from './activity.service.js';
+import { stepEvents, clipSpans, PROD_STEP_PER_MIN, type Span } from './activity.service.js';
 
 const IST_MS = 5.5 * 3_600_000;
 const HOUR = 3_600_000;
@@ -229,7 +229,7 @@ export async function computeTargets(
     for (const m of agg) {
       const series = m.pts.map((p) => ({ t: new Date(p.t).getTime(), v: Number(p.v) }))
         .filter((p) => Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
-      eventsBy.set(m._id, stepEvents(series));
+      eventsBy.set(m._id, stepEvents(series, PROD_STEP_PER_MIN));
     }
   }
 

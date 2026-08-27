@@ -50,6 +50,18 @@ eq('spike up ignored', countStepsOf(series(51, 507, 52)), 1);
 // A dip that recovers is not new production (ISB02: 80 -> 76 -> 80).
 eq('dip is not production', countStepsOf(series(80, 76, 80)), 0);
 eq('too short to step', countStepsOf(series(5)), 0);
+// A register PRELOADED during commissioning is not a day's production: 887
+// pieces cannot appear inside one reporting minute (SPG05, the day it was
+// wired up). The mark still advances, so honest climbs after the jump count.
+eq('preload jump credits nothing', countStepsOf(series(0, 887, 887, 888), 10), 1);
+// …but a big step across a LONG gap is real accumulation — a machine that
+// produced through a signal loss is fully credited on reconnect.
+eq('reconnect gap is credited', countStepsOf([
+  { t: 0, v: 0 }, { t: 120 * 60_000, v: 100 }, { t: 121 * 60_000, v: 100 },
+], 10), 100);
+// A seconds counter cannot earn faster than the clock (SPG05's run_sec_today
+// flashed 40311 while the machine had been alive for an hour).
+eq('seconds preload rejected', runMsFromSeries(series(0, 40311, 40311), 'seconds'), 0);
 
 // ── Run signals ─────────────────────────────────────────────────────────────
 // Seconds counters are stepped, then converted to ms.

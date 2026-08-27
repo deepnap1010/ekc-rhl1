@@ -14,7 +14,7 @@ import { normalizeData, rankNamed, isNumericValue } from '../utils/normalize.js'
 import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
-import { computeActivity, stepEvents } from '../services/activity.service.js';
+import { computeActivity, stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
 import { cached } from '../utils/cache.js';
 import { readingSignature, pickColumns } from '../utils/history.js';
 
@@ -672,7 +672,7 @@ export const machineHourly = asyncHandler(async (req, res) => {
     const series = rows.map((r) => ({ t: new Date(r._id).getTime(), v: Number(r.v) })).filter((p) => Number.isFinite(p.v));
     const offset = fromD.getTime();
     const byHour = new Map<number, number>();
-    for (const ev of stepEvents(series)) {
+    for (const ev of stepEvents(series, PROD_STEP_PER_MIN)) {
       const b = Math.floor((ev.t - offset) / HOUR) * HOUR + offset;
       byHour.set(b, (byHour.get(b) || 0) + ev.made);
     }

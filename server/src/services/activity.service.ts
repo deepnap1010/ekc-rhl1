@@ -85,7 +85,16 @@ export type Span = { type: 'idle' | 'stopped' | 'offline'; s: number; e: number 
  *  and unconfirmed, each would have fabricated hundreds of pieces.
  *  ponytail: a one-sample lookahead is the whole heuristic; a counter that stays
  *  wrong for two consecutive samples still fools it. */
-export function stepEvents(series: { t: number; v: number }[]): { t: number; made: number }[] {
+// A confirmed climb must also be PHYSICALLY POSSIBLE in the time it claims:
+// the allowance scales with the gap since the previous sample, so a machine
+// that produced through a 12-hour signal loss is fully credited on reconnect,
+// while a register PRELOADED during commissioning (SPG05 jumped 0 → 887 inside
+// one reporting minute the day it was wired up) advances the mark and credits
+// NOTHING. The caps are ~10× the fastest real rate in this plant.
+export const PROD_STEP_PER_MIN = 10;      // fastest dia: 1 min/pc = 1/min
+export const SECONDS_STEP_PER_MIN = 90;   // a seconds counter earns 60 s/min; 1.5× jitter headroom
+
+export function stepEvents(series: { t: number; v: number }[], maxPerMin = Number.POSITIVE_INFINITY): { t: number; made: number }[] {
   const pts = [...series].sort((a, b) => a.t - b.t);
   if (pts.length < 2) return [];
   const out: { t: number; made: number }[] = [];
@@ -93,7 +102,12 @@ export function stepEvents(series: { t: number; v: number }[]): { t: number; mad
   for (let i = 1; i < pts.length; i += 1) {
     const cur = pts[i].v, next = i + 1 < pts.length ? pts[i + 1].v : null;
     if (cur > high) {
-      if (next === null || next >= cur) { out.push({ t: pts[i].t, made: cur - high }); high = cur; }  // confirmed climb
+      if (next === null || next >= cur) {                                     // confirmed climb…
+        const made = cur - high;
+        const gapMin = Math.max((pts[i].t - pts[i - 1].t) / 60_000, 1);
+        if (made <= gapMin * maxPerMin) out.push({ t: pts[i].t, made });      // …and possible in the time
+        high = cur;                                                           // a preload is the new truth either way
+      }
     } else if (cur < high && next !== null && next < high) {
       high = cur;                                                             // confirmed reset
     }
@@ -101,11 +115,11 @@ export function stepEvents(series: { t: number; v: number }[]): { t: number; mad
   return out;
 }
 
-export function countStepsOf(series: { t: number; v: number }[]): number {
+export function countStepsOf(series: { t: number; v: number }[], maxPerMin = Number.POSITIVE_INFINITY): number {
   // The sum of the step events IS the count — one confirmation logic, two views.
   // stepEvents additionally says WHEN each piece landed, which is what per-hour
   // target attribution needs.
-  return stepEvents(series).reduce((n, e) => n + e.made, 0);
+  return stepEvents(series, maxPerMin).reduce((n, e) => n + e.made, 0);
 }
 
 /** Milliseconds the MACHINE says it was running, from its own signal.
@@ -117,7 +131,7 @@ export function countStepsOf(series: { t: number; v: number }[]): number {
 export function runMsFromSeries(series: { t: number; v: number }[], kind: 'seconds' | 'flag'): number | null {
   const s = [...series].sort((a, b) => a.t - b.t);
   if (s.length < 2) return null;
-  if (kind === 'seconds') return countStepsOf(s) * 1000;
+  if (kind === 'seconds') return countStepsOf(s, SECONDS_STEP_PER_MIN) * 1000;
   let ms = 0;
   for (let i = 1; i < s.length; i += 1) {
     if (s[i - 1].v >= 1) ms += Math.min(s[i].t - s[i - 1].t, GRACE_MS);
@@ -401,7 +415,7 @@ export async function computeActivity(
       .map((x) => [x._id, { avgTemp: x.avgTemp, zones: x.zones }]),
   );
   const madeBy = new Map<string, number>(
-    [...seriesBy].map(([id, pts]) => [id, countStepsOf(pts.filter((x) => x.v != null).map((x) => ({ t: x.t, v: x.v as number })))]),
+    [...seriesBy].map(([id, pts]) => [id, countStepsOf(pts.filter((x) => x.v != null).map((x) => ({ t: x.t, v: x.v as number })), PROD_STEP_PER_MIN)]),
   );
 
   // Seconds counters are stepped like production; a flag credits the gaps after
