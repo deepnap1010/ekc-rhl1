@@ -133,11 +133,31 @@ export const updateDia = asyncHandler(async (req, res) => {
 // machines already running it run on (their snapshot is theirs).
 export const setDiaActive = asyncHandler(async (req, res) => {
   const active = !!(req.body as { active?: unknown })?.active;
-  const doc = await DiaConfig.findByIdAndUpdate(req.params.id, { $set: { active } }, { new: true }).lean();
+  const doc = await DiaConfig.findByIdAndUpdate(
+    req.params.id,
+    { $set: { active, retiredAt: active ? null : new Date() } },
+    { new: true },
+  ).lean();
   if (!doc) return fail(res, 404, 'DIA not found');
   audit(req.user as ScopedUser, active ? 'dia.activate' : 'dia.deactivate',
     { type: 'dia', id: String(doc._id), label: doc.name }, { active: !active }, { active });
   return ok(res, doc);
+});
+
+// DELETE /production/dia/:id — permanent, and deliberately narrow: only a
+// RETIRED dia, and only while no machine currently holds it. History does not
+// need the record — every past assignment carries its own frozen snapshot — so
+// deleting the catalogue entry rewrites nothing.
+export const deleteDia = asyncHandler(async (req, res) => {
+  const doc = await DiaConfig.findById(req.params.id);
+  if (!doc) return fail(res, 404, 'DIA not found');
+  if (doc.active) return fail(res, 400, 'Retire the dia first — delete is for retired records');
+  const holding = await MachineAssignment.countDocuments({ diaId: doc._id, effectiveTo: null });
+  if (holding > 0) return fail(res, 400, `${holding} machine${holding === 1 ? ' still holds' : 's still hold'} this dia — reassign them first`);
+  await doc.deleteOne();
+  audit(req.user as ScopedUser, 'dia.delete', { type: 'dia', id: String(doc._id), label: doc.name },
+    { name: doc.name, stages: doc.stages.map((s) => ({ name: s.name, processingSec: s.processingSec })) }, null);
+  return ok(res, { deleted: true });
 });
 
 // ── Assignments ──────────────────────────────────────────────────────────────

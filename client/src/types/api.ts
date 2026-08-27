@@ -557,8 +557,10 @@ export interface DiaConfig {
   capacity: string;
   dims: string;
   active: boolean;
+  retiredAt?: string | null;
   stages: DiaStage[];
   usedOn?: number;         // machines currently assigned to it
+  createdAt?: string;
   updatedAt?: string;
   updatedBy?: { id?: string; name?: string };
 }

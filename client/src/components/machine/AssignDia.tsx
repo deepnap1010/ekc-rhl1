@@ -6,7 +6,7 @@
 // freeze a new snapshot, write an audit row.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Target, Check, Ruler } from 'lucide-react';
+import { Target, Check, Ruler, History as HistoryIcon } from 'lucide-react';
 import { productionApi } from '../../api/endpoints';
 import Modal from '../Modal';
 import { useAuthStore } from '../../store/auth';
@@ -68,6 +68,10 @@ export function AssignDiaModal({ code, current, onClose }: {
   });
   const options = (dias || []).filter((d) => d.active);
   const { shifts } = useAppConfig();
+  const { data: trail } = useQuery({
+    queryKey: ['dia-history', code],
+    queryFn: () => productionApi.assignments({ machineRef: code, limit: 6 }).then((r) => r.data),
+  });
   const [diaId, setDiaId] = useState(current?.diaId || '');
   const [stageKey, setStageKey] = useState(current?.stageKey || '');
   const dia = options.find((d) => d._id === diaId);
@@ -137,7 +141,7 @@ export function AssignDiaModal({ code, current, onClose }: {
               <div className="label mb-1.5">{current ? 'Change to' : 'DIA / Product'}</div>
               <select value={diaId} onChange={(e) => pickDia(e.target.value)}
                 className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
-                <option value="">Select a dia…</option>
+                <option value="">No dia</option>
                 {options.map((d) => (
                   <option key={d._id} value={d._id}>{d.name}{d.dims ? ` · ${d.dims}` : ''}</option>
                 ))}
@@ -186,18 +190,32 @@ export function AssignDiaModal({ code, current, onClose }: {
             ) : null}
           </>
         )}
-        <div className="flex items-center justify-between gap-2 pt-1">
-          {current ? (
-            <button onClick={() => unassignMut.mutate()} disabled={unassignMut.isPending}
-              className="text-xs text-stopped hover:underline disabled:opacity-50">Remove assignment</button>
-          ) : <span />}
-          <span className="flex gap-2">
-            <button onClick={onClose} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Cancel</button>
-            <button onClick={() => assignMut.mutate()} disabled={!stage || assignMut.isPending}
-              className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
-              {assignMut.isPending ? 'Assigning…' : 'Assign dia'}
-            </button>
-          </span>
+        {/* The machine's record trail — past dias struck through, spans, who */}
+        {(trail || []).filter((h) => h.effectiveTo).length > 0 && (
+          <div className="pt-1">
+            <div className="text-[10px] uppercase tracking-wide text-steel mb-1.5 inline-flex items-center gap-1">
+              <HistoryIcon size={11} /> Past dias (records)
+            </div>
+            <div className="space-y-0.5">
+              {(trail || []).filter((h) => h.effectiveTo).slice(0, 4).map((h) => (
+                <div key={h._id} className="text-[11px] flex items-baseline gap-1.5 flex-wrap">
+                  <span className="data font-medium text-steel line-through">{h.snapshot.diaName}</span>
+                  <span className="text-steel">{fmtTime(h.effectiveFrom)} → {fmtTime(h.effectiveTo as string)}</span>
+                  {h.assignedBy?.name && <span className="text-steel/70 ml-auto">by {h.assignedBy.name}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Cancel</button>
+          <button
+            onClick={() => (diaId ? assignMut.mutate() : unassignMut.mutate())}
+            disabled={(diaId ? !stage || assignMut.isPending : !current || unassignMut.isPending)}
+            className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
+            {assignMut.isPending || unassignMut.isPending ? 'Saving…' : diaId ? 'Assign dia' : 'Clear dia'}
+          </button>
         </div>
       </div>
     </Modal>

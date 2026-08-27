@@ -21,6 +21,7 @@ export interface IDiaConfig {
   capacity: string;      // "40L"
   dims: string;          // "316 × 40" — the plant's own notation, free text
   active: boolean;
+  retiredAt?: Date | null;   // set on retire, cleared on restore
   stages: IDiaStage[];
   createdBy?: { id?: string; name?: string };
   updatedBy?: { id?: string; name?: string };
@@ -43,6 +44,7 @@ const diaSchema = new mongoose.Schema<IDiaConfig>(
     capacity: { type: String, default: '', trim: true },
     dims: { type: String, default: '', trim: true },
     active: { type: Boolean, default: true },
+    retiredAt: { type: Date, default: null },
     stages: { type: [stageSchema], default: [] },
     createdBy: { id: String, name: String },
     updatedBy: { id: String, name: String },

@@ -133,6 +133,7 @@ export const productionApi = {
   createDia: (b: DiaWritePayload) => post<DiaConfig>('/production/dia', b),
   updateDia: (id: string, b: DiaWritePayload) => api.put(`/production/dia/${id}`, b) as unknown as Promise<ApiResponse<DiaConfig>>,
   setDiaActive: (id: string, active: boolean) => post<DiaConfig>(`/production/dia/${id}/active`, { active }),
+  deleteDia: (id: string) => del<{ deleted: boolean }>(`/production/dia/${id}`),
   currentAssignments: () => get<MachineAssignment[]>('/production/assignments/current'),
   assignments: (params?: Params) => get<MachineAssignment[]>('/production/assignments', params),
   assign: (b: { machineRef: string; diaId: string; stageKey: string; note?: string }) =>

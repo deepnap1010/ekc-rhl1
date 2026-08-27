@@ -28,7 +28,6 @@ import { toast } from '../store/toast';
 import { fmtTime } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
 import { stageForMachine } from '../lib/diaStage';
-import { fmtProcessing } from '../lib/targets';
 import type { DiaConfig, StageTemplate } from '../types/api';
 
 // Times read and type in MINUTES per piece (their unit); stored in seconds.
@@ -112,15 +111,28 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
   const [editFor, setEditFor] = useState<string | null>(null);
   const byNewest = (a: DiaConfig, b: DiaConfig) => (b.updatedAt || '').localeCompare(a.updatedAt || '');
   const activeDias = dias.filter((d) => d.active).sort(byNewest);
-  const retiredDias = dias.filter((d) => !d.active);
+  const retiredDias = dias.filter((d) => !d.active)
+    .sort((a, b) => (b.retiredAt || '').localeCompare(a.retiredAt || ''));
 
   const setActive = async (d: DiaConfig, active: boolean) => {
     try {
       await productionApi.setDiaActive(d._id, active);
-      toast.success(active ? `${d.name} reactivated` : `${d.name} retired`);
+      toast.success(active ? `${d.name} restored` : `${d.name} retired — find it under Past diameters`);
       onSaved();
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not update'); }
   };
+  // Permanent delete: retired dias only, two clicks, blocked while a machine
+  // still holds the dia (the server enforces the same).
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const deleteDia = async (d: DiaConfig) => {
+    setConfirmDelete(null);
+    try {
+      await productionApi.deleteDia(d._id);
+      toast.success(`Dia ${d.name} deleted`);
+      onSaved();
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not delete'); }
+  };
+  const shortDate = (v?: string | null): string => (v ? new Date(v).toLocaleDateString() : '—');
 
   const cycleSummary = (d: DiaConfig): string =>
     d.stages.filter((s) => s.active).map((s) => `${s.name} ${fmtMin(s.processingSec)}`).join(' · ') || 'no stages';
@@ -161,27 +173,25 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
         </div>
       )}
 
-      {/* ── Saved dias ── */}
+      {/* ── Saved dias — the ACTIVE catalogue ── */}
       <div className="label mb-2">Saved dias</div>
-      {!activeDias.length && !retiredDias.length ? (
-        <p className="text-xs text-steel">No dia yet — create the first one above.</p>
+      {!activeDias.length ? (
+        <p className="text-xs text-steel">No active dia — create one above{retiredDias.length ? ' or restore a past record below' : ''}.</p>
       ) : (
         <div className="space-y-1.5">
-          {[...activeDias, ...retiredDias].map((d) => (
-            <div key={d._id} className={`rounded-lg border border-line ${d.active ? '' : 'opacity-60'}`}>
+          {activeDias.map((d) => (
+            <div key={d._id} className="rounded-lg border border-line">
               <div className="flex items-center gap-2.5 px-3 py-2 flex-wrap">
                 <span className="data font-bold text-sm text-primary shrink-0">{d.name}</span>
                 <span className="pill bg-accent/10 text-accent !text-[10px] shrink-0">{usageOf(d.name)} machine{usageOf(d.name) === 1 ? '' : 's'}</span>
                 <span className="text-[11px] text-steel truncate flex-1 min-w-[120px]" title={cycleSummary(d)}>{cycleSummary(d)}</span>
-                {d.updatedAt && <span className="text-[10px] text-steel shrink-0">since {new Date(d.updatedAt).toLocaleDateString()}</span>}
+                <span className="text-[10px] text-steel shrink-0">since {shortDate(d.createdAt || d.updatedAt)}</span>
                 {canEdit && (
                   <span className="flex items-center gap-3 shrink-0 text-xs">
                     <button onClick={() => setEditFor(editFor === d._id ? null : d._id)} className="text-accent hover:underline">
                       {editFor === d._id ? 'Close' : 'Edit cycles'}
                     </button>
-                    <button onClick={() => setActive(d, !d.active)} className="text-steel hover:text-primary">
-                      {d.active ? 'Retire' : 'Reactivate'}
-                    </button>
+                    <button onClick={() => setActive(d, false)} className="text-steel hover:text-primary">Retire</button>
                   </span>
                 )}
               </div>
@@ -191,6 +201,40 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
             </div>
           ))}
         </div>
+      )}
+
+      {/* ── Past diameters — retired records: restore, or delete for good ── */}
+      {retiredDias.length > 0 && (
+        <>
+          <div className="label mt-5 mb-2">Past diameters (records)</div>
+          <div className="space-y-1.5">
+            {retiredDias.map((d) => {
+              const held = usageOf(d.name);
+              return (
+                <div key={d._id} className="rounded-lg border border-line bg-base/60 flex items-center gap-2.5 px-3 py-2 flex-wrap">
+                  <span className="data font-bold text-sm text-steel line-through shrink-0">{d.name}</span>
+                  <span className="text-[10px] text-steel shrink-0">{shortDate(d.createdAt)} → {shortDate(d.retiredAt)}</span>
+                  {held > 0 && <span className="pill bg-idle/10 text-idle !text-[10px] shrink-0">{held} machine{held === 1 ? '' : 's'}</span>}
+                  {canEdit && (
+                    <span className="ml-auto flex items-center gap-3 shrink-0 text-xs">
+                      <button onClick={() => setActive(d, true)} className="text-accent hover:underline">Restore</button>
+                      {confirmDelete === d._id ? (
+                        <button onClick={() => deleteDia(d)} className="text-stopped font-semibold hover:underline">Sure? Delete</button>
+                      ) : (
+                        <button
+                          onClick={() => held === 0 && setConfirmDelete(d._id)}
+                          disabled={held > 0}
+                          title={held > 0 ? 'Machines still hold this dia — reassign them first' : 'Delete this record permanently'}
+                          className="text-steel hover:text-stopped disabled:opacity-40 disabled:hover:text-steel"
+                        >Delete</button>
+                      )}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -439,7 +483,8 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
                           <option value="">No dia</option>
                           {active.map((d) => <option key={d._id} value={d.name}>{d.name}</option>)}
                         </select>
-                        <IconBtn label="Assignment history" onClick={() => setHistoryFor(code)}><HistoryIcon size={14} /></IconBtn>
+                        <IconBtn label="Assignment history" onClick={() => setHistoryFor(historyFor === code ? null : code)}><HistoryIcon size={14} /></IconBtn>
+                        {historyFor === code && <InlineDiaHistory code={code} />}
                       </div>
                     );
                   })}
@@ -449,7 +494,6 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
           );
         })}
       </div>
-      {historyFor && <DiaHistoryModal code={historyFor} onClose={() => setHistoryFor(null)} />}
       {askStage && (
         <Modal title={`Which stage — ${askStage.code.toUpperCase()}`}
           subtitle={`No stage of "${askStage.dia.name}" matches this machine's family — pick the one it runs`}
@@ -470,32 +514,30 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
   );
 }
 
-function DiaHistoryModal({ code, onClose }: { code: string; onClose: () => void }): JSX.Element {
+// The machine's record trail, unfolded right under its row — the current dia
+// in accent, past ones struck through, each with its span and who set it.
+export function InlineDiaHistory({ code }: { code: string }): JSX.Element {
   const { data } = useQuery({
     queryKey: ['dia-history', code],
-    queryFn: () => productionApi.assignments({ machineRef: code, limit: 50 }).then((r) => r.data),
+    queryFn: () => productionApi.assignments({ machineRef: code, limit: 20 }).then((r) => r.data),
   });
+  if (!data) return <div className="w-full text-[10px] text-steel pl-2 py-1">Reading the records…</div>;
+  if (!data.length) return <div className="w-full text-[10px] text-steel pl-2 py-1">This machine has never been assigned a dia.</div>;
   return (
-    <Modal title={`Dia history — ${code.toUpperCase()}`} subtitle="Every assignment, newest first" icon={HistoryIcon} onClose={onClose} maxW="max-w-lg">
-      {!(data || []).length ? (
-        <p className="text-sm text-steel">This machine has never been assigned a dia.</p>
-      ) : (
-        <div className="space-y-1.5">
-          {(data || []).map((h) => (
-            <div key={h._id} className="flex items-baseline justify-between gap-2 text-xs border-b border-line pb-1.5 last:border-0">
-              <span className="text-primary truncate">
-                <span className="data font-medium">{h.snapshot.diaName}</span> · {h.snapshot.stageName}
-                <span className="text-steel"> · {fmtProcessing(h.snapshot.processingSec)}/pc</span>
-              </span>
-              <span className="data text-steel shrink-0">
-                {fmtTime(h.effectiveFrom)} → {h.effectiveTo ? fmtTime(h.effectiveTo) : 'now'}
-                {h.assignedBy?.name ? ` · ${h.assignedBy.name}` : ''}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </Modal>
+    <div className="w-full pl-2 py-1 space-y-0.5">
+      {data.map((h) => {
+        const current = !h.effectiveTo;
+        return (
+          <div key={h._id} className="text-[11px] flex items-baseline gap-1.5 flex-wrap">
+            <span className={`data font-medium ${current ? 'text-accent' : 'text-steel line-through'}`}>{h.snapshot.diaName}</span>
+            <span className="text-steel">
+              {fmtTime(h.effectiveFrom)} → {h.effectiveTo ? fmtTime(h.effectiveTo) : 'now'}
+            </span>
+            {h.assignedBy?.name && <span className="text-steel/70">by {h.assignedBy.name}</span>}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

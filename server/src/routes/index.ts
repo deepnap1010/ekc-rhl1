@@ -66,6 +66,7 @@ r.get('/production/dia', authorize('production'), prod.listDia);
 r.post('/production/dia', authorize('production', 'create'), prod.createDia);
 r.put('/production/dia/:id', authorize('production', 'update'), prod.updateDia);
 r.post('/production/dia/:id/active', authorize('production', 'delete'), prod.setDiaActive);
+r.delete('/production/dia/:id', authorize('production', 'delete'), prod.deleteDia);
 r.get('/production/assignments/current', authorize('production'), prod.currentAssignments);
 r.get('/production/assignments', authorize('production'), prod.listAssignments);
 r.post('/production/assignments', authorize('production', 'update'), prod.assignMachine);
