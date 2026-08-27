@@ -1,0 +1,673 @@
+// client/src/components/ProductionVsTarget.tsx
+// The production-vs-target board (teammate-built UI, running on this app's
+// assignment engine). Two shapes, one dataset:
+//
+//  ADMIN — one card per production GROUP (Cutting, SPG…): target attainment,
+//  dia(s) being made, produced vs target bar, and one status dot per machine
+//  (green running · yellow idle · red stopped · grey no signal). Clicking a
+//  group opens its machines — each with its attainment donut, produced/target,
+//  and its OWN runtime / idle / stopped / downtime split. Clicking a machine
+//  opens the full operator-style board.
+//
+//  OPERATOR (a user with assigned machines) — a rich per-machine board: the big
+//  "X of Y produced" donut, dia + stage + rate strip, inline hour-by-hour bars
+//  with the target/hr line, performance & availability, and the machine's own
+//  downtime split. The server scopes the data, so operators only ever see
+//  their machines.
+//
+// Rates come from each machine's CURRENT assignment snapshot (frozen at
+// assignment time — see server/models/MachineAssignment), targets are the
+// DIA's rate over the whole measured window net of planned breaks, and the
+// hourly bars ride the same confirmed-counter-step engine as every report.
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { Target, Ruler, ArrowUpRight, ArrowLeft, CheckCircle2, AlertTriangle, Boxes } from 'lucide-react';
+import { Donut } from './charts';
+import { StatusPill, TimeStat } from './ui';
+import { machineApi, productionApi } from '../api/endpoints';
+import { useAppConfig } from '../hooks/useAppConfig';
+import { useAuthStore } from '../store/auth';
+import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate } from '../lib/targets';
+import { processCompare, groupMachines } from '../lib/machineOrder';
+import { resolveRange } from '../store/filters';
+import { fmtNum, fmtDuration } from '../lib/format';
+import type { MachineActivityRow, MachineAssignment } from '../types/api';
+
+const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', SLATE = '#94A3B8', TRACK = '#E2E8F0';
+
+interface Props {
+  rows: MachineActivityRow[];
+  windowMs: number;      // elapsed window (server clips `to` to now)
+  windowLabel: string;
+  from?: string;
+  to?: string;
+}
+
+interface TargetRow {
+  row: MachineActivityRow;
+  stage: string;         // the assignment's stage name
+  dia: string;           // targets exist only for machines with a dia assigned
+  processingSec: number; // FROZEN on the assignment snapshot
+  target: number;        // exact — display rounds (fmtTarget)
+  actual: number;
+  diff: number;          // actual - target: negative = behind
+}
+
+interface GroupTargets { key: string; label: string; targets: TargetRow[] }
+
+// Attainment (actual/target) drives every color on the board:
+// below 50% red · 50–90% orange · above 90% green.
+const attainColor = (pct: number): string => (pct > 0.9 ? TEAL : pct >= 0.5 ? AMBER : RED);
+const dotColor = (status: string): string =>
+  status === 'running' ? TEAL : status === 'idle' ? AMBER : status === 'stopped' ? RED : SLATE;
+
+// The panel's own window filter — independent of the page filter, present on
+// admin and operator boards alike.
+type WinMode = '' | 'hour' | 'shift' | 'today' | 'yesterday';
+const hourLabel = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`;
+
+export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to }: Props): JSX.Element | null {
+  const { shifts, breaks } = useAppConfig();
+  const user = useAuthStore((st) => st.user);
+  const can = useAuthStore((st) => st.can);
+  const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
+
+  const { data: asgRows } = useQuery({
+    queryKey: ['assignments', 'current'],
+    queryFn: () => productionApi.currentAssignments().then((r) => r.data),
+    enabled: can('production', 'view'),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  const asgBy = useMemo(() => {
+    const m = new Map<string, MachineAssignment>();
+    (asgRows || []).forEach((r) => m.set(r.machineRef.toUpperCase(), r));
+    return m;
+  }, [asgRows]);
+
+  // The modal follows the LIVE row: only the code is stored, and the current
+  // TargetRow is looked up each render — so its figures keep moving with the
+  // board instead of freezing at open-time.
+  const [openForCode, setOpenForCode] = useState<string | null>(null);
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+
+  // ── Window filter: page window (default) · per hour · per shift · today · yesterday
+  const [mode, setMode] = useState<WinMode>('');
+  const [shiftName, setShiftName] = useState('');
+  const nowHour = new Date().getHours();
+  const [hFrom, setHFrom] = useState(nowHour);      // per-hour: from which hour…
+  const [hTo, setHTo] = useState(nowHour + 1);      // …to which hour (today)
+
+  // "Today" must keep counting: without a clock input the memo below would
+  // freeze the window at selection time and the 30s poll would re-read the
+  // same stale range forever. A minute-stamp recomputes it (and rolls the
+  // per-hour slice over midnight) while keeping query keys minute-stable.
+  const [minuteStamp, setMinuteStamp] = useState(() => Math.floor(Date.now() / 60_000));
+  useEffect(() => {
+    const t = setInterval(() => setMinuteStamp(Math.floor(Date.now() / 60_000)), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const ownRange = useMemo(() => {
+    void minuteStamp;   // clock input — see above
+    if (!mode) return null;
+    if (mode === 'today' || mode === 'yesterday') {
+      return resolveRange({ preset: mode, shiftName: '', customFrom: '', customTo: '' }, shifts);
+    }
+    if (mode === 'shift') {
+      if (!shiftName) return null;
+      return resolveRange({ preset: 'today', shiftName, customFrom: '', customTo: '' }, shifts);
+    }
+    // Per hour — a chosen slice of today; 24 means midnight at the end of it.
+    if (hTo <= hFrom) return null;
+    const base = new Date(); base.setHours(0, 0, 0, 0);
+    return { from: new Date(base.getTime() + hFrom * 3600_000), to: new Date(base.getTime() + hTo * 3600_000) };
+  }, [mode, shiftName, hFrom, hTo, shifts, minuteStamp]);
+
+  const fromISO = ownRange?.from.toISOString();
+  const toISO = ownRange?.to.toISOString();
+  const { data: ownData, isFetching: ownFetching } = useQuery({
+    // Same key shape as the page's activity query — matching windows share one response.
+    queryKey: ['activity', fromISO, toISO],
+    queryFn: () => machineApi.activity({ from: fromISO as string, to: toISO as string }),
+    enabled: !!mode && !!fromISO && !!toISO,
+    refetchInterval: 30_000,
+    placeholderData: keepPreviousData,
+  });
+  // Only trust a response that covers THIS override's window (same guard as the groups).
+  const own = mode && ownData?.meta?.from === fromISO ? ownData : undefined;
+  const members = useMemo(() => new Set(rows.map((r) => r.code)), [rows]);
+  const effRows = own ? own.data.filter((r) => members.has(r.code)) : rows;
+  const effWindowMs = own ? Math.max(own.meta?.windowMs ?? 0, 0) : windowMs;
+  const effFrom = own ? fromISO : from;
+  const effTo = own ? toISO : to;
+  const effLabel = mode === 'hour' ? `${hourLabel(hFrom)} → ${hourLabel(hTo)} · Today`
+    : mode === 'shift' ? (shiftName ? `${shiftName} · Today` : 'Pick a shift')
+    : mode === 'today' ? 'Today'
+    : mode === 'yesterday' ? 'Yesterday'
+    : windowLabel;
+
+  // The measured stretch of the window, net of planned breaks — targets divide
+  // this by each assignment's frozen processing time.
+  const netMs = useMemo(() => {
+    if (effFrom && effTo) return windowNetMs(new Date(effFrom).getTime(), new Date(effTo).getTime(), breaks);
+    return effWindowMs;
+  }, [effFrom, effTo, effWindowMs, breaks]);
+
+  const targets = useMemo<TargetRow[]>(() => {
+    const out: TargetRow[] = [];
+    for (const row of [...effRows].sort(processCompare)) {
+      if (row.production == null) continue;                       // no counter, nothing to compare
+      // Dia FIRST: the dia is the product, so a machine has no rate or target
+      // until it's set up with one. Assigning a dia is what activates it here.
+      const a = asgBy.get(row.code.toUpperCase());
+      if (!a) continue;
+      const target = targetUnits(a.snapshot.processingSec, netMs);
+      if (target <= 0) continue;
+      const actual = row.production;
+      out.push({
+        row, dia: a.snapshot.diaName, stage: a.snapshot.stageName,
+        processingSec: a.snapshot.processingSec, target, actual, diff: actual - target,
+      });
+    }
+    return out;
+  }, [effRows, asgBy, netMs]);
+
+  // A dia-assigned machine that is NOT on the board must say WHY — silent
+  // exclusion reads as a bug.
+  const excluded = useMemo(() => {
+    const included = new Set(targets.map((t) => t.row.code));
+    const out: { code: string; reason: string }[] = [];
+    for (const row of effRows) {
+      if (!asgBy.get(row.code.toUpperCase()) || included.has(row.code)) continue;
+      if (row.production == null) out.push({ code: row.code, reason: 'no production counter' });
+    }
+    return out;
+  }, [effRows, targets, asgBy]);
+
+  // Machines bucketed into their production groups — the admin board's cards.
+  const groups = useMemo<GroupTargets[]>(() => {
+    const byRow = new Map(targets.map((t) => [t.row, t]));
+    return groupMachines(targets.map((t) => t.row))
+      .map((g) => ({ key: g.key, label: g.label, targets: g.machines.map((m) => byRow.get(m) as TargetRow) }));
+  }, [targets]);
+  const open = openGroup ? groups.find((g) => g.key === openGroup) ?? null : null;
+  // A group that vanished from the data (window change, refetch) must not
+  // silently re-open the drill-down the moment it reappears.
+  useEffect(() => {
+    if (openGroup && !groups.some((g) => g.key === openGroup)) setOpenGroup(null);
+  }, [openGroup, groups]);
+  const openFor = openForCode ? targets.find((t) => t.row.code === openForCode) ?? null : null;
+
+  if (!can('production', 'view')) return null;
+  const hasDia = rows.some((r) => asgBy.get(r.code.toUpperCase()));
+  if (!hasDia) {
+    if (!(asgRows || []).length && !rows.length) return null;
+    return (
+      <div className="panel p-4 flex items-center gap-3 flex-wrap">
+        <span className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center shrink-0"><Ruler size={15} className="text-accent" /></span>
+        <div className="text-sm text-steel">
+          Assign a dia to a machine to start tracking its target — the dia defines the product, so targets begin there.
+        </div>
+        <Link to="/production" className="ml-auto text-xs text-accent hover:underline inline-flex items-center gap-1">
+          Production Targets <ArrowUpRight size={12} />
+        </Link>
+      </div>
+    );
+  }
+
+  const totalActual = targets.reduce((n, t) => n + t.actual, 0);
+  const totalTarget = targets.reduce((n, t) => n + t.target, 0);
+  // Today/Yesterday windows frame the hourly bars midnight-to-midnight; every
+  // other window shows its last 8 hours.
+  const barsFullDay = effLabel === 'Today' || effLabel === 'Yesterday';
+  const selCls = (active: boolean) =>
+    `rounded-lg border px-2.5 py-1.5 text-xs outline-none cursor-pointer transition-colors hover:border-accent/40 ${
+      active ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-steel'
+    }`;
+
+  return (
+    <div className="panel p-4">
+      <div className="flex items-start gap-2.5 mb-3.5 flex-wrap">
+        <span className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center shrink-0"><Target size={16} className="text-accent" /></span>
+        <div className="min-w-0">
+          <h2 className="font-semibold text-sm text-primary">Production vs Target</h2>
+          <p className="text-[11px] text-steel">
+            {effLabel}{mode && !own ? ' · loading…' : mode && ownFetching ? ' · updating…' : ''} · dia-assigned machines · targets from each assignment's rate
+          </p>
+        </div>
+
+        {/* The window this board measures — independent of the page filter */}
+        <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+          <select value={mode} onChange={(e) => setMode(e.target.value as WinMode)}
+            className={selCls(!!mode)} title="Measure targets over this window">
+            <option value="">Page window · {windowLabel}</option>
+            <option value="hour">Per hour…</option>
+            <option value="shift">Per shift…</option>
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+          </select>
+          {mode === 'shift' && (
+            <select value={shiftName} onChange={(e) => setShiftName(e.target.value)} className={selCls(!!shiftName)} title="Which shift (today)">
+              <option value="">Pick a shift…</option>
+              {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+            </select>
+          )}
+          {mode === 'hour' && (
+            <span className="inline-flex items-center gap-1">
+              <select value={hFrom} onChange={(e) => { const v = Number(e.target.value); setHFrom(v); if (hTo <= v) setHTo(v + 1); }}
+                className={selCls(true)} title="From (today)">
+                {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
+              </select>
+              <span className="text-steel text-xs">→</span>
+              <select value={hTo} onChange={(e) => setHTo(Number(e.target.value))} className={selCls(true)} title="To (today)">
+                {Array.from({ length: 24 - hFrom }, (_, i) => hFrom + 1 + i).map((h) => (
+                  <option key={h} value={h}>{hourLabel(h)}</option>
+                ))}
+              </select>
+            </span>
+          )}
+          {!(mode === 'shift' && !shiftName) && targets.length > 0 && (
+            <span className={`pill font-bold ${totalActual >= totalTarget ? 'bg-running/10 text-running' : 'bg-stopped/10 text-stopped'}`}>
+              {fmtNum(totalActual)} / {fmtTarget(totalTarget)} pcs
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Shift mode with no shift picked must not show page-window figures
+          under a shift label — ask for the shift instead. */}
+      {mode === 'shift' && !shiftName ? (
+        <div className="text-sm text-steel py-6 text-center">Pick a shift to measure against.</div>
+      ) : targets.length === 0 ? (
+        <div className="text-sm text-steel py-6 text-center">No production counted for {effLabel}.</div>
+      ) : isOperator ? (
+        /* ── OPERATOR — a rich board per assigned machine. One machine takes
+            the full row; only a second one splits the width. ── */
+        <div className={`grid gap-4 ${targets.length > 1 ? 'xl:grid-cols-2' : ''}`}>
+          {targets.map((t) => (
+            <OperatorMachineBoard key={t.row.code} t={t} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
+          ))}
+        </div>
+      ) : open && openFor ? (
+        /* ── ADMIN, one MACHINE opened — the full operator-style board ── */
+        <div>
+          <button onClick={() => setOpenForCode(null)}
+            className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
+            <ArrowLeft size={13} /> {open.label}
+          </button>
+          <OperatorMachineBoard t={openFor} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
+        </div>
+      ) : open ? (
+        /* ── ADMIN, one group opened — its machines, each with its own split ── */
+        <div>
+          <button onClick={() => { setOpenGroup(null); setOpenForCode(null); }}
+            className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
+            <ArrowLeft size={13} /> All groups
+          </button>
+          {/* Masonry — cards flow into columns and fill the space however many
+              machines the group holds. */}
+          <div className="columns-1 md:columns-2 xl:columns-3 gap-4">
+            <GroupSummary g={open} windowMs={effWindowMs} />
+            {open.targets.map((t) => (
+              <MachineTargetCard key={t.row.code} t={t} onOpen={() => setOpenForCode(t.row.code)} />
+            ))}
+          </div>
+        </div>
+      ) : (
+        /* ── ADMIN — one card per group ── */
+        <div className="grid sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+          {groups.map((g) => (
+            <GroupCard key={g.key} g={g} onOpen={() => setOpenGroup(g.key)} />
+          ))}
+        </div>
+      )}
+
+      {/* Dia-assigned machines that can't be measured yet, and exactly why —
+          so "why is my machine missing" answers itself. */}
+      {excluded.length > 0 && !(mode === 'shift' && !shiftName) && (
+        <div className="mt-3.5 pt-3 border-t border-line text-[11px] text-steel">
+          <span className="font-medium text-primary">Dia set, but not on the board yet: </span>
+          {excluded.map((e) => <span key={e.code}><span className="data font-medium text-primary">{e.code.toUpperCase()}</span> — {e.reason}. </span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Thin produced-vs-target progress bar, colored by attainment.
+function Bar({ actual, target }: { actual: number; target: number }): JSX.Element {
+  const pct = target ? Math.min((actual / target) * 100, 100) : 0;
+  return (
+    <div className="h-1.5 bg-line rounded-full overflow-hidden">
+      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: attainColor(actual / (target || 1)) }} />
+    </div>
+  );
+}
+
+// One dot per machine — the group's health at a glance.
+function StatusDots({ targets }: { targets: TargetRow[] }): JSX.Element {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {targets.map((t) => (
+        <span key={t.row.code} className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={{ background: dotColor(t.row.status) }}
+          title={`${t.row.code.toUpperCase()} · ${t.row.status}`} />
+      ))}
+    </div>
+  );
+}
+
+// "All machines are working fine" — or exactly which ones aren't.
+function AttentionLine({ targets }: { targets: TargetRow[] }): JSX.Element {
+  const bad = targets.filter((t) => t.row.status === 'stopped' || t.row.status === 'offline');
+  if (!bad.length) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] text-running font-medium">
+        <CheckCircle2 size={11} /> All machines are working fine
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-stopped font-medium truncate" title={bad.map((t) => t.row.code.toUpperCase()).join(', ')}>
+      <AlertTriangle size={11} className="shrink-0" /> {bad.map((t) => t.row.code.toUpperCase()).join(', ')} need{bad.length === 1 ? 's' : ''} attention
+    </span>
+  );
+}
+
+// ── ADMIN · one production group ─────────────────────────────────────────────
+function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.Element {
+  const actual = g.targets.reduce((n, t) => n + t.actual, 0);
+  const target = g.targets.reduce((n, t) => n + t.target, 0);
+  const pct = target ? actual / target : 0;
+  const dias = [...new Set(g.targets.map((t) => t.dia))];
+  return (
+    <button onClick={onOpen} className="card p-4 flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 hover:-translate-y-0.5 group">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-semibold text-sm text-primary truncate group-hover:text-accent transition-colors">{g.label}</div>
+          <div className="flex items-center gap-1 mt-0.5 text-[10px] text-steel truncate">
+            <Ruler size={10} className="shrink-0" />
+            <span className="data font-medium text-primary truncate" title={dias.join(', ')}>
+              {dias.length === 1 ? dias[0] : `${dias.length} dias`}
+            </span>
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <span className="data text-2xl font-bold leading-none" style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}<span className="text-sm">%</span></span>
+          <div className="label mt-0.5">of target</div>
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-end justify-between gap-2">
+        <div>
+          <div className="data text-xl font-bold leading-none text-primary">{fmtNum(actual)}</div>
+          <div className="label mt-0.5">Part produced</div>
+        </div>
+        <div className="text-right">
+          <div className="data text-xl font-bold leading-none text-steel">{fmtTarget(target)}</div>
+          <div className="label mt-0.5">Target</div>
+        </div>
+      </div>
+      <div className="mt-2"><Bar actual={actual} target={target} /></div>
+
+      <div className="mt-3 space-y-1.5">
+        <AttentionLine targets={g.targets} />
+        <StatusDots targets={g.targets} />
+      </div>
+    </button>
+  );
+}
+
+// The opened group's own summary, beside its machines.
+function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): JSX.Element {
+  const actual = g.targets.reduce((n, t) => n + t.actual, 0);
+  const target = g.targets.reduce((n, t) => n + t.target, 0);
+  const pct = target ? actual / target : 0;
+  const run = g.targets.reduce((n, t) => n + t.row.runningMs, 0);
+  const idle = g.targets.reduce((n, t) => n + t.row.idleMs, 0);
+  const stop = g.targets.reduce((n, t) => n + t.row.stoppedMs, 0);
+  const avail = windowMs > 0 ? Math.round((run / (windowMs * g.targets.length)) * 100) : 0;
+  return (
+    <div className="card p-4 mb-4 break-inside-avoid">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center shrink-0"><Boxes size={14} className="text-accent" /></span>
+        <div className="font-semibold text-sm text-primary truncate">{g.label}</div>
+      </div>
+      <div className="data text-3xl font-bold leading-none" style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}<span className="text-base">%</span></div>
+      <div className="label mt-0.5 mb-3">of target · {avail}% availability</div>
+      <div className="flex items-end justify-between gap-2">
+        <div><div className="data text-lg font-bold leading-none text-primary">{fmtNum(actual)}</div><div className="label mt-0.5">Produced</div></div>
+        <div className="text-right"><div className="data text-lg font-bold leading-none text-steel">{fmtTarget(target)}</div><div className="label mt-0.5">Target</div></div>
+      </div>
+      <div className="mt-2 mb-3"><Bar actual={actual} target={target} /></div>
+      <div className="grid grid-cols-3 gap-1.5 mb-3">
+        <TimeStat label="Runtime" ms={run} color={TEAL} />
+        <TimeStat label="Idle" ms={idle} color={AMBER} />
+        <TimeStat label="Stopped" ms={stop} color={RED} />
+      </div>
+      <div className="space-y-1.5">
+        <AttentionLine targets={g.targets} />
+        <StatusDots targets={g.targets} />
+      </div>
+    </div>
+  );
+}
+
+// One machine inside an opened group — donut, produced/target, own time split.
+function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }): JSX.Element {
+  const pct = t.target ? t.actual / t.target : 0;
+  const color = attainColor(pct);
+  const rate = hourlyRate(t.processingSec);
+  return (
+    <button onClick={onOpen} className="card p-3.5 w-full mb-4 break-inside-avoid flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 group" title="Open this machine's board">
+      <div className="flex items-center gap-3">
+        <Donut size={76} thickness={8} emptyColor={TRACK}
+          segments={[
+            { label: 'Produced', value: Math.min(t.actual, t.target), color },
+            { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
+          ]}>
+          <span className="data text-sm font-bold leading-none" style={{ color }}>{Math.round(pct * 100)}%</span>
+        </Donut>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="data font-bold text-xs text-primary truncate group-hover:text-accent transition-colors">{t.row.code.toUpperCase()}</span>
+            <StatusPill status={t.row.status} />
+          </div>
+          <div className="flex items-center gap-1 mt-1 text-[10px] text-steel truncate">
+            <Ruler size={10} className="shrink-0" /><span className="data font-medium text-primary">{t.dia}</span>
+          </div>
+          <div className="text-[10px] text-steel mt-0.5 truncate">
+            {t.stage} · {fmtProcessing(t.processingSec)}/pc · {fmtTarget(rate)}/hr
+          </div>
+          <div className="flex items-baseline gap-1 mt-1">
+            <span className="data text-base font-bold leading-none" style={{ color }}>{fmtNum(t.actual)}</span>
+            <span className="text-[10px] text-steel">/ {fmtTarget(t.target)} pcs · {t.diff >= -0.5 && t.diff < 0.5 ? 'on target' : t.diff >= 0 ? `${fmtTarget(t.diff)} ahead` : `${fmtTarget(-t.diff)} behind`}</span>
+          </div>
+        </div>
+      </div>
+      <div className="mt-2.5"><Bar actual={t.actual} target={t.target} /></div>
+      {/* This machine's OWN split of the window */}
+      <div className="grid grid-cols-4 gap-1.5 mt-2.5">
+        <TimeStat label="Runtime" ms={t.row.runningMs} color={TEAL} />
+        <TimeStat label="Idle" ms={t.row.idleMs} color={AMBER} />
+        <TimeStat label="Stopped" ms={t.row.stoppedMs} color={RED} />
+        <TimeStat label="Downtime" ms={t.row.idleMs + t.row.stoppedMs} color="#991B1B" />
+      </div>
+    </button>
+  );
+}
+
+// ── OPERATOR · one assigned machine, everything on one board ─────────────────
+function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow; windowMs: number; from?: string; to?: string; fullDay?: boolean }): JSX.Element {
+  const pct = t.target ? t.actual / t.target : 0;
+  const color = attainColor(pct);
+  const rate = hourlyRate(t.processingSec);
+  const availPct = windowMs > 0 ? Math.round((t.row.runningMs / windowMs) * 100) : 0;
+  const madePerHr = windowMs > 0 ? Math.round((t.actual / (windowMs / 3600_000)) * 10) / 10 : 0;
+  return (
+    <div className="card p-4">
+      {/* Header strip — machine · dia · stage · rate, like the operator screen's part strip */}
+      <div className="flex items-center gap-2.5 flex-wrap pb-3 border-b border-line">
+        <span className="data font-bold text-sm text-primary">{t.row.code.toUpperCase()}</span>
+        <StatusPill status={t.row.status} />
+        <span className="inline-flex items-center gap-1 pill bg-accent/10 text-accent data !text-[10px]"><Ruler size={10} /> {t.dia}</span>
+        <span className="text-[11px] text-steel ml-auto">{t.stage} · {fmtProcessing(t.processingSec)}/pc · target {fmtTarget(rate)}/hr</span>
+      </div>
+
+      <div className="flex items-center gap-5 mt-3.5 flex-wrap">
+        {/* The big "X of Y produced" ring */}
+        <Donut size={150} thickness={16} emptyColor={TRACK}
+          segments={[
+            { label: 'Produced', value: Math.min(t.actual, t.target), color },
+            { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
+          ]}>
+          <span className="data text-3xl font-bold leading-none text-primary">{fmtNum(t.actual)}</span>
+          <span className="text-[10px] text-steel mt-1 leading-tight">of {fmtTarget(t.target)}<br />part produced</span>
+        </Donut>
+
+        <div className="flex-1 min-w-[200px] space-y-2.5">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            <Stat label="Performance" value={`${Math.round(pct * 100)}%`} color={color} sub="of target" />
+            <Stat label="Availability" value={`${availPct}%`} color={availPct >= 75 ? TEAL : availPct >= 50 ? AMBER : RED} sub="runtime share" />
+            <Stat label="Actual rate" value={`${madePerHr}/hr`} color={madePerHr >= rate ? TEAL : AMBER} sub={`target ${fmtTarget(rate)}/hr`} />
+            <Stat label={t.diff >= 0 ? 'Ahead' : 'Behind'} value={fmtTarget(Math.abs(t.diff))} color={t.diff >= 0 ? TEAL : RED} sub="pcs vs target" />
+          </div>
+          <Bar actual={t.actual} target={t.target} />
+        </div>
+      </div>
+
+      {/* Hour-by-hour, inline — the operator watches this live */}
+      {from && to && (
+        <div className="mt-4">
+          <div className="label mb-1.5">Hourly production</div>
+          <HourlyBars code={t.row.code} from={from} to={to} perHr={rate} height={110} fullDay={fullDay} />
+        </div>
+      )}
+
+      {/* The machine's own split of the window */}
+      <div className="grid grid-cols-4 gap-1.5 mt-3.5 pt-3 border-t border-line">
+        <TimeStat label="Runtime" ms={t.row.runningMs} color={TEAL} />
+        <TimeStat label="Idle" ms={t.row.idleMs} color={AMBER} />
+        <TimeStat label="Stopped" ms={t.row.stoppedMs} color={RED} />
+        <TimeStat label="Downtime" ms={t.row.idleMs + t.row.stoppedMs} color="#991B1B" />
+      </div>
+      <div className="text-[10px] text-steel mt-1.5">
+        Total downtime {fmtDuration(t.row.idleMs + t.row.stoppedMs)}
+        {t.row.offlineMs >= 60_000 && <> · signal lost {fmtDuration(t.row.offlineMs)}</>}
+        {t.row.productionFrom && <> · pieces counted at {t.row.productionFrom}</>}
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, sub, color }: { label: string; value: string; sub?: string; color: string }): JSX.Element {
+  return (
+    <div className="rounded-lg border border-line bg-base px-2.5 py-1.5">
+      <div className="label truncate">{label}</div>
+      <div className="data text-lg font-bold leading-none mt-0.5" style={{ color }}>{value}</div>
+      {sub && <div className="text-[9px] text-steel mt-0.5 truncate">{sub}</div>}
+    </div>
+  );
+}
+
+// ── Hour-by-hour bars with the target/hr line ────────────────────────────────
+// Real confirmed counter steps from /machines/:code/hourly; windows are
+// clipped to the endpoint's 7-day cap.
+function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
+  code: string; from: string; to: string; perHr: number | null; height?: number; fullDay?: boolean;
+}): JSX.Element {
+  const HOUR = 3600_000;
+  // Clamp "now" to the MINUTE: a raw Date.now() here lands in the query key,
+  // and a millisecond-fresh key per render is a self-sustaining refetch loop
+  // whenever the window's `to` is still in the future (a running hour/shift).
+  const nowMin = Math.floor(Date.now() / 60_000) * 60_000;
+  // Buckets sit on the plant's LOCAL clock hours (07:00–08:00), never UTC's:
+  // the request's `from` is a local hour boundary and the server anchors its
+  // bucket grid to it.
+  const alignHour = (ms: number) => { const d = new Date(ms); d.setMinutes(0, 0, 0); return d.getTime(); };
+
+  let fromMs: number, renderEnd: number;
+  if (fullDay) {
+    // Today / Yesterday → the whole calendar day, midnight to midnight; the
+    // hours still to come stay on the frame as empty slots.
+    const d = new Date(from); d.setHours(0, 0, 0, 0);
+    fromMs = d.getTime();
+    renderEnd = fromMs + 24 * HOUR;
+  } else {
+    // Default frame: the last 8 hours of the window.
+    const end = Math.min(new Date(to).getTime(), nowMin);
+    fromMs = alignHour(Math.max(new Date(from).getTime(), end - 8 * HOUR));
+    renderEnd = end;
+  }
+  const fetchTo = Math.min(renderEnd, nowMin);
+  const fromISO = new Date(fromMs).toISOString();
+  const toISO = new Date(fetchTo).toISOString();
+
+  const { data } = useQuery({
+    queryKey: ['machine-hourly', code, fromISO, toISO],
+    queryFn: () => machineApi.hourly(code, { from: fromISO, to: toISO }),
+    enabled: fetchTo > fromMs,
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
+
+  const bars = useMemo(() => {
+    const made = new Map((data?.data.hours || []).map((h) => [new Date(h.t).getTime(), h.made]));
+    const out: { t: number; made: number; future: boolean }[] = [];
+    for (let b = fromMs; b < renderEnd; b += HOUR) {
+      out.push({ t: b, made: made.get(b) || 0, future: b >= nowMin });
+    }
+    return out;
+  }, [data, fromMs, renderEnd, nowMin]);
+  const max = Math.max(...bars.map((b) => b.made), perHr || 0, 1);
+
+  const hh2 = (ms: number) => String(new Date(ms).getHours()).padStart(2, '0');
+  const slot = (ms: number) => `${hh2(ms)}-${hh2(ms + HOUR)}`;
+
+  if (!data && fetchTo > fromMs) return <div className="py-6 text-center text-sm text-steel">Counting the hours…</div>;
+  if (data && data.data.key == null) return <div className="py-6 text-center text-sm text-steel">This machine publishes no production counter — hourly bars need one.</div>;
+
+  return (
+    <div className="overflow-x-auto pb-1">
+      <div className="relative" style={{ minWidth: Math.max(bars.length * 36, 280) }}>
+        {perHr != null && (
+          <div
+            className="absolute left-0 right-0 border-t-2 border-dashed border-stopped/60 z-10 pointer-events-none"
+            style={{ top: `${(1 - perHr / max) * height}px` }}
+            title={`Target ${fmtTarget(perHr)}/hr`}
+          />
+        )}
+        <div className="flex items-end gap-1.5" style={{ height }}>
+          {bars.map((b) => (
+            <div key={b.t} className="flex-1 min-w-[28px] flex flex-col items-center justify-end h-full" title={`${slot(b.t)} · ${b.future ? 'upcoming' : `${b.made} pcs`}`}>
+              {b.made > 0 && <span className="data text-[10px] font-bold mb-0.5" style={{ color: perHr != null && b.made >= perHr ? TEAL : AMBER }}>{b.made}</span>}
+              <div
+                className="w-full rounded-t"
+                style={{
+                  height: `${(b.made / max) * 100}%`,
+                  background: perHr != null && b.made >= perHr ? TEAL : AMBER,
+                  minHeight: b.made > 0 ? 3 : 0,
+                }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-1.5 mt-1 border-t border-line pt-1">
+          {bars.map((b) => (
+            <div key={b.t} className={`flex-1 min-w-[28px] text-center text-[9px] ${b.future ? 'text-steel/40' : 'text-steel'}`}>
+              {slot(b.t)}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center gap-4 mt-2 text-[10px] text-steel">
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm" style={{ background: TEAL }} /> met the hour's target</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm" style={{ background: AMBER }} /> under target</span>
+        {perHr != null && <span className="inline-flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-stopped/60" /> target {fmtTarget(perHr)}/hr</span>}
+      </div>
+    </div>
+  );
+}

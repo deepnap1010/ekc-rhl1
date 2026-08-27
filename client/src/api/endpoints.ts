@@ -39,6 +39,7 @@ import type {
   ProductionOrder,
   OperatorSession,
   BreakWindow,
+  HourlyProduction,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -96,6 +97,8 @@ export const machineApi = {
     get<{ code: string; key: string | null; avg: number; min: number; max: number; samples: number }[]>('/machines/metric-averages', params),
   history: (code: string, params?: Params) => get<Telemetry[]>(`/machines/${code}/history`, params),
   timeline: (code: string, params?: { from?: string; to?: string; page?: number; limit?: number }) => get<TimelineRow[]>(`/machines/${code}/timeline`, params),
+  // Pieces made per hour over a window — the target board's bar chart.
+  hourly: (code: string, params: { from: string; to: string }) => get<HourlyProduction>(`/machines/${code}/hourly`, params),
   downtime: (code: string, params?: Params) => get<DowntimeEvent[]>(`/machines/${code}/downtime`, params),
 };
 

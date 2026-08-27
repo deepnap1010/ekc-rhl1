@@ -630,6 +630,11 @@ export interface OperatorSession {
 }
 export interface BreakWindow { name: string; start: string; end: string }
 
+export interface HourlyProduction {
+  key: string | null;                    // which counter the bars came from
+  hours: { t: string; made: number }[];  // ISO hour start (anchored to `from`) → pieces
+}
+
 export interface AuditRow {
   _id: string;
   at: string;

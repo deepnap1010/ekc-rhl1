@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Target, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Target, Ruler, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -589,16 +589,33 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         </div>
       </div>
 
-      {/* Mapping strip */}
-      {sigTotal > 0 && (
-        <div className="flex items-center gap-2 mb-3">
-          <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${rawOnly ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-accent/10 text-accent'}`}>
-            <span className={`w-1 h-1 rounded-full ${rawOnly ? 'bg-amber-500' : 'bg-accent'}`} />
-            {rawOnly ? 'Raw only · needs mapping' : `${namedCount}/${sigTotal} mapped`}
-          </span>
-          <span className="text-[10px] text-steel/70">{liveCount} live</span>
-        </div>
-      )}
+      {/* Mapping strip + dia — the dia the machine is set up for; the Ruler
+          button assigns/changes it right here (teammate-built card layout). */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {sigTotal > 0 && (
+          <>
+            <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${rawOnly ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-accent/10 text-accent'}`}>
+              <span className={`w-1 h-1 rounded-full ${rawOnly ? 'bg-amber-500' : 'bg-accent'}`} />
+              {rawOnly ? 'Raw only · needs mapping' : `${namedCount}/${sigTotal} mapped`}
+            </span>
+            <span className="text-[10px] text-steel/70">{liveCount} live</span>
+          </>
+        )}
+        <span className="ml-auto inline-flex items-center gap-1.5">
+          {assignment
+            ? <span className="pill bg-accent/10 text-accent data !text-[10px] max-w-[110px] truncate" title={`${assignment.snapshot.diaName} · ${assignment.snapshot.stageName}`}>{assignment.snapshot.diaName}</span>
+            : <span className="text-[10px] text-steel/60">no dia</span>}
+          {canSetDia && (
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDiaOpen(true); }}
+              title={assignment ? `Change dia (currently ${assignment.snapshot.diaName})` : 'Assign dia — which product this machine is set up to make'}
+              className={`w-6 h-6 rounded-md border flex items-center justify-center transition-colors ${assignment ? 'border-accent/40 text-accent hover:bg-accent/10' : 'border-line text-steel hover:text-accent hover:border-accent/40'}`}
+            >
+              <Ruler size={12} />
+            </button>
+          )}
+        </span>
+      </div>
 
       {/* Hero metric + inline sparkline */}
       <div className="mb-3 rounded-xl border border-line bg-base px-3.5 py-3 flex items-center justify-between gap-3">
@@ -627,36 +644,22 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
           the card's whole day window (net of breaks) — when it was assigned is
           irrelevant to the quota. The DIA label (or "Set DIA") opens the
           assignment modal right here. Below 60% runs amber. */}
-      {!furnace && (assignment || canSetDia) && (() => {
-        const setBtn = canSetDia ? (
-          <button
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDiaOpen(true); }}
-            title={assignment ? 'Change this machine’s DIA / target' : 'Assign a DIA to give this machine a target'}
-            className="inline-flex items-center gap-1 text-[10px] text-steel hover:text-accent truncate"
-          >
-            <Target size={10} className="shrink-0" />
-            {assignment ? `${assignment.snapshot.diaName} · ${assignment.snapshot.stageName}` : 'Set DIA'}
-          </button>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-[10px] text-steel truncate">
-            <Target size={10} className="shrink-0" />
-            {assignment ? `${assignment.snapshot.diaName} · ${assignment.snapshot.stageName}` : ''}
-          </span>
-        );
-        if (!(assignment && dayFrom && dayTo && activity?.production != null)) {
-          // No target maths to show — just the assign affordance.
-          return canSetDia ? <div className="mb-3 -mt-1">{setBtn}</div> : null;
-        }
+      {/* Produced vs target when a DIA is assigned. Target = the DIA's rate over
+          the card's whole day window (net of breaks). Below 60% runs amber. */}
+      {!furnace && assignment && dayFrom && dayTo && activity?.production != null && (() => {
         const winFrom = new Date(dayFrom).getTime();
         const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
         const ms = windowNetMs(winFrom, winTo, breaks);
         const target = targetUnits(assignment.snapshot.processingSec, ms);
         const pct = achievementPct(activity.production, assignment.snapshot.processingSec, ms);
-        if (target <= 0) return canSetDia ? <div className="mb-3 -mt-1">{setBtn}</div> : null;
+        if (target <= 0) return null;
         return (
           <div className="mb-3 -mt-1">
             <div className="flex items-baseline justify-between gap-2 text-[10px] mb-1">
-              {setBtn}
+              <span className="inline-flex items-center gap-1 text-steel truncate">
+                <Target size={10} className="shrink-0" />
+                {assignment.snapshot.diaName} · {assignment.snapshot.stageName}
+              </span>
               <span className="data font-semibold shrink-0" style={{ color: pct != null && pct < 60 ? '#D97706' : '#0D9488' }}>
                 {fmtNum(activity.production)} / {fmtTarget(target)}{pct != null ? ` · ${Math.round(pct)}%` : ''}
               </span>

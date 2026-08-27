@@ -14,7 +14,7 @@ import { normalizeData, rankNamed, isNumericValue } from '../utils/normalize.js'
 import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
-import { computeActivity } from '../services/activity.service.js';
+import { computeActivity, stepEvents } from '../services/activity.service.js';
 import { cached } from '../utils/cache.js';
 import { readingSignature, pickColumns } from '../utils/history.js';
 
@@ -627,4 +627,57 @@ export const machineHistory = asyncHandler(async (req, res) => {
     scanCapped: changes.scanCapped,
     columns: pickColumns(changes.rows.map((r) => (r as { data: Record<string, unknown> }).data)),
   });
+});
+
+// ── Hourly production ────────────────────────────────────────────────────────
+// GET /machines/:code/hourly?from&to — pieces made per hour, from the same
+// confirmed-step rules as the activity engine (a shift reset is not
+// production; a single garbage sample is not a piece). Buckets are anchored to
+// the request's `from`, so a client on the plant's half-hour-offset clock gets
+// 07:00–08:00 LOCAL bars, not UTC ones. Feeds the target board's hourly bars.
+export const machineHourly = asyncHandler(async (req, res) => {
+  const m = await findMachine(req.params.code);
+  if (!m) return fail(res, 404, 'Machine not found');
+  if (!inUserScope(req.user as ScopeUser, m.code, m.machineId)) return fail(res, 403, 'You are not assigned to this machine');
+  const refs = [m.code, m.machineId].filter(Boolean) as string[];
+
+  const q = req.query as Record<string, string | undefined>;
+  const parseD = (v?: string): Date | null => {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const toD = parseD(q.to) || new Date();
+  const fromD = parseD(q.from) || new Date(toD.getTime() - 24 * 3600_000);
+  if (fromD >= toD) return fail(res, 400, 'from must be before to');
+  if (toD.getTime() - fromD.getTime() > 7 * 24 * 3600_000) return fail(res, 400, 'window too large (max 7 days)');
+  const endD = new Date(Math.min(toD.getTime(), Date.now()));
+
+  // Counter key from the machine's current snapshot — the timeline's choice too.
+  const snapKey = pickProductionKey(flattenData((m.currentParameters as Record<string, unknown>) || {}));
+  const key = snapKey && !snapKey.includes('.') ? snapKey : null;
+  if (!key) return ok(res, { key: null, hours: [] });
+
+  const HOUR = 3600_000;
+  const cacheKey = `hourly:${refs.join('|')}:${key}:${fromD.toISOString()}:${endD.toISOString()}`;
+  const hours = await cached(cacheKey, 30_000, async () => {
+    // Highest counter value per minute (replay-proof), stepped in Node — then
+    // each confirmed climb lands in the hour of the sample that observed it.
+    const rows = await Telemetry.aggregate([
+      { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+      { $addFields: { pv: { $getField: { field: key, input: '$data' } } } },
+      { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
+      { $group: { _id: { $dateTrunc: { date: '$timestamp', unit: 'minute' } }, v: { $max: '$pv' } } },
+    ]).option({ maxTimeMS: 20000 }).exec() as { _id: Date; v: number }[];
+    const series = rows.map((r) => ({ t: new Date(r._id).getTime(), v: Number(r.v) })).filter((p) => Number.isFinite(p.v));
+    const offset = fromD.getTime();
+    const byHour = new Map<number, number>();
+    for (const ev of stepEvents(series)) {
+      const b = Math.floor((ev.t - offset) / HOUR) * HOUR + offset;
+      byHour.set(b, (byHour.get(b) || 0) + ev.made);
+    }
+    return [...byHour.entries()].sort((a, b) => a[0] - b[0])
+      .map(([t, made]) => ({ t: new Date(t).toISOString(), made }));
+  });
+  return ok(res, { key, hours }, { from: fromD.toISOString(), to: endD.toISOString() });
 });
