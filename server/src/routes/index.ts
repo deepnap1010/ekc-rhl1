@@ -35,8 +35,11 @@ r.get('/machines', authorize('machines'), machine.listMachines);
 r.get('/machines/summary', authorize('machines'), machine.machineSummary);
 r.get('/machines/activity', authorize('machines'), machine.machineActivity); // historical range view (read-only)
 r.get('/machines/metric-averages', authorize('machines'), machine.machineMetricAverages); // many machines, one round trip — MUST stay above /:code
+r.get('/machines/dias', authorize('production'), prod.machineDias); // current dia per machine — MUST stay above /:code
 r.get('/machines/:code', authorize('machines'), machine.getMachine);
 r.get('/machines/:code/hourly', authorize('machines'), machine.machineHourly); // pieces per hour — the target board's bars
+r.post('/machines/:code/dia', authorize('production', 'update'), prod.setMachineDia);   // assign a dia BY NAME
+r.get('/machines/:code/dia/history', authorize('production'), prod.machineDiaHistory);
 r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);
 r.get('/machines/:code/metric-average', authorize('machines'), machine.machineMetricAverage); // mean of one signal over a window

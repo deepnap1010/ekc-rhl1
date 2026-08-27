@@ -10,11 +10,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   User as UserIcon, Building2, Bell, Shield, Factory, FileBarChart, Palette,
   Check, Plus, X, Sun, Moon, Monitor, RotateCcw, Info, Lock, ArrowRight,
-  Mail, MessageSquare, KeyRound, ScrollText, Clock, ExternalLink, Pencil, Camera,
+  Mail, MessageSquare, KeyRound, ScrollText, Clock, ExternalLink, Pencil, Camera, Ruler,
   type LucideIcon,
 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
+import DiaStagesSettings from '../components/DiaStagesSettings';
 import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
@@ -28,7 +29,7 @@ import {
   type Settings, type ThemeMode, type Severity,
 } from '../lib/settings';
 
-type SectionId = 'profile' | 'company' | 'alerts' | 'security' | 'production' | 'reports' | 'system';
+type SectionId = 'profile' | 'company' | 'alerts' | 'security' | 'production' | 'diastages' | 'reports' | 'system';
 
 // Shifts / products / process stages are SHARED lists (server app_config) so
 // every desktop sees the same values. Edits here save locally as always, and —
@@ -65,6 +66,7 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon; emoji: string 
   { id: 'alerts',     label: 'Alerts & Downtime',    icon: Bell,        emoji: '🔔' },
   { id: 'security',   label: 'Security & Access',    icon: Shield,      emoji: '🔐' },
   { id: 'production',  label: 'Production & Quality', icon: Factory,     emoji: '🛢️' },
+  { id: 'diastages',  label: 'Dia & Stages',         icon: Ruler,       emoji: '📐' },
   { id: 'reports',    label: 'Reports & Compliance', icon: FileBarChart,emoji: '📊' },
   { id: 'system',     label: 'System & Appearance',  icon: Palette,     emoji: '🎨' },
 ];
@@ -125,6 +127,7 @@ export default function Settings() {
           {section === 'alerts'     && <AlertsSection s={s} />}
           {section === 'security'   && <SecuritySection s={s} />}
           {section === 'production' && <ProductionSection s={s} />}
+          {section === 'diastages'  && <DiaStagesSettings />}
           {section === 'reports'    && <ReportsSection s={s} />}
           {section === 'system'     && <SystemSection s={s} />}
         </div>

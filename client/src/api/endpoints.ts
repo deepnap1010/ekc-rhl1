@@ -79,7 +79,7 @@ export const eventsApi = {
 
 export const configApi = {
   get: () => get<AppConfigShape>('/config'),
-  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages'>>) =>
+  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates'>>) =>
     api.put('/config', body) as unknown as Promise<ApiResponse<AppConfigShape>>,
 };
 
@@ -144,6 +144,10 @@ export const productionApi = {
   orders: () => get<ProductionOrder[]>('/production/orders'),
   createOrder: (b: { orderNo: string; diaId: string; quantity: number; notes?: string }) => post<ProductionOrder>('/production/orders', b),
   updateOrder: (id: string, status: 'open' | 'done' | 'cancelled') => patch<ProductionOrder>(`/production/orders/${id}`, { status }),
+  // Assign by dia NAME (the teammate build's shape) — the stage is matched from
+  // the machine's family unless one is named. Same record as assign().
+  setDiaByName: (code: string, dia: string, stage?: string) =>
+    post<unknown>(`/machines/${encodeURIComponent(code)}/dia`, { dia, stage }),
   currentOperators: () => get<OperatorSession[]>('/production/operators/current'),
   setOperator: (b: { machineRef: string; userId: string }) => post<OperatorSession>('/production/operators', b),
   endOperator: (machineRef: string) => del<{ ended: boolean }>(`/production/operators/current/${encodeURIComponent(machineRef)}`),

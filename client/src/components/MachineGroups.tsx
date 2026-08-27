@@ -11,9 +11,10 @@
 // Window: every group follows the dashboard's date filter, and can be switched
 // to its own (today / yesterday / this week / … ) without disturbing the page.
 //
-// The families sit in a row of CIRCLES — one badge per group, production lines
-// first, with a live running-count dot. Clicking a circle opens that family's
-// panel (summary + machines) below; one family on screen at a time.
+// The families sit in a GRID of collapsed panels — three across, production
+// lines first, each showing its name and totals. Clicking one opens it in
+// place, spanning the full row so its machines have room; clicking again
+// folds it back. (The circle-row selector this replaced is in the history.)
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
@@ -45,21 +46,15 @@ interface Props {
 export default function MachineGroups({ rows, windowMs, windowLabel, from, to, signals, loading }: Props): JSX.Element {
   const groups = groupMachines(rows);
   // Production lines (families with more than one machine) lead the row; the
-  // one-off machines follow as their own circles. Derived, never configured.
+  // one-off machines follow as their own panels. Derived, never configured.
   const lines = groups.filter((g) => g.machines.length > 1);
   const singles = groups.filter((g) => g.machines.length === 1);
   const ordered = [...lines, ...singles];
 
-  // Which family is open. '' = none (all circles idle); the first line opens by
-  // default so the page never greets a supervisor with an empty space.
-  const [selected, setSelected] = useState<string | null>(null);
-  const activeKey = selected ?? ordered[0]?.key ?? '';
-  const active = ordered.find((g) => g.key === activeKey);
-
   if (loading && rows.length === 0) {
     return <div className="panel p-10 text-center text-sm text-steel">Reconstructing machine activity…</div>;
   }
-  if (groups.length === 0) {
+  if (!ordered.length) {
     return (
       <div className="panel p-10 text-center">
         <Layers size={26} className="text-steel/40 mx-auto mb-3" />
@@ -69,44 +64,14 @@ export default function MachineGroups({ rows, windowMs, windowLabel, from, to, s
   }
 
   return (
-    <div className="space-y-4">
-      {/* The circle row — one badge per family, click to open it below */}
-      <div className="panel px-4 py-3 flex gap-1 overflow-x-auto">
-        {ordered.map((g) => {
-          const isActive = g.key === activeKey;
-          const running = g.machines.filter((m) => m.status === 'running').length;
-          return (
-            <button
-              key={g.key}
-              onClick={() => setSelected(g.key)}
-              title={`${g.label} — ${g.machines.length} machine${g.machines.length === 1 ? '' : 's'}, ${running} running`}
-              className="flex flex-col items-center gap-1.5 px-2.5 py-1 shrink-0 group/c"
-            >
-              <span className={`relative w-14 h-14 rounded-full flex items-center justify-center transition-all ${
-                isActive
-                  ? 'bg-accent/15 ring-2 ring-accent ring-offset-2 ring-offset-surface'
-                  : 'bg-base border border-line group-hover/c:border-accent/50'
-              }`}>
-                <Boxes size={22} className={isActive ? 'text-accent' : 'text-steel group-hover/c:text-accent'} />
-                {/* machine count, running state as the badge color */}
-                <span className={`absolute -bottom-0.5 -right-0.5 min-w-[20px] h-5 px-1 rounded-full text-[10px] font-bold flex items-center justify-center border-2 border-surface ${
-                  running > 0 ? 'bg-accent text-white' : 'bg-line text-steel'
-                }`}>{g.machines.length}</span>
-              </span>
-              <span className={`text-[11px] leading-tight max-w-[84px] truncate ${
-                isActive ? 'text-accent font-semibold' : 'text-steel group-hover/c:text-primary'
-              }`}>{g.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* The chosen family — summary + its machines */}
-      {active && (
-        <GroupPanel key={active.key} label={active.label} rows={active.machines}
+    /* Three group cards per row; an OPENED group spans the full row so its
+       machines have room to lay out. */
+    <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+      {ordered.map((g) => (
+        <GroupPanel key={g.key} label={g.label} rows={g.machines}
           windowMs={windowMs} windowLabel={windowLabel}
           pageFrom={from} pageTo={to} signals={signals} />
-      )}
+      ))}
     </div>
   );
 }
@@ -116,7 +81,7 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
   label: string; rows: MachineActivityRow[]; windowMs: number; windowLabel: string;
   pageFrom?: string; pageTo?: string; signals?: Record<string, { key: string; label: string; unit?: string }>;
 }): JSX.Element {
-  const [open, setOpen] = useState(true);   // the circle click was the open gesture
+  const [open, setOpen] = useState(false);   // a family opens on click
   // '' = follow the page filter. An override re-fetches ONLY this group's window.
   const [override, setOverride] = useState<DatePreset | ''>('');
 
@@ -160,7 +125,8 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
   const { data: avgData } = useQuery({
     queryKey: ['metric-averages', winFrom, winTo, keysParam],
     queryFn: () => machineApi.metricAverages({ from: winFrom as string, to: winTo as string, keys: keysParam }),
-    enabled: !!keysParam && !!winFrom && !!winTo,
+    // The averages only feed the per-machine cards, which render when open.
+    enabled: open && !!keysParam && !!winFrom && !!winTo,
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
   });
@@ -174,7 +140,7 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
   const visible = open ? shown : [];
 
   return (
-    <div className="panel p-4">
+    <div className={`panel p-4 ${open ? 'md:col-span-2 xl:col-span-3' : ''}`}>
       {/* Header — click anywhere to open the full machine list of this family */}
       <div className="flex items-start gap-3 flex-wrap">
         <button
@@ -219,7 +185,7 @@ function GroupPanel({ label, rows, windowMs, windowLabel, pageFrom, pageTo, sign
           per-machine cards below already show what those machines do measure, and
           those measurements are different from each other, so there is no family
           figure to put here. */}
-      <div className={`grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3.5 ${showOutput ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+      <div className={`grid gap-2 mt-3.5 ${open ? `grid-cols-2 sm:grid-cols-3 ${showOutput ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}` : 'grid-cols-2'}`}>
         {/* A furnace family makes HEAT, not pieces — its headline figure is the mean
             work-zone temperature over the window, never a piece count. */}
         {isFurnaceRef(label) ? (

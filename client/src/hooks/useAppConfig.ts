@@ -10,6 +10,7 @@ import { useSettings, patchSettings, type ShiftTiming } from '../lib/settings';
 export interface AppConfigLists {
   shifts: ShiftTiming[];
   breaks: { name: string; start: string; end: string }[];
+  stageTemplates: { name: string; defaultSec: number }[];
   products: string[];
   processStages: string[];
   fromServer: boolean;
@@ -41,6 +42,7 @@ export function useAppConfig(): AppConfigLists {
   return {
     shifts: data?.shifts?.length ? data.shifts : s.shifts,
     breaks: data?.breaks || [],
+    stageTemplates: data?.stageTemplates || [],
     products: data?.products?.length ? data.products : s.production.products,
     processStages: data?.processStages?.length ? data.processStages : s.production.processStages,
     fromServer: !!data,

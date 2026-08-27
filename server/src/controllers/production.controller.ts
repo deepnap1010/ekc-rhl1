@@ -433,3 +433,105 @@ export const listAudit = asyncHandler(async (req, res) => {
   ]);
   return ok(res, rows, { total, page: Number(page), limit: lim });
 });
+
+// ── Compatibility surface: the teammate build's dia API ──────────────────────
+// Same routes their client calls (/machines/dias, /machines/:code/dia,
+// /machines/:code/dia/history), served from THIS app's machine_assignments —
+// one store, so a dia set through either surface is the same record, keeps its
+// frozen processing time, and lands in the audit trail. Their shape is
+// {machine, dia, assignedAt, endedAt}; ours carries the stage and rate too, so
+// both are returned and old clients simply ignore the extras.
+const asDiaRow = (a: {
+  machineRef: string; stageKey: string; snapshot: { diaName: string; stageName: string; processingSec: number };
+  effectiveFrom: Date; effectiveTo: Date | null; assignedBy?: { name?: string };
+}) => ({
+  machine: a.machineRef,
+  dia: a.snapshot.diaName,
+  stage: a.snapshot.stageName,
+  stageKey: a.stageKey,
+  processingSec: a.snapshot.processingSec,
+  assignedAt: a.effectiveFrom,
+  endedAt: a.effectiveTo,
+  assignedBy: a.assignedBy?.name || '',
+});
+
+// GET /machines/dias — current dia per machine, scoped.
+export const machineDias = asyncHandler(async (req, res) => {
+  const scope = machineScope(req.user as ScopedUser);
+  const q: Record<string, unknown> = { effectiveTo: null };
+  if (scope) q.machineRef = { $in: scope };
+  const rows = await MachineAssignment.find(q).sort({ machineRef: 1 }).lean();
+  return ok(res, rows.map(asDiaRow));
+});
+
+// POST /machines/:code/dia { dia, stage? } — assign by NAME. The stage is
+// optional: without one the DIA's stage whose name matches the machine's family
+// is used (CUTTINGMACHINE05 → "Cutting"), the same rule the assign modal
+// pre-fills with. '' clears the assignment.
+const normRef = (v: string): string => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+export const setMachineDia = asyncHandler(async (req, res) => {
+  const ref = String(req.params.code || '').trim();
+  const scope = machineScope(req.user as ScopedUser);
+  if (scope && !scope.includes(ref)) return fail(res, 403, 'You are not assigned to this machine');
+  const body = req.body as { dia?: string; stage?: string };
+  const diaName = String(body?.dia ?? '').trim();
+
+  if (!diaName) {
+    const prev = await MachineAssignment.findOneAndUpdate(
+      { machineRef: ref, effectiveTo: null }, { $set: { effectiveTo: new Date() } },
+    ).lean();
+    if (prev) {
+      audit(req.user as ScopedUser, 'assignment.end',
+        { type: 'assignment', id: String(prev._id), label: `${ref} — ${prev.snapshot?.diaName}` },
+        { diaName: prev.snapshot?.diaName }, null);
+    }
+    return ok(res, { machine: ref, dia: null });
+  }
+
+  const dia = await DiaConfig.findOne({ name: diaName }).lean();
+  if (!dia) return fail(res, 404, `No DIA named "${diaName}"`);
+  if (!dia.active) return fail(res, 400, `"${dia.name}" is deactivated`);
+  const active = dia.stages.filter((s) => s.active);
+  const wanted = String(body?.stage ?? '').trim();
+  const stage = wanted
+    ? active.find((s) => s.name.toLowerCase() === wanted.toLowerCase() || s.key === wanted)
+    // No stage named → match the machine's family stem against the stage names.
+    : active.find((s) => {
+      const n = normRef(s.name), stem = normRef(ref).replace(/\d+$/, '');
+      return !!n && (stem.includes(n) || n.includes(stem));
+    }) || (active.length === 1 ? active[0] : undefined);
+  if (!stage) {
+    return fail(res, 400, wanted
+      ? `"${dia.name}" has no active stage "${wanted}"`
+      : `Which stage of "${dia.name}" does ${ref} run? Send { stage } — no stage name matches this machine.`);
+  }
+
+  const now = new Date();
+  const prev = await MachineAssignment.findOneAndUpdate(
+    { machineRef: ref, effectiveTo: null }, { $set: { effectiveTo: now } }, { sort: { effectiveFrom: -1 } },
+  ).lean();
+  const who = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
+  const doc = await MachineAssignment.create({
+    machineRef: ref, diaId: dia._id, stageKey: stage.key,
+    snapshot: {
+      diaName: dia.name, capacity: dia.capacity, dims: dia.dims,
+      stageName: stage.name, processingSec: stage.processingSec,
+    },
+    effectiveFrom: now, effectiveTo: null, assignedBy: who,
+  });
+  audit(req.user as ScopedUser, 'assignment.create',
+    { type: 'assignment', id: String(doc._id), label: `${ref} → ${dia.name} / ${stage.name}` },
+    prev ? { diaName: prev.snapshot?.diaName, stageName: prev.snapshot?.stageName } : null,
+    { diaName: dia.name, stageName: stage.name, processingSec: stage.processingSec });
+  return created(res, asDiaRow(doc.toObject() as unknown as Parameters<typeof asDiaRow>[0]));
+});
+
+// GET /machines/:code/dia/history — every assignment this machine has held.
+export const machineDiaHistory = asyncHandler(async (req, res) => {
+  const ref = String(req.params.code || '').trim();
+  const scope = machineScope(req.user as ScopedUser);
+  if (scope && !scope.includes(ref)) return ok(res, []);
+  const rows = await MachineAssignment.find({ machineRef: ref })
+    .sort({ effectiveFrom: -1 }).limit(200).lean();
+  return ok(res, rows.map(asDiaRow));
+});

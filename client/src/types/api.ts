@@ -399,6 +399,7 @@ export interface OvCapabilityBlocked { name: string; needs: string }
 export interface AppConfigShape {
   shifts: { name: string; start: string; end: string }[];
   breaks?: BreakWindow[];   // planned daily pauses — targets exclude them
+  stageTemplates?: StageTemplate[];   // plant-wide stage flow (names + default times)
   products: string[];
   processStages: string[];
   stored: boolean;
@@ -629,6 +630,10 @@ export interface OperatorSession {
   endedAt: string | null;
 }
 export interface BreakWindow { name: string; start: string; end: string }
+
+// The plant's stage vocabulary in flow order — the TEMPLATE a new dia starts
+// from. Each dia still carries its own per-stage time.
+export interface StageTemplate { name: string; defaultSec: number }
 
 export interface HourlyProduction {
   key: string | null;                    // which counter the bars came from
