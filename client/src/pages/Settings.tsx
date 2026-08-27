@@ -5,7 +5,7 @@
 // enforcement, audit logs, API keys, scheduled email) are shown honestly as
 // server-managed rather than faked.
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   User as UserIcon, Building2, Bell, Shield, Factory, FileBarChart, Palette,
@@ -78,7 +78,13 @@ export default function Settings() {
   // this device's stale timings.
   useAppConfig();
   const t = useT();
-  const [section, setSection] = useState<SectionId>('profile');
+  // Deep link straight to a section: /settings?section=diastages (the target
+  // board's "Settings → Dia & Stages" links land here).
+  const [searchParams] = useSearchParams();
+  const initialSection = searchParams.get('section');
+  const [section, setSection] = useState<SectionId>(
+    SECTIONS.some((s) => s.id === initialSection) ? (initialSection as SectionId) : 'profile'
+  );
 
   // Hydrate the shared lists FROM the server before any edit, so a push from
   // this device can never overwrite the server with a stale local seed.

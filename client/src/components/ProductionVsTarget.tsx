@@ -21,16 +21,16 @@
 // hourly bars ride the same confirmed-counter-step engine as every report.
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
 import { Target, Ruler, ArrowUpRight, ArrowLeft, CheckCircle2, AlertTriangle, Boxes } from 'lucide-react';
 import { Donut } from './charts';
 import { StatusPill, TimeStat } from './ui';
 import { machineApi, productionApi } from '../api/endpoints';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
-import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate } from '../lib/targets';
+import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
 import { processCompare, groupMachines } from '../lib/machineOrder';
-import { resolveRange } from '../store/filters';
+import { resolveRange, shiftDayOn } from '../store/filters';
 import { fmtNum, fmtDuration } from '../lib/format';
 import type { MachineActivityRow, MachineAssignment } from '../types/api';
 
@@ -211,8 +211,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
         <div className="text-sm text-steel">
           Assign a dia to a machine to start tracking its target — the dia defines the product, so targets begin there.
         </div>
-        <Link to="/production" className="ml-auto text-xs text-accent hover:underline inline-flex items-center gap-1">
-          Production Targets <ArrowUpRight size={12} />
+        <Link to="/settings?section=diastages" className="ml-auto text-xs text-accent hover:underline inline-flex items-center gap-1">
+          Settings → Dia &amp; Stages <ArrowUpRight size={12} />
         </Link>
       </div>
     );
@@ -307,13 +307,16 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
             className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
             <ArrowLeft size={13} /> All groups
           </button>
-          {/* Masonry — cards flow into columns and fill the space however many
-              machines the group holds. */}
-          <div className="columns-1 md:columns-2 xl:columns-3 gap-4">
+          {/* Line-dashboard shape: the group's summary holds the LEFT column
+              (like a line header) and the machines fill a grid on the RIGHT
+              that simply grows row by row as machines are added. */}
+          <div className="grid lg:grid-cols-[260px_1fr] gap-4">
             <GroupSummary g={open} windowMs={effWindowMs} />
-            {open.targets.map((t) => (
-              <MachineTargetCard key={t.row.code} t={t} onOpen={() => setOpenForCode(t.row.code)} />
-            ))}
+            <div className="grid sm:grid-cols-2 2xl:grid-cols-3 gap-3 content-start">
+              {open.targets.map((t) => (
+                <MachineTargetCard key={t.row.code} t={t} onOpen={() => setOpenForCode(t.row.code)} />
+              ))}
+            </div>
           </div>
         </div>
       ) : (
@@ -330,6 +333,9 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
       {excluded.length > 0 && !(mode === 'shift' && !shiftName) && (
         <div className="mt-3.5 pt-3 border-t border-line text-[11px] text-steel">
           <span className="font-medium text-primary">Dia set, but not on the board yet: </span>
+          <Link to="/settings?section=diastages" className="text-accent hover:underline inline-flex items-center gap-0.5 float-right">
+            Settings → Dia &amp; Stages <ArrowUpRight size={11} />
+          </Link>
           {excluded.map((e) => <span key={e.code}><span className="data font-medium text-primary">{e.code.toUpperCase()}</span> — {e.reason}. </span>)}
         </div>
       )}
@@ -431,9 +437,12 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
   const stop = g.targets.reduce((n, t) => n + t.row.stoppedMs, 0);
   const avail = windowMs > 0 ? Math.round((run / (windowMs * g.targets.length)) * 100) : 0;
   return (
-    <div className="card p-4 mb-4 break-inside-avoid">
+    // Deliberately NOT the machine-card look: accent left rail + tinted ground
+    // so the eye reads "this is the group's summary", not a sixth machine.
+    <div className="rounded-2xl border border-accent/30 border-l-4 border-l-accent bg-accent/5 p-4 h-full flex flex-col">
+      <div className="text-[9px] uppercase tracking-widest text-accent font-bold mb-1.5">Group summary</div>
       <div className="flex items-center gap-2 mb-2">
-        <span className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center shrink-0"><Boxes size={14} className="text-accent" /></span>
+        <span className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center shrink-0"><Boxes size={14} className="text-accent" /></span>
         <div className="font-semibold text-sm text-primary truncate">{g.label}</div>
       </div>
       <div className="data text-3xl font-bold leading-none" style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}<span className="text-base">%</span></div>
@@ -452,6 +461,96 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <AttentionLine targets={g.targets} />
         <StatusDots targets={g.targets} />
       </div>
+      <GroupWeekChart g={g} />
+    </div>
+  );
+}
+
+// The group's LAST 7 DAYS as day bars — % of target per production day, the
+// line-dashboard's "month wise" chart at week scale. Each bar reads from the
+// same activity engine (one cached query per day; finished days never
+// refetch), and each day's target is the same net-window model as everything
+// else: the day's span at each machine's frozen rate, breaks excluded.
+function GroupWeekChart({ g }: { g: GroupTargets }): JSX.Element {
+  const { shifts, breaks } = useAppConfig();
+  const nowMin = Math.floor(Date.now() / 60_000) * 60_000;
+  const days = useMemo(() => {
+    // PRODUCTION days (07:00 → 07:00 with this plant's shifts), anchored the
+    // same way the Today/Yesterday filters are — so a bar and the Yesterday
+    // filter always quote the same pieces.
+    const anchor = new Date(); anchor.setHours(0, 0, 0, 0);
+    if (nowMin < shiftDayOn(shifts, anchor).from.getTime()) anchor.setDate(anchor.getDate() - 1);
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(anchor); d.setDate(d.getDate() - (6 - i));
+      const win = shiftDayOn(shifts, d);
+      const from = win.from.getTime();
+      const to = Math.min(win.to.getTime(), nowMin);
+      return {
+        from, to,
+        fromISO: new Date(from).toISOString(), toISO: new Date(to).toISOString(),
+        label: win.from.toLocaleDateString(undefined, { weekday: 'short' }),
+        date: win.from.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }),
+      };
+    });
+  }, [nowMin, shifts]);
+
+  const codes = useMemo(() => new Set(g.targets.map((t) => t.row.code)), [g]);
+  const rates = useMemo(() => new Map(g.targets.map((t) => [t.row.code, t.processingSec])), [g]);
+  const results = useQueries({
+    queries: days.map((d) => ({
+      queryKey: ['activity', d.fromISO, d.toISO],
+      queryFn: () => machineApi.activity({ from: d.fromISO, to: d.toISO }),
+      // A finished day never changes; only today keeps moving.
+      staleTime: d.to < nowMin ? 30 * 60_000 : 60_000,
+    })),
+  });
+
+  const bars = days.map((d, i) => {
+    const res = results[i].data;
+    const netMs = windowNetMs(d.from, d.to, breaks);
+    let actual = 0, target = 0;
+    for (const row of res?.data ?? []) {
+      if (!codes.has(row.code) || row.production == null) continue;
+      const sec = rates.get(row.code);
+      if (!sec) continue;
+      actual += row.production;
+      target += targetUnits(sec, netMs);
+    }
+    return { ...d, actual, target, pct: target > 0 ? actual / target : null };
+  });
+  const anyData = bars.some((b) => b.pct != null);
+
+  return (
+    <div className="mt-3 pt-3 border-t border-line flex-1 flex flex-col min-h-[120px]">
+      <div className="label mb-2">This week · % of target</div>
+      {!anyData ? (
+        <div className="text-[10px] text-steel flex-1">Reading the week's history…</div>
+      ) : (
+        <div className="flex items-end gap-1.5 flex-1" style={{ minHeight: 80 }}>
+          {bars.map((b) => {
+            const pct = b.pct ?? 0;
+            // Cap the scale at 120% so an over-target day doesn't flatten the rest.
+            const h = (Math.min(pct, 1.2) / 1.2) * 100;
+            return (
+              <div key={b.from} className="flex-1 h-full flex flex-col items-center justify-end group/bar cursor-default"
+                title={`${b.label} ${b.date} · ${fmtNum(b.actual)} / ${fmtTarget(b.target)} pcs${b.pct != null ? ` · ${Math.round(pct * 100)}%` : ' · no data'}`}>
+                {b.pct != null && (
+                  <span className="data text-[9px] font-bold mb-0.5 opacity-70 group-hover/bar:opacity-100 transition-opacity" style={{ color: attainColor(pct) }}>
+                    {Math.round(pct * 100)}
+                  </span>
+                )}
+                <div className="w-full rounded-t transition-all group-hover/bar:brightness-110"
+                  style={{ height: `${b.pct != null ? Math.max(h, 3) : 0}%`, background: b.pct != null ? attainColor(pct) : TRACK }} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex gap-1.5 mt-1 border-t border-line pt-1">
+        {bars.map((b) => (
+          <div key={b.from} className="flex-1 text-center text-[9px] text-steel">{b.label}</div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -462,7 +561,7 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
   const color = attainColor(pct);
   const rate = hourlyRate(t.processingSec);
   return (
-    <button onClick={onOpen} className="card p-3.5 w-full mb-4 break-inside-avoid flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 group" title="Open this machine's board">
+    <button onClick={onOpen} className="card p-3.5 w-full flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 group" title="Open this machine's board">
       <div className="flex items-center gap-3">
         <Donut size={76} thickness={8} emptyColor={TRACK}
           segments={[
@@ -480,11 +579,11 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
             <Ruler size={10} className="shrink-0" /><span className="data font-medium text-primary">{t.dia}</span>
           </div>
           <div className="text-[10px] text-steel mt-0.5 truncate">
-            {t.stage} · {fmtProcessing(t.processingSec)}/pc · {fmtTarget(rate)}/hr
+            {t.stage} · {secToMinPerPc(t.processingSec)} min/pc · {fmtTarget(rate)}/hr
           </div>
           <div className="flex items-baseline gap-1 mt-1">
             <span className="data text-base font-bold leading-none" style={{ color }}>{fmtNum(t.actual)}</span>
-            <span className="text-[10px] text-steel">/ {fmtTarget(t.target)} pcs · {t.diff >= -0.5 && t.diff < 0.5 ? 'on target' : t.diff >= 0 ? `${fmtTarget(t.diff)} ahead` : `${fmtTarget(-t.diff)} behind`}</span>
+            <span className="text-xs font-semibold text-primary/80">/ {fmtTarget(t.target)} pcs · {t.diff >= -0.5 && t.diff < 0.5 ? 'on target' : t.diff >= 0 ? `${fmtTarget(t.diff)} ahead` : `${fmtTarget(-t.diff)} behind`}</span>
           </div>
         </div>
       </div>

@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Target, Ruler, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Ruler, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -11,7 +11,7 @@ import PageHeader from '../components/PageHeader';
 import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
-import { windowNetMs, targetUnits, achievementPct, fmtTarget } from '../lib/targets';
+import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
 import { useAuthStore } from '../store/auth';
 import { AssignDiaModal } from '../components/machine/AssignDia';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
@@ -664,19 +664,15 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
         if (target <= 0) return null;
         return (
           <div className="mb-3 -mt-1">
-            <div className="flex items-baseline justify-between gap-2 text-[10px] mb-1">
-              <span className="inline-flex items-center gap-1 text-steel truncate">
-                <Target size={10} className="shrink-0" />
-                {assignment.snapshot.diaName} · {assignment.snapshot.stageName}
-              </span>
-              <span className="data font-semibold shrink-0" style={{ color: pct != null && pct < 60 ? '#D97706' : '#0D9488' }}>
+            <div className="flex items-center justify-between gap-2 text-[10px] mb-1">
+              <span className="text-steel truncate">{assignment.snapshot.stageName} · {secToMinPerPc(assignment.snapshot.processingSec)} min/pc</span>
+              <span className="data font-bold text-primary shrink-0">
                 {fmtNum(activity.production)} / {fmtTarget(target)}{pct != null ? ` · ${Math.round(pct)}%` : ''}
               </span>
             </div>
-            <div className="h-1 bg-line rounded-full overflow-hidden">
-              <div className="h-full rounded-full" style={{
-                width: `${Math.min(pct ?? 0, 100)}%`,
-                background: pct != null && pct < 60 ? '#D97706' : '#0D9488',
+            <div className="h-1.5 bg-line rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all" style={{
+                width: `${Math.min(pct ?? 0, 100)}%`, background: '#1E293B',
               }} />
             </div>
           </div>
