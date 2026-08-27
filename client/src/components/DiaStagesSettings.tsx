@@ -148,7 +148,7 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
           <p className="text-[11px] text-steel mb-3">
             Cycle count per stage for this dia — minutes per piece. Blank = this dia doesn't run that stage.
           </p>
-          <div className="grid sm:grid-cols-2 gap-x-8 gap-y-2 mb-3">
+          <div className="space-y-2 mb-3 max-w-md">
             {templates.map((t) => (
               <div key={t.name} className="flex items-center gap-2">
                 <span className="flex-1 text-sm text-primary truncate">{t.name}</span>
@@ -238,7 +238,7 @@ function EditCycles({ dia, templates, onSaved }: {
 
   return (
     <div className="px-3 pb-3 pt-2 border-t border-line">
-      <div className="grid sm:grid-cols-2 gap-x-8 gap-y-2 mb-3">
+      <div className="space-y-2 mb-3 max-w-md">
         {stageNames.map((n) => (
           <div key={n} className="flex items-center gap-2">
             <span className="flex-1 text-sm text-primary truncate">{n}</span>
