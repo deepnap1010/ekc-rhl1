@@ -634,6 +634,15 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
               <span className="text-steel"> °C</span>
             </div>
           )}
+          {/* A borrowed-count machine still measures something of its own —
+              BOTTOMMILLING03's feed speed rides under the upstream count. */}
+          {!furnace && activity?.productionFrom && headline && (
+            <div className="text-[10px] mt-1">
+              <span className="text-steel">{headline.label.toLowerCase()} </span>
+              <span className="data font-bold text-primary">{headline.value}</span>
+              {headline.unit && <span className="text-steel"> {headline.unit}</span>}
+            </div>
+          )}
         </div>
         {trend && trend.spark.length > 1 && (
           <div className="w-28 h-12 shrink-0 self-center"><Sparkline data={trend.spark} height={48} color={TEAL} /></div>
