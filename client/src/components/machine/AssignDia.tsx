@@ -6,12 +6,12 @@
 // freeze a new snapshot, write an audit row.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Target, Check } from 'lucide-react';
+import { Target, Check, Ruler } from 'lucide-react';
 import { productionApi } from '../../api/endpoints';
 import Modal from '../Modal';
 import { useAuthStore } from '../../store/auth';
 import { toast } from '../../store/toast';
-import { fmtTarget, fmtProcessing, hourlyRate } from '../../lib/targets';
+import { fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../../lib/targets';
 import { stageForMachine } from '../../lib/diaStage';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtTime } from '../../lib/format';
@@ -73,12 +73,18 @@ export function AssignDiaModal({ code, current, onClose }: {
   const dia = options.find((d) => d._id === diaId);
   const stage = dia?.stages.find((s) => s.key === stageKey && s.active);
 
-  // Picking a dia AUTO-FILLS the stage from the machine's family (a cutting
-  // machine gets Cutting) — the select stays there to override the guess.
+  // Picking a dia AUTO-SELECTS the stage: the machine's family names it
+  // (a cutting machine gets Cutting), a single-stage dia decides itself. Only
+  // when neither settles it does a stage select appear — same rule as the
+  // server, which refuses to guess.
+  const [askStage, setAskStage] = useState(false);
   const pickDia = (id: string) => {
     setDiaId(id);
+    setAskStage(false);
     const d = options.find((x) => x._id === id);
-    setStageKey(stageForMachine(code, d)?.key || '');
+    const active = (d?.stages || []).filter((st) => st.active);
+    const hit = stageForMachine(code, d) || (active.length === 1 ? active[0] : null);
+    setStageKey(hit?.key || '');
   };
 
   // Per-shift figure beside the hourly one — the number a supervisor plans by.
@@ -109,7 +115,7 @@ export function AssignDiaModal({ code, current, onClose }: {
   });
 
   return (
-    <Modal title={`Assign DIA — ${code}`} subtitle="The machine's target follows the stage's processing time" icon={Target} onClose={onClose} maxW="max-w-md">
+    <Modal title={`Assign dia · ${code}`} subtitle="The dia defines the product this machine is set up to make" icon={Ruler} onClose={onClose} maxW="max-w-md">
       <div className="space-y-4">
         {/* What it's making right now — the anchor for the change below */}
         {current && (
@@ -128,32 +134,56 @@ export function AssignDiaModal({ code, current, onClose }: {
         ) : (
           <>
             <div>
-              <div className="label mb-1.5">DIA / Product</div>
+              <div className="label mb-1.5">{current ? 'Change to' : 'DIA / Product'}</div>
               <select value={diaId} onChange={(e) => pickDia(e.target.value)}
                 className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
-                <option value="">Select a DIA…</option>
+                <option value="">Select a dia…</option>
                 {options.map((d) => (
                   <option key={d._id} value={d._id}>{d.name}{d.dims ? ` · ${d.dims}` : ''}</option>
                 ))}
               </select>
             </div>
-            <div>
-              <div className="label mb-1.5">Stage</div>
-              <select value={stageKey} onChange={(e) => setStageKey(e.target.value)} disabled={!dia}
-                className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-50">
-                <option value="">Select a stage…</option>
-                {(dia?.stages || []).filter((s) => s.active).map((s) => (
-                  <option key={s.key} value={s.key}>{s.name} — {fmtProcessing(s.processingSec)}/unit</option>
-                ))}
-              </select>
-            </div>
-            {stage && (
-              <div className="rounded-lg border border-accent/20 bg-accent/5 px-4 py-3 text-sm">
-                <span className="text-steel">Target: </span>
-                <span className="data font-bold text-accent">{fmtTarget(hourlyRate(stage.processingSec))}/hour</span>
-                <span className="text-steel"> · {fmtTarget((shiftMins * 60) / stage.processingSec)} per {Math.round(shiftMins / 60)}h shift · {fmtProcessing(stage.processingSec)}/pc</span>
+
+            {/* The stage is auto-selected from the machine's family; the saved
+                cycle count for it previews right here — their exact card. */}
+            {dia && stage && !askStage ? (
+              <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wide text-steel mb-1">
+                  {dia.name} · Saved cycle count for this stage
+                </div>
+                <div className="font-semibold text-sm text-primary">{stage.name}</div>
+                <div className="text-sm mt-0.5">
+                  <span className="text-steel">1 pc every </span>
+                  <span className="data font-bold text-accent">{secToMinPerPc(stage.processingSec)} min</span>
+                  <span className="text-steel"> → </span>
+                  <span className="data font-bold text-accent">{fmtTarget(hourlyRate(stage.processingSec))}/hr</span>
+                  <span className="text-steel"> · </span>
+                  <span className="data font-bold text-accent">{fmtTarget((shiftMins * 60) / stage.processingSec)}</span>
+                  <span className="text-steel">/shift</span>
+                </div>
+                {dia.stages.filter((st) => st.active).length > 1 && (
+                  <button onClick={() => setAskStage(true)} className="text-[11px] text-steel hover:text-accent mt-1.5">
+                    Not {stage.name}? Choose a different stage
+                  </button>
+                )}
               </div>
-            )}
+            ) : dia ? (
+              <div>
+                <div className="label mb-1.5">
+                  {askStage ? 'Stage' : `Which stage of ${dia.name} does this machine run?`}
+                </div>
+                <select value={stageKey} onChange={(e) => setStageKey(e.target.value)}
+                  className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                  <option value="">Select a stage…</option>
+                  {dia.stages.filter((s) => s.active).map((s) => (
+                    <option key={s.key} value={s.key}>{s.name} — {fmtProcessing(s.processingSec)}/pc · {fmtTarget(hourlyRate(s.processingSec))}/hr</option>
+                  ))}
+                </select>
+                {askStage && stageKey && (
+                  <button onClick={() => setAskStage(false)} className="text-[11px] text-steel hover:text-accent mt-1.5">Done</button>
+                )}
+              </div>
+            ) : null}
           </>
         )}
         <div className="flex items-center justify-between gap-2 pt-1">
@@ -165,7 +195,7 @@ export function AssignDiaModal({ code, current, onClose }: {
             <button onClick={onClose} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Cancel</button>
             <button onClick={() => assignMut.mutate()} disabled={!stage || assignMut.isPending}
               className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
-              {assignMut.isPending ? 'Assigning…' : 'Assign'}
+              {assignMut.isPending ? 'Assigning…' : 'Assign dia'}
             </button>
           </span>
         </div>
