@@ -99,3 +99,14 @@ export function fmtProcessing(sec: number): string {
 
 /** Per-hour rate for a processing time — the number supervisors sanity-check. */
 export const hourlyRate = (processingSec: number): number => targetUnits(processingSec, 3_600_000);
+
+// ── min/pc ⇄ seconds — the dia forms type in MINUTES per piece ───────────────
+export const minPerPcToSec = (v: string): number | null => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 24 * 60) return null;
+  return Math.max(1, Math.round(n * 60));
+};
+export const secToMinPerPc = (sec: number): string =>
+  (sec % 60 === 0 ? String(sec / 60) : String(Math.round((sec / 60) * 100) / 100));
+export const fmtMinPerPc = (sec: number): string =>
+  (sec % 60 === 0 ? `${sec / 60}m` : `${Math.round((sec / 60) * 10) / 10}m`);

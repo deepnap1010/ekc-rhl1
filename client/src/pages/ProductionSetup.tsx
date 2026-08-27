@@ -6,18 +6,18 @@
 // page is the catalogue.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Target, ArrowUp, ArrowDown, X, ClipboardList, Coffee } from 'lucide-react';
+import { Plus, Pencil, Target, X, ClipboardList, Coffee } from 'lucide-react';
 import { productionApi } from '../api/endpoints';
 import { Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
-import { fmtTarget, fmtProcessing, hourlyRate } from '../lib/targets';
+import { fmtTarget, fmtProcessing, hourlyRate, minPerPcToSec, secToMinPerPc } from '../lib/targets';
 import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import { fmtTime } from '../lib/format';
 import { useAppConfig } from '../hooks/useAppConfig';
-import type { DiaConfig, DiaStage, AuditRow, BreakWindow } from '../types/api';
+import type { DiaConfig, AuditRow, BreakWindow } from '../types/api';
 
 export default function ProductionSetup(): JSX.Element {
   const qc = useQueryClient();
@@ -110,7 +110,6 @@ export default function ProductionSetup(): JSX.Element {
       {editing && (
         <DiaModal
           dia={editing === 'new' ? null : editing}
-          template={dias || []}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
         />
@@ -338,102 +337,73 @@ function AuditTrail(): JSX.Element | null {
 }
 
 // ── Create / edit modal ───────────────────────────────────────────────────────
-interface StageDraft { key?: string; name: string; min: string; sec: string; active: boolean }
-
-const toDraft = (s: DiaStage): StageDraft => ({
-  key: s.key, name: s.name, min: String(Math.floor(s.processingSec / 60)), sec: String(s.processingSec % 60), active: s.active,
-});
-const draftSec = (s: StageDraft): number => (Number(s.min) || 0) * 60 + (Number(s.sec) || 0);
-
-function DiaModal({ dia, template, onClose, onSaved }: {
-  dia: DiaConfig | null; template?: DiaConfig[]; onClose: () => void; onSaved: () => void;
-}): JSX.Element {
+// ── Create / edit modal — the same shape as Settings → Dia & Stages: ONE name
+// field, then one min/pc input per stage of the plant's flow, stacked in
+// sequence. Blank = this dia doesn't run that stage. Editing prefills the
+// dia's own times (its extra stages included, so nothing saved is hidden).
+function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: () => void; onSaved: () => void }): JSX.Element {
+  const { stageTemplates } = useAppConfig();
   const [name, setName] = useState(dia?.name || '');
-  const [capacity, setCapacity] = useState(dia?.capacity || '');
-  const [dims, setDims] = useState(dia?.dims || '');
-  // A NEW DIA starts from the stages the plant already uses — the most recently
-  // edited DIA's list, times included, every field editable. The user described
-  // exactly this: 40L and 50L share Cutting/Spinning, only the minutes differ.
-  // Keys are NOT copied (each DIA owns its stage identities; the server slugs
-  // fresh ones from the names).
-  const source = !dia && template?.length
-    ? [...template].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0]
-    : null;
-  const seeded = source ? source.stages.filter((st) => st.active).map((st) => ({
-    name: st.name, min: String(Math.floor(st.processingSec / 60)), sec: String(st.processingSec % 60), active: true,
-  })) : null;
-  const [stages, setStages] = useState<StageDraft[]>(
-    dia ? dia.stages.map(toDraft)
-      : seeded?.length ? seeded
-        : [{ name: '', min: '3', sec: '0', active: true }],
-  );
+  // Flow order first; any stage the dia carries beyond the flow appends after.
+  const stageNames = (() => {
+    const names = stageTemplates.map((t) => t.name);
+    for (const st of dia?.stages || []) if (!names.includes(st.name)) names.push(st.name);
+    return names;
+  })();
+  const [vals, setVals] = useState<Record<string, string>>(() => {
+    const v: Record<string, string> = {};
+    for (const st of dia?.stages || []) if (st.active) v[st.name] = secToMinPerPc(st.processingSec);
+    return v;
+  });
 
   const saveMut = useMutation({
     mutationFn: () => {
-      const body = {
-        name, capacity, dims,
-        stages: stages.map((s) => ({ key: s.key, name: s.name, processingSec: draftSec(s), active: s.active })),
-      };
+      const keyOf = new Map((dia?.stages || []).map((st) => [st.name, st.key]));
+      const stages = stageNames
+        .map((n) => ({ name: n, processingSec: minPerPcToSec(vals[n] || '') }))
+        .filter((st): st is { name: string; processingSec: number } => st.processingSec != null)
+        .map((st) => ({ key: keyOf.get(st.name), name: st.name, processingSec: st.processingSec, active: true }));
+      const body = { name, stages };
       return dia ? productionApi.updateDia(dia._id, body) : productionApi.createDia(body);
     },
     onSuccess: () => { toast.success(dia ? 'DIA saved' : 'DIA created'); onSaved(); },
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not save'),
   });
 
-  const move = (i: number, dir: -1 | 1) => setStages((prev) => {
-    const next = [...prev];
-    const j = i + dir;
-    if (j < 0 || j >= next.length) return prev;
-    [next[i], next[j]] = [next[j], next[i]];
-    return next;
-  });
-  const patch = (i: number, p: Partial<StageDraft>) =>
-    setStages((prev) => prev.map((s, k) => (k === i ? { ...s, ...p } : s)));
-
-  const valid = name.trim() && stages.length > 0 && stages.every((s) => s.name.trim() && draftSec(s) >= 1 && draftSec(s) <= 86_400);
+  const anyStage = stageNames.some((n) => minPerPcToSec(vals[n] || '') != null);
+  const valid = !!name.trim() && anyStage;
 
   return (
-    <Modal title={dia ? `Edit ${dia.name}` : 'New DIA'} subtitle="Targets derive from the processing times below" icon={Target} onClose={onClose} maxW="max-w-2xl">
+    <Modal title={dia ? `Edit ${dia.name}` : 'New DIA'} subtitle="Targets derive from the cycle counts below" icon={Target} onClose={onClose} maxW="max-w-md">
       <div className="space-y-4">
-        <div className="grid sm:grid-cols-3 gap-3">
-          <Field label="Name" value={name} onChange={setName} placeholder="40L" />
-          <Field label="Capacity" value={capacity} onChange={setCapacity} placeholder="40L" />
-          <Field label="DIA / Size" value={dims} onChange={setDims} placeholder="316 × 40" />
+        <div>
+          <div className="label mb-1.5">Dia name</div>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Dia name — e.g. 310*13*25"
+            className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
         </div>
 
         <div>
-          <div className="label mb-2">Production stages · time per unit</div>
+          <p className="text-[11px] text-steel mb-2.5">
+            Cycle count per stage for this dia — minutes per piece. Blank = this dia doesn't run that stage.
+          </p>
           <div className="space-y-2">
-            {stages.map((s, i) => {
-              const sec = draftSec(s);
+            {stageNames.map((n) => {
+              const sec = minPerPcToSec(vals[n] || '');
               return (
-                <div key={i} className="flex items-center gap-2 flex-wrap">
-                  <input value={s.name} onChange={(e) => patch(i, { name: e.target.value })} placeholder={`Stage ${i + 1} — e.g. Cutting`}
-                    className="flex-1 min-w-[140px] bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent" />
-                  <span className="flex items-center gap-1 text-xs text-steel">
-                    <input value={s.min} onChange={(e) => patch(i, { min: e.target.value.replace(/\D/g, '') })} inputMode="numeric"
-                      className="w-12 bg-base border border-line rounded-lg px-2 py-2 text-sm text-right outline-none focus:border-accent" />m
-                    <input value={s.sec} onChange={(e) => patch(i, { sec: e.target.value.replace(/\D/g, '') })} inputMode="numeric"
-                      className="w-12 bg-base border border-line rounded-lg px-2 py-2 text-sm text-right outline-none focus:border-accent" />s
-                  </span>
-                  <span className="data text-xs text-accent w-20 text-right">{sec >= 1 ? `${fmtTarget(hourlyRate(sec))}/hr` : '—'}</span>
-                  <span className="flex items-center">
-                    <IconBtn onClick={() => move(i, -1)} disabled={i === 0} label="Move up"><ArrowUp size={13} /></IconBtn>
-                    <IconBtn onClick={() => move(i, 1)} disabled={i === stages.length - 1} label="Move down"><ArrowDown size={13} /></IconBtn>
-                    <IconBtn onClick={() => setStages((p) => p.filter((_, k) => k !== i))} disabled={stages.length === 1} label="Remove stage"><X size={13} /></IconBtn>
-                  </span>
+                <div key={n} className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-primary truncate">{n}</span>
+                  <input value={vals[n] || ''} inputMode="decimal" placeholder="—"
+                    onChange={(e) => setVals((p) => ({ ...p, [n]: e.target.value.replace(/[^\d.]/g, '') }))}
+                    className="w-20 bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-center outline-none focus:border-accent" />
+                  <span className="text-[10px] text-steel w-10 shrink-0">min/pc</span>
+                  <span className="data text-xs text-accent w-16 text-right shrink-0">{sec != null ? `${fmtTarget(hourlyRate(sec))}/hr` : ''}</span>
                 </div>
               );
             })}
+            {!stageNames.length && (
+              <p className="text-xs text-steel">No stages in the flow yet — add them under Settings → Dia &amp; Stages first.</p>
+            )}
           </div>
-          <button onClick={() => setStages((p) => [...p, { name: '', min: '3', sec: '0', active: true }])}
-            className="mt-2 flex items-center gap-1 text-xs text-accent hover:underline"><Plus size={12} /> Add stage</button>
-          {source && (
-            <p className="text-[11px] text-steel mt-2">
-              Stages copied from <span className="font-medium text-primary">{source.name}</span> — set this DIA's own times,
-              rename or remove whatever doesn't apply.
-            </p>
-          )}
         </div>
 
         {dia && (dia.usedOn || 0) > 0 && (
@@ -465,9 +435,3 @@ function Field({ label, value, onChange, placeholder }: { label: string; value: 
   );
 }
 
-function IconBtn({ onClick, disabled, label, children }: { onClick: () => void; disabled?: boolean; label: string; children: JSX.Element }): JSX.Element {
-  return (
-    <button onClick={onClick} disabled={disabled} title={label} aria-label={label}
-      className="p-1.5 text-steel hover:text-primary disabled:opacity-30">{children}</button>
-  );
-}

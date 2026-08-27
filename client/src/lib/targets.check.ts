@@ -1,5 +1,5 @@
 // client/src/lib/targets.check.ts — run: npx tsx client/src/lib/targets.check.ts
-import { assignedMs, netAssignedMs, windowNetMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from './targets.js';
+import { assignedMs, netAssignedMs, windowNetMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate, minPerPcToSec, secToMinPerPc, fmtMinPerPc } from './targets.js';
 
 const eq = (a: unknown, b: unknown, m: string): void => {
   if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
@@ -59,5 +59,13 @@ eq(windowNetMs(H10IST, H10IST + HOUR, []), HOUR, 'past 1-hour window → the ful
 close(targetUnits(180, windowNetMs(H10IST, H10IST + HOUR, [])), 20, '1-hour filter at 3 min/unit → target 20');
 eq(windowNetMs(H10IST, H10IST + HOUR, tea), 45 * 60_000, 'window target excludes breaks too');
 close(targetUnits(180, windowNetMs(H10IST, H10IST + 8 * HOUR, [])), 160, '8-hour filter → 160');
+
+// min/pc conversions — decimals allowed, floor at one second.
+eq(minPerPcToSec('3'), 180, '3 min/pc → 180s');
+eq(minPerPcToSec('2.5'), 150, '2.5 min/pc → 150s');
+eq(minPerPcToSec(''), null, 'blank → no stage');
+eq(minPerPcToSec('0'), null, 'zero is not a rate');
+eq(secToMinPerPc(150), '2.5', '150s prints 2.5');
+eq(fmtMinPerPc(180), '3m', '180s prints 3m');
 
 console.log('targets: all checks passed');

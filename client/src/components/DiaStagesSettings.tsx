@@ -32,13 +32,7 @@ import { fmtProcessing } from '../lib/targets';
 import type { DiaConfig, StageTemplate } from '../types/api';
 
 // Times read and type in MINUTES per piece (their unit); stored in seconds.
-const fmtMin = (sec: number): string => (sec % 60 === 0 ? `${sec / 60}m` : `${Math.round((sec / 60) * 10) / 10}m`);
-const minToSec = (v: string): number | null => {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0 || n > 24 * 60) return null;
-  return Math.max(1, Math.round(n * 60));
-};
-const secToMinStr = (sec: number): string => (sec % 60 === 0 ? String(sec / 60) : String(Math.round((sec / 60) * 100) / 100));
+import { fmtMinPerPc as fmtMin, minPerPcToSec as minToSec, secToMinPerPc as secToMinStr } from '../lib/targets';
 
 export default function DiaStagesSettings(): JSX.Element {
   const qc = useQueryClient();
