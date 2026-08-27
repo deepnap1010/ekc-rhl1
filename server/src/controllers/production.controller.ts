@@ -469,6 +469,12 @@ export const machineDias = asyncHandler(async (req, res) => {
 // is used (CUTTINGMACHINE05 → "Cutting"), the same rule the assign modal
 // pre-fills with. '' clears the assignment.
 const normRef = (v: string): string => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// The plant's abbreviations — mirrored in client lib/diaStage so the assign
+// modal and this endpoint auto-pick the same stage for the same machine.
+const FAMILY_STAGE_ALIASES: Record<string, string[]> = {
+  SPG: ['SPINNING'],
+  ISB: ['INTERNALSHOTBLASTING', 'SHOTBLASTING'],
+};
 export const setMachineDia = asyncHandler(async (req, res) => {
   const ref = String(req.params.code || '').trim();
   const scope = machineScope(req.user as ScopedUser);
@@ -495,10 +501,13 @@ export const setMachineDia = asyncHandler(async (req, res) => {
   const wanted = String(body?.stage ?? '').trim();
   const stage = wanted
     ? active.find((s) => s.name.toLowerCase() === wanted.toLowerCase() || s.key === wanted)
-    // No stage named → match the machine's family stem against the stage names.
+    // No stage named → match the machine's family stem (and its known
+    // aliases: SPG runs Spinning) against the stage names.
     : active.find((s) => {
       const n = normRef(s.name), stem = normRef(ref).replace(/\d+$/, '');
-      return !!n && (stem.includes(n) || n.includes(stem));
+      if (!n) return false;
+      return [stem, ...(FAMILY_STAGE_ALIASES[stem] ?? [])]
+        .some((cand) => cand.includes(n) || n.includes(cand));
     }) || (active.length === 1 ? active[0] : undefined);
   if (!stage) {
     return fail(res, 400, wanted
