@@ -4,7 +4,7 @@
 // assigned seconds ÷ the assignment's frozen processing time; produced = the
 // same verified counter steps every other surface shows. Over 100% keeps
 // filling — beating the target is the good case, not an error.
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Target, UserRound } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { productionApi, userApi } from '../../api/endpoints';
@@ -162,6 +162,11 @@ function OperatorBadge({ code }: { code: string }): JSX.Element | null {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [userId, setUserId] = useState('');
+  // Opening the modal lands on the person it almost certainly is: the running
+  // session's operator, else the machine's assigned employee.
+  useEffect(() => {
+    if (open && !userId) setUserId(mine?.userId || assignedUser?.id || '');
+  }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
   const editable = can('production', 'update');
 
   const { data: sessions } = useQuery({
@@ -174,11 +179,20 @@ function OperatorBadge({ code }: { code: string }): JSX.Element | null {
   const mine: OperatorSession | undefined =
     (sessions || []).find((s) => s.machineRef.toUpperCase() === code.toUpperCase());
 
+  // Employees serve two things: the picker inside the modal, and the badge's
+  // PREFILL — a machine assigned to an employee (assignedMachines) shows that
+  // person even before any session is started.
+  const canSeeUsers = can('employees') || editable;
   const { data: users } = useQuery({
     queryKey: ['users', 'operator-pick'],
     queryFn: () => userApi.list({ limit: 200 }).then((r) => r.data),
-    enabled: open,
+    enabled: open || canSeeUsers,
+    staleTime: 60_000,
+    retry: false,
   });
+  // The employee this machine BELONGS to — the operator whose account lists it.
+  const assignedUser = (users || []).find((u) =>
+    (u.assignedMachines || []).some((m) => String(m).toUpperCase() === code.toUpperCase()));
 
   const done = () => { qc.invalidateQueries({ queryKey: ['operators'] }); qc.invalidateQueries({ queryKey: ['targets-report'] }); setOpen(false); };
   const setMut = useMutation({
@@ -192,17 +206,22 @@ function OperatorBadge({ code }: { code: string }): JSX.Element | null {
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not end session'),
   });
 
-  if (!mine && !editable) return null;
+  if (!mine && !assignedUser && !editable) return null;
+  // A running session wins; otherwise the assigned employee prefills the badge.
+  const shown = mine?.userName || assignedUser?.name || 'No operator';
+  const filled = !!mine || !!assignedUser;
   return (
     <>
       <button
         onClick={editable ? () => setOpen(true) : undefined} disabled={!editable}
-        title={editable ? 'Hand the machine over' : undefined}
+        title={editable
+          ? 'Hand the machine over'
+          : !mine && assignedUser ? `${assignedUser.name} — assigned employee` : undefined}
         className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${
-          mine ? 'border-accent/30 bg-accent/10 text-accent' : 'border-line bg-base text-steel'
+          filled ? 'border-accent/30 bg-accent/10 text-accent' : 'border-line bg-base text-steel'
         } ${editable ? 'hover:border-accent cursor-pointer' : 'cursor-default'}`}
       >
-        <UserRound size={11} /> {mine ? mine.userName : 'No operator'}
+        <UserRound size={11} /> {shown}
       </button>
       {open && (
         <Modal title={`Operator — ${code}`} subtitle="Report rows split at every handover" icon={UserRound} onClose={() => setOpen(false)} maxW="max-w-sm">

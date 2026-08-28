@@ -3,11 +3,12 @@ import { useState, type ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
-  ArrowLeft, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal, Cpu,
+  ArrowLeft, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal, Cpu, Ruler,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../api/endpoints';
 import { StatusPill, Spinner, FreshnessPill } from '../components/ui';
-import { DiaChip } from '../components/machine/AssignDia';
+import { DiaChip, AssignDiaModal, useCurrentAssignment } from '../components/machine/AssignDia';
+import { useAuthStore } from '../store/auth';
 import ConfigurePanel from '../components/machine/ConfigurePanel';
 import MachineOverview from '../components/machine/MachineOverview';
 import ParametersModal from '../components/machine/MachineParameters';
@@ -39,6 +40,9 @@ export default function MachineDetail() {
       : 'overview'
   );
   const [paramsOpen, setParamsOpen] = useState(initialTab === 'parameters');
+  const [diaOpen, setDiaOpen] = useState(false);
+  const canSetDia = useAuthStore((s) => s.can)('production', 'update');
+  const currentDia = useCurrentAssignment(String(code || '').toUpperCase());
 
   const { data: machine, isLoading } = useQuery({
     queryKey: ['machine', code],
@@ -101,8 +105,14 @@ export default function MachineDetail() {
               <t.icon size={15} />{t.label}
             </button>
           ))}
+          {canSetDia && (
+            <button onClick={() => setDiaOpen(true)}
+              className="ml-auto my-1.5 shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/20 bg-accent/5 text-accent text-sm font-medium hover:bg-accent/10 transition-colors whitespace-nowrap">
+              <Ruler size={14} /> Set dia
+            </button>
+          )}
           <button onClick={() => setParamsOpen(true)}
-            className="ml-auto my-1.5 shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/20 bg-accent/5 text-accent text-sm font-medium hover:bg-accent/10 transition-colors whitespace-nowrap">
+            className={`${canSetDia ? '' : 'ml-auto '}my-1.5 shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/20 bg-accent/5 text-accent text-sm font-medium hover:bg-accent/10 transition-colors whitespace-nowrap`}>
             <Cpu size={14} /> Parameters
           </button>
         </div>
@@ -115,6 +125,10 @@ export default function MachineDetail() {
         {tab === 'specs'     && <SpecsTab machine={machine} status={status} lastSeenAt={lastSeenAt} />}
         {tab === 'configure' && <ConfigurePanel key={`cf-${id}`} machine={machine} />}
       </div>
+
+      {diaOpen && (
+        <AssignDiaModal code={String(code || '').toUpperCase()} current={currentDia} onClose={() => setDiaOpen(false)} />
+      )}
 
       {paramsOpen && (
         <ParametersModal machine={machine} code={String(id)} onClose={() => setParamsOpen(false)} />
