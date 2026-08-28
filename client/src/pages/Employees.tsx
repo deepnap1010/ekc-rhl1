@@ -218,7 +218,7 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
   const isEdit = !!employee;
   const [form, setForm] = useState<EmployeeForm>({
     name: employee?.name || '', email: employee?.email || '', password: '',
-    dept: deptKeyForRole(employee?.role), role: employee?.role?.id || '', plant: employee ? (employee.plant || '') : 'KASEZ (Gandhidham)', reportsTo: employee?.reportsTo || '',
+    dept: deptKeyForRole(employee?.role), role: employee?.role?.id || '', plant: employee ? (employee.plant || '') : 'Tarapur', reportsTo: employee?.reportsTo || '',
     isSuperAdmin: employee?.isSuperAdmin || false, assignedMachines: employee?.assignedMachines || [], avatar: employee?.avatar || '',
   });
   const [error, setError] = useState('');

@@ -132,7 +132,7 @@ function defaults(): Settings {
       appName: 'EKC SmartFactory',
       legalName: 'Everest Kanto Cylinder Ltd.',
       tagline: 'Production Monitor',
-      defaultPlant: 'KASEZ (Gandhidham)',
+      defaultPlant: 'Tarapur',
     },
     // Offline / first-paint fallback for useAppConfig. Must mirror the server seed
     // (config.controller DEFAULTS) — the plant's real 8-hour rotation, confirmed
