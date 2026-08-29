@@ -6,7 +6,8 @@
 // page is the catalogue.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Target, X, ClipboardList, Coffee } from 'lucide-react';
+import { Plus, Pencil, Target, X, ClipboardList, Coffee, Waypoints, ChevronRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { productionApi } from '../api/endpoints';
 import { Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
@@ -21,6 +22,7 @@ import type { DiaConfig, AuditRow, BreakWindow } from '../types/api';
 
 export default function ProductionSetup(): JSX.Element {
   const qc = useQueryClient();
+  const nav = useNavigate();
   const can = useAuthStore((s) => s.can);
   const [editing, setEditing] = useState<DiaConfig | 'new' | null>(null);
 
@@ -40,12 +42,21 @@ export default function ProductionSetup(): JSX.Element {
       <PageHeader
         title="Production Targets"
         subtitle="DIA products, stages & processing times — targets derive from these"
-        right={can('production', 'create') ? (
-          <button onClick={() => setEditing('new')}
-            className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3.5 py-2 rounded-lg hover:opacity-90">
-            <Plus size={15} /> New DIA
-          </button>
-        ) : undefined}
+        right={(
+          <span className="flex items-center gap-2">
+            <button onClick={() => nav('/production/trace')}
+              title="Every dia's journey — machines, periods, pieces counted under each"
+              className="flex items-center gap-1.5 border border-accent/30 bg-accent/5 text-accent text-sm font-medium px-3.5 py-2 rounded-lg hover:bg-accent/10 transition-colors">
+              <Waypoints size={15} /> Trace Dia <ChevronRight size={15} className="-mr-1" />
+            </button>
+            {can('production', 'create') && (
+              <button onClick={() => setEditing('new')}
+                className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3.5 py-2 rounded-lg hover:opacity-90">
+                <Plus size={15} /> New DIA
+              </button>
+            )}
+          </span>
+        )}
       />
 
       <div className="px-4 sm:px-6 py-6">

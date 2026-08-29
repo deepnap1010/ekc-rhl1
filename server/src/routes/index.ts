@@ -72,6 +72,7 @@ r.get('/production/assignments', authorize('production'), prod.listAssignments);
 r.post('/production/assignments', authorize('production', 'update'), prod.assignMachine);
 r.delete('/production/assignments/current/:machineRef', authorize('production', 'update'), prod.unassignMachine);
 r.get('/production/targets', authorize('production'), prod.targetsReport);
+r.get('/production/trace', authorize('production'), prod.traceDias); // dia-wise assignment + production story
 r.put('/production/breaks', authorize('production', 'update'), prod.setBreaks);
 r.get('/production/orders', authorize('production'), prod.listOrders);
 r.post('/production/orders', authorize('production', 'create'), prod.createOrder);

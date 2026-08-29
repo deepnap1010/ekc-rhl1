@@ -40,6 +40,7 @@ import type {
   OperatorSession,
   BreakWindow,
   HourlyProduction,
+  DiaTraceRow,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -141,6 +142,7 @@ export const productionApi = {
   unassign: (machineRef: string) => del<{ ended: boolean }>(`/production/assignments/current/${encodeURIComponent(machineRef)}`),
   targets: (params: Params) => get<TargetRow[], TargetsMeta>('/production/targets', params),
   audit: (params?: Params) => get<AuditRow[]>('/production/audit', params),
+  trace: (params?: Params) => get<DiaTraceRow[]>('/production/trace', params),
   setBreaks: (breaks: BreakWindow[]) => api.put('/production/breaks', { breaks }) as unknown as Promise<ApiResponse<{ breaks: BreakWindow[] }>>,
   orders: () => get<ProductionOrder[]>('/production/orders'),
   createOrder: (b: { orderNo: string; diaId: string; quantity: number; notes?: string }) => post<ProductionOrder>('/production/orders', b),

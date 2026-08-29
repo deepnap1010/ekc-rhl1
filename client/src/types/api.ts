@@ -642,6 +642,20 @@ export interface HourlyProduction {
   hours: { t: string; made: number }[];  // ISO hour start (anchored to `from`) → pieces
 }
 
+// One run of a dia on a machine, with the pieces counted while it was live.
+export interface DiaTraceRow {
+  machineRef: string;
+  dia: string;
+  dims: string;
+  stage: string;
+  processingSec: number;
+  from: string;
+  to: string | null;        // null = running now
+  produced: number | null;  // null = machine has no counter
+  assignedBy: string;
+  truncated: boolean;       // began before the 92-day counting window
+}
+
 export interface AuditRow {
   _id: string;
   at: string;

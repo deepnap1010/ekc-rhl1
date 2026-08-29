@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Ruler, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Ruler, Waypoints, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -14,6 +14,7 @@ import { productionValue, borrowedFrom } from '../lib/production';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
 import { useAuthStore } from '../store/auth';
 import { AssignDiaModal } from '../components/machine/AssignDia';
+import DiaTraceModal from '../components/machine/DiaTraceModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
@@ -464,6 +465,7 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
   const customName = (cfg.displayName || '').trim();
   const [editing, setEditing] = useState(false);
   const [diaOpen, setDiaOpen] = useState(false);          // Assign-DIA modal, right from the card
+  const [traceOpen, setTraceOpen] = useState(false);      // this machine's dia trail
   const canSetDia = useAuthStore((st) => st.can)('production', 'update');
   const [draft, setDraft] = useState('');
   const startEdit = (e: React.MouseEvent) => {
@@ -614,6 +616,13 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
               <Ruler size={12} />
             </button>
           )}
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setTraceOpen(true); }}
+            title="Trace dia — every dia this machine has run, with its pieces"
+            className="w-6 h-6 rounded-md border border-line text-steel hover:text-accent hover:border-accent/40 flex items-center justify-center transition-colors"
+          >
+            <Waypoints size={12} />
+          </button>
         </span>
       </div>
 
@@ -713,6 +722,7 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
       </div>
     </Link>
     {diaOpen && <AssignDiaModal code={String(code).toUpperCase()} current={assignment ?? null} onClose={() => setDiaOpen(false)} />}
+    {traceOpen && <DiaTraceModal code={String(code).toUpperCase()} onClose={() => setTraceOpen(false)} />}
     </>
   );
 }

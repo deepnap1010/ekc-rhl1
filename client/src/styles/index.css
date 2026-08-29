@@ -76,3 +76,13 @@ body {
 /* tab underline active */
 .tab-active { @apply border-b-2 border-accent text-accent font-semibold; }
 .tab-inactive { @apply border-b-2 border-transparent text-steel hover:text-primary hover:border-line; }
+
+/* Dia Trace: the page enters right-to-left; section cards follow in a stagger. */
+@keyframes pageSlideIn {
+  from { transform: translateX(60px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+.page-slide-in { animation: pageSlideIn .38s cubic-bezier(.22, .9, .3, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .page-slide-in { animation: none; }
+}

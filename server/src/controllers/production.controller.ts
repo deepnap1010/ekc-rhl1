@@ -11,6 +11,10 @@ import { ok, created, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
 import { cached } from '../utils/cache.js';
 import { computeTargets, rollupToDays, type TargetRow } from '../services/targets.service.js';
+import { Telemetry } from '../models/Telemetry.js';
+import { flattenData } from '../utils/flatten.js';
+import { pickProductionKey } from '../utils/production.js';
+import { stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
 import { Order } from '../models/Order.js';
 import { OperatorSession } from '../models/OperatorSession.js';
 import { AppConfig } from '../models/AppConfig.js';
@@ -440,6 +444,92 @@ export const endOperator = asyncHandler(async (req, res) => {
   audit(req.user as ScopedUser, 'operator.end', { type: 'operator', id: String(prev._id), label: `${ref} — ${prev.userName}` },
     { operator: prev.userName }, null);
   return ok(res, { ended: true });
+});
+
+// GET /production/trace?machineRef=&dia= — the dia-wise story: every
+// assignment ever made, each carrying the pieces COUNTED while it was live.
+// "Which machines ran dia X, since when, and what did each one produce under
+// it — and what changed after the dia changed" answers itself from these rows.
+// Actuals ride the same confirmed-counter-step engine as every other figure
+// (per-bin max, physics-capped), summed inside each assignment's own span.
+export const traceDias = asyncHandler(async (req, res) => {
+  const q = req.query as Record<string, string | undefined>;
+  const scope = machineScope(req.user as ScopedUser);
+  const ref = q.machineRef?.trim();
+  if (ref && scope && !scope.includes(ref)) return ok(res, []);
+
+  const filter: Record<string, unknown> = {};
+  if (ref) filter.machineRef = ref;
+  else if (scope) filter.machineRef = { $in: scope };
+  if (q.dia) filter['snapshot.diaName'] = q.dia.trim();
+
+  const cacheKey = `diatrace:${ref || '*'}:${q.dia || '*'}:${(scope || []).join(',') || '*'}`;
+  const rows = await cached(cacheKey, 60_000, async () => {
+    const asgs = await MachineAssignment.find(filter)
+      .sort({ effectiveFrom: -1 }).limit(500).lean();
+    if (!asgs.length) return [];
+    const now = Date.now();
+    // Counting is bounded to 92 days of telemetry (the report's own cap);
+    // an older assignment still lists, flagged truncated.
+    const capFrom = new Date(Math.max(
+      now - 92 * 24 * 3_600_000,
+      Math.min(...asgs.map((a) => +new Date(a.effectiveFrom))),
+    ));
+    const machines = [...new Set(asgs.map((a) => a.machineRef))];
+
+    // Each machine's counter key, from its latest payload — the shared picker.
+    const keyed: { ref: string; key: string }[] = [];
+    for (const m of machines) {
+      const last = await Telemetry.findOne({ machineId: m }).sort({ timestamp: -1 })
+        .select({ data: 1 }).lean();
+      const k = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
+      if (k && !k.includes('.')) keyed.push({ ref: m, key: k });
+    }
+
+    // ONE aggregation for every machine: per-bin max counter, stepped in Node.
+    const evBy = new Map<string, { t: number; made: number }[]>();
+    if (keyed.length) {
+      const binMinutes = now - capFrom.getTime() > 2 * 24 * 3_600_000 ? 5 : 1;
+      const agg = await Telemetry.aggregate([
+        { $match: { machineId: { $in: keyed.map((k) => k.ref) }, timestamp: { $gte: capFrom } } },
+        { $addFields: { pv: { $switch: {
+          branches: keyed.map((k) => ({
+            case: { $eq: ['$machineId', k.ref] },
+            then: { $getField: { field: k.key, input: '$data' } },
+          })),
+          default: null,
+        } } } },
+        { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
+        { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute', binSize: binMinutes } } }, pv: { $max: '$pv' } } },
+        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv' } } } },
+      ]).option({ maxTimeMS: 30_000 }).exec() as { _id: string; pts: { t: Date; v: number }[] }[];
+      for (const m of agg) {
+        const series = m.pts.map((p) => ({ t: +new Date(p.t), v: Number(p.v) }))
+          .filter((p) => Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
+        evBy.set(m._id, stepEvents(series, PROD_STEP_PER_MIN));
+      }
+    }
+
+    return asgs.map((a) => {
+      const s = Math.max(+new Date(a.effectiveFrom), capFrom.getTime());
+      const e = Math.min(a.effectiveTo ? +new Date(a.effectiveTo) : now, now);
+      const evs = evBy.get(a.machineRef);
+      const produced = evs ? evs.reduce((n, ev) => (ev.t >= s && ev.t < e ? n + ev.made : n), 0) : null;
+      return {
+        machineRef: a.machineRef,
+        dia: a.snapshot.diaName,
+        dims: a.snapshot.dims || '',
+        stage: a.snapshot.stageName,
+        processingSec: a.snapshot.processingSec,
+        from: a.effectiveFrom,
+        to: a.effectiveTo,
+        produced,                                   // null = machine counts nothing
+        assignedBy: a.assignedBy?.name || '',
+        truncated: +new Date(a.effectiveFrom) < capFrom.getTime(),
+      };
+    });
+  });
+  return ok(res, rows);
 });
 
 // GET /production/audit — the change history, newest first.

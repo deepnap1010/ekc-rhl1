@@ -20,6 +20,7 @@ import OrgPersonDetail from './pages/OrgPersonDetail';
 import Departments from './pages/Departments';
 import Settings from './pages/Settings';
 import ProductionSetup from './pages/ProductionSetup';
+import DiaTrace from './pages/DiaTrace';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1, staleTime: 10000 } },
@@ -49,6 +50,7 @@ export default function App() {
             <Route path="/orgchart/:id"           element={P('orgchart', <OrgPersonDetail />)} />
             <Route path="/departments"            element={P('orgchart', <Departments />)} />
             <Route path="/production"             element={P('production', <ProductionSetup />)} />
+            <Route path="/production/trace"       element={P('production', <DiaTrace />)} />
             <Route path="/roles"                  element={P('roles', <Roles />)} />
             <Route path="/settings"               element={P('settings', <Settings />)} />
           </Route>
