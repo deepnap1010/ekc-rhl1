@@ -6,7 +6,7 @@
 // freeze a new snapshot, write an audit row.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Target, Check, Ruler, History as HistoryIcon } from 'lucide-react';
+import { Target, Check, Ruler, History as HistoryIcon, CalendarClock } from 'lucide-react';
 import { productionApi } from '../../api/endpoints';
 import Modal from '../Modal';
 import { useAuthStore } from '../../store/auth';
@@ -15,6 +15,7 @@ import { fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../../lib/t
 import { stageForMachine } from '../../lib/diaStage';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtTime } from '../../lib/format';
+import { defaultApplyAt } from '../ScheduleDia';
 import type { MachineAssignment } from '../../types/api';
 
 /** The machine's open assignment, shared by every surface on the page. */
@@ -91,6 +92,17 @@ export function AssignDiaModal({ code, current, onClose }: {
     setStageKey(hit?.key || '');
   };
 
+  // ── Schedule for later: same picks, applied at a chosen future minute ──────
+  const [schedMode, setSchedMode] = useState(false);
+  const [when, setWhen] = useState('');
+  const whenAt = when ? new Date(when) : null;
+  const whenOk = !!whenAt && !Number.isNaN(whenAt.getTime()) && whenAt.getTime() > Date.now() - 60_000;
+  const { data: sched } = useQuery({
+    queryKey: ['schedules', code],
+    queryFn: () => productionApi.schedules({ machineRef: code }).then((r) => r.data),
+  });
+  const pendingSched = (sched || []).filter((s) => s.status === 'pending');
+
   // Per-shift figure beside the hourly one — the number a supervisor plans by.
   const shiftMins = (() => {
     const sh = shifts[0];
@@ -117,6 +129,20 @@ export function AssignDiaModal({ code, current, onClose }: {
     onSuccess: () => { toast.success('Assignment removed'); done(); },
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not remove'),
   });
+  const scheduleMut = useMutation({
+    mutationFn: () => productionApi.schedule({ machineRef: code, diaId, stageKey, applyAt: new Date(when).toISOString() }),
+    onSuccess: () => {
+      toast.success(`Scheduled: ${code} → ${dia?.name} from ${fmtTime(new Date(when).toISOString())}`);
+      qc.invalidateQueries({ queryKey: ['schedules'] });
+      onClose();
+    },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not schedule'),
+  });
+  const cancelSchedMut = useMutation({
+    mutationFn: (id: string) => productionApi.cancelSchedule(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['schedules'] }),
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not cancel'),
+  });
 
   return (
     <Modal title={`Assign dia · ${code}`} subtitle="The dia defines the product this machine is set up to make" icon={Ruler} onClose={onClose} maxW="max-w-md">
@@ -138,7 +164,16 @@ export function AssignDiaModal({ code, current, onClose }: {
         ) : (
           <>
             <div>
-              <div className="label mb-1.5">{current ? 'Change to' : 'DIA / Product'}</div>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="label">{current ? 'Change to' : 'DIA / Product'}</span>
+                <button
+                  onClick={() => { setSchedMode((m) => !m); if (!when) setWhen(defaultApplyAt(shifts[0]?.start)); }}
+                  title="Pick a future moment — the machine switches itself then"
+                  className={`inline-flex items-center gap-1 text-[11px] font-medium transition-colors ${schedMode ? 'text-accent' : 'text-steel hover:text-accent'}`}
+                >
+                  <CalendarClock size={11} /> {schedMode ? 'Assign now instead' : 'Schedule for later'}
+                </button>
+              </div>
               <select value={diaId} onChange={(e) => pickDia(e.target.value)}
                 className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
                 <option value="">No dia</option>
@@ -188,7 +223,42 @@ export function AssignDiaModal({ code, current, onClose }: {
                 )}
               </div>
             ) : null}
+
+            {/* Schedule mode: when does this switch happen? */}
+            {schedMode && (
+              <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3">
+                <div className="text-[10px] uppercase tracking-wide text-steel mb-1.5 inline-flex items-center gap-1">
+                  <CalendarClock size={11} /> Switches itself at
+                </div>
+                <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)}
+                  className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent data" />
+                {!whenOk && <p className="text-[11px] text-stopped mt-1">Pick a moment in the future.</p>}
+                <p className="text-[11px] text-steel mt-1.5">
+                  Nothing changes until then. At that moment the machine switches on its own, and the
+                  operator sees a notice on their dashboard until they dismiss it.
+                </p>
+              </div>
+            )}
           </>
+        )}
+
+        {/* Already queued for this machine */}
+        {pendingSched.length > 0 && (
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-steel mb-1.5 inline-flex items-center gap-1">
+              <CalendarClock size={11} /> Scheduled
+            </div>
+            <div className="space-y-1">
+              {pendingSched.map((s) => (
+                <div key={s._id} className="text-[11px] flex items-baseline gap-1.5 flex-wrap rounded-lg border border-accent/20 bg-accent/5 px-2.5 py-1.5">
+                  <span className="data font-semibold text-accent">{s.diaName}</span>
+                  <span className="text-steel">· {s.stageName} — from {fmtTime(s.applyAt)}</span>
+                  {s.createdBy?.name && <span className="text-steel/70">· by {s.createdBy.name}</span>}
+                  <button onClick={() => cancelSchedMut.mutate(s._id)} className="ml-auto font-medium text-steel hover:text-stopped">Cancel</button>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
         {/* The machine's record trail — past dias struck through, spans, who */}
         {(trail || []).filter((h) => h.effectiveTo).length > 0 && (
@@ -211,10 +281,13 @@ export function AssignDiaModal({ code, current, onClose }: {
         <div className="flex justify-end gap-2 pt-1">
           <button onClick={onClose} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Cancel</button>
           <button
-            onClick={() => (diaId ? assignMut.mutate() : unassignMut.mutate())}
-            disabled={(diaId ? !stage || assignMut.isPending : !current || unassignMut.isPending)}
+            onClick={() => (schedMode ? scheduleMut.mutate() : diaId ? assignMut.mutate() : unassignMut.mutate())}
+            disabled={schedMode
+              ? !diaId || !stage || !whenOk || scheduleMut.isPending
+              : (diaId ? !stage || assignMut.isPending : !current || unassignMut.isPending)}
             className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
-            {assignMut.isPending || unassignMut.isPending ? 'Saving…' : diaId ? 'Assign dia' : 'Clear dia'}
+            {assignMut.isPending || unassignMut.isPending || scheduleMut.isPending ? 'Saving…'
+              : schedMode ? 'Schedule dia' : diaId ? 'Assign dia' : 'Clear dia'}
           </button>
         </div>
       </div>

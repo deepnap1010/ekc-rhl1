@@ -22,6 +22,7 @@ import PageHeader from '../components/PageHeader';
 import AnalyticsModal from '../components/AnalyticsModal';
 import { CustomRangeModal } from '../components/RangeFilter';
 import ProductionVsTarget from '../components/ProductionVsTarget';
+import { ScheduledDiaPopup } from '../components/ScheduleDia';
 import { Donut, Legend } from '../components/charts';
 import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
@@ -219,6 +220,9 @@ export default function Dashboard() {
             with its own window filter (per hour / per shift / today…). */}
         <ProductionVsTarget rows={rows} windowMs={windowMs} windowLabel={windowLabel}
           from={fromISO} to={toISO} />
+
+        {/* Operator notice: scheduled-dia instructions, shown until dismissed */}
+        <ScheduledDiaPopup />
 
         {/* ── Fleet totals for the same window, under the groups they sum ── */}
         <div className="grid lg:grid-cols-2 gap-5">

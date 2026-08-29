@@ -16,6 +16,9 @@ import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
 import { Order } from '../models/Order.js';
+import { ScheduledAssignment } from '../models/ScheduledAssignment.js';
+import { applyDueSchedules } from '../services/schedule.service.js';
+import { refMatch, refIn } from '../utils/machineRef.js';
 import { OperatorSession } from '../models/OperatorSession.js';
 import { AppConfig } from '../models/AppConfig.js';
 import { User } from '../models/User.js';
@@ -137,6 +140,20 @@ export const updateDia = asyncHandler(async (req, res) => {
 // machines already running it run on (their snapshot is theirs).
 export const setDiaActive = asyncHandler(async (req, res) => {
   const active = !!(req.body as { active?: unknown })?.active;
+  // A retired dia can't be assigned, so any schedule pointing at it would fail
+  // silently at its moment. Cancel them here, where someone is watching.
+  if (!active) {
+    const queued = await ScheduledAssignment.find({ diaId: req.params.id, status: 'pending' }).lean();
+    if (queued.length) {
+      await ScheduledAssignment.updateMany(
+        { _id: { $in: queued.map((s) => s._id) } },
+        { $set: { status: 'cancelled', reason: 'the dia was retired', cancelledBy: { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name } } },
+      );
+      audit(req.user as ScopedUser, 'schedule.cancel',
+        { type: 'schedule', label: `${queued.length} scheduled assignment${queued.length === 1 ? '' : 's'} cancelled — dia retired` },
+        { schedules: queued.map((s) => `${s.machineRef} → ${s.diaName} @ ${s.applyAt.toISOString()}`) }, null);
+    }
+  }
   const doc = await DiaConfig.findByIdAndUpdate(
     req.params.id,
     { $set: { active, retiredAt: active ? null : new Date() } },
@@ -158,6 +175,8 @@ export const deleteDia = asyncHandler(async (req, res) => {
   if (doc.active) return fail(res, 400, 'Retire the dia first — delete is for retired records');
   const holding = await MachineAssignment.countDocuments({ diaId: doc._id, effectiveTo: null });
   if (holding > 0) return fail(res, 400, `${holding} machine${holding === 1 ? ' still holds' : 's still hold'} this dia — reassign them first`);
+  const queued = await ScheduledAssignment.countDocuments({ diaId: doc._id, status: 'pending' });
+  if (queued > 0) return fail(res, 400, `${queued} pending schedule${queued === 1 ? ' still points' : 's still point'} at this dia — cancel ${queued === 1 ? 'it' : 'them'} first`);
   await doc.deleteOne();
   audit(req.user as ScopedUser, 'dia.delete', { type: 'dia', id: String(doc._id), label: doc.name },
     { name: doc.name, stages: doc.stages.map((s) => ({ name: s.name, processingSec: s.processingSec })) }, null);
@@ -185,11 +204,15 @@ export const assignMachine = asyncHandler(async (req, res) => {
   if (!stage.active) return fail(res, 400, `Stage "${stage.name}" is deactivated`);
 
   const now = new Date();
-  const prev = await MachineAssignment.findOneAndUpdate(
-    { machineRef: ref, effectiveTo: null },
+  // Read the one that mattered, then close EVERY open row for this machine: one
+  // machine can only be making one thing, and a stray open row would double its
+  // target in every report from here on.
+  const prev = await MachineAssignment.findOne({ machineRef: refMatch(ref), effectiveTo: null })
+    .sort({ effectiveFrom: -1 }).lean();
+  await MachineAssignment.updateMany(
+    { machineRef: refMatch(ref), effectiveTo: null },
     { $set: { effectiveTo: now } },
-    { sort: { effectiveFrom: -1 } },
-  ).lean();
+  );
 
   const who = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
   const doc = await MachineAssignment.create({
@@ -247,6 +270,128 @@ export const listAssignments = asyncHandler(async (req, res) => {
   const rows = await MachineAssignment.find(q)
     .sort({ effectiveFrom: -1 }).limit(Math.min(Number(limit) || 50, 200)).lean();
   return ok(res, rows);
+});
+
+// ── Scheduled assignments ────────────────────────────────────────────────────
+
+// GET /production/schedule?machineRef=&unacked=1
+// unacked=1 is the operator popup's view: their machines' pending schedules,
+// plus ones applied in the last 3 days, minus anything THEY already dismissed.
+// The plain list is the supervisor queue: all pending, plus the last 48h of
+// applied/failed so outcomes stay visible.
+export const listSchedules = asyncHandler(async (req, res) => {
+  await applyDueSchedules().catch(() => {});   // whoever looks sees the truth
+  const q = req.query as Record<string, unknown>;
+  const user = req.user as ScopedUser;
+  const scope = machineScope(user);
+  const f: Record<string, unknown> = {};
+  const ref = typeof q.machineRef === 'string' ? q.machineRef.trim() : '';
+  const unacked = q.unacked === '1';
+
+  if (unacked) {
+    // The operator notice is about MY machines — not about what I'm allowed to
+    // see. A super admin who also runs three machines gets those three, not the
+    // whole plant; someone with no machines gets nothing.
+    const mine = (user?.assignedMachines || []).filter(Boolean);
+    if (!mine.length) return ok(res, []);
+    f.machineRef = { $in: mine.map(refMatch) };
+    f.$or = [
+      { status: 'pending' },
+      { status: { $in: ['applied', 'failed'] }, updatedAt: { $gte: new Date(Date.now() - 3 * 24 * 3_600_000) } },
+    ];
+    f['acks.userId'] = { $ne: String(user?._id || '') };
+  } else {
+    if (ref) {
+      if (!refIn(scope, ref) && scope) return ok(res, []);
+      f.machineRef = refMatch(ref);
+    } else if (scope) f.machineRef = { $in: scope.map(refMatch) };
+    f.$or = [
+      { status: 'pending' },
+      { status: { $in: ['applied', 'failed'] }, updatedAt: { $gte: new Date(Date.now() - 48 * 3_600_000) } },
+    ];
+  }
+  const rows = await ScheduledAssignment.find(f).sort({ applyAt: 1 }).limit(200).lean();
+  return ok(res, rows);
+});
+
+// POST /production/schedule { machineRef, diaId, stageKey, applyAt, note }
+// Validation mirrors assignMachine; the snapshot is NOT frozen here — it
+// freezes at apply time, exactly as if someone clicked Assign at that moment.
+export const createSchedule = asyncHandler(async (req, res) => {
+  const { machineRef, diaId, stageKey, applyAt, note } = req.body as Record<string, string | undefined>;
+  const ref = String(machineRef || '').trim();
+  if (!ref || !diaId || !stageKey || !applyAt) return fail(res, 400, 'machineRef, diaId, stageKey and applyAt are required');
+  if (ref.length > 60) return fail(res, 400, 'machineRef is too long');
+  if (String(note || '').length > 500) return fail(res, 400, 'Note is too long (500 characters max)');
+  const scope = machineScope(req.user as ScopedUser);
+  if (scope && !refIn(scope, ref)) return fail(res, 403, 'You are not assigned to this machine');
+  if (!mongoose.isValidObjectId(diaId)) return fail(res, 400, 'Invalid DIA id');
+  const at = new Date(applyAt);
+  if (Number.isNaN(at.getTime())) return fail(res, 400, 'applyAt must be a valid date');
+  if (at.getTime() < Date.now() - 60_000) return fail(res, 400, 'That moment has passed — assign directly instead');
+  if (at.getTime() > Date.now() + 90 * 24 * 3_600_000) return fail(res, 400, 'applyAt is more than 90 days out');
+
+  const dia = await DiaConfig.findById(diaId).lean();
+  if (!dia) return fail(res, 404, 'DIA not found');
+  if (!dia.active) return fail(res, 400, `"${dia.name}" is deactivated — reactivate it before scheduling`);
+  const stage = dia.stages.find((s) => s.key === stageKey);
+  if (!stage) return fail(res, 404, 'Stage not found on this DIA');
+  if (!stage.active) return fail(res, 400, `Stage "${stage.name}" is deactivated`);
+
+  const who = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
+  const doc = await ScheduledAssignment.create({
+    machineRef: ref, diaId: dia._id, diaName: dia.name,
+    stageKey: stage.key, stageName: stage.name,
+    applyAt: at, status: 'pending', createdBy: who, note: String(note || ''),
+  });
+  audit(req.user as ScopedUser, 'schedule.create',
+    { type: 'schedule', id: String(doc._id), label: `${ref} → ${dia.name} / ${stage.name} @ ${at.toISOString()}` },
+    null, { diaName: dia.name, stageName: stage.name, applyAt: at.toISOString() });
+  return created(res, doc.toObject());
+});
+
+// DELETE /production/schedule/:id — cancel while still pending.
+export const cancelSchedule = asyncHandler(async (req, res) => {
+  const found = await ScheduledAssignment.findById(req.params.id).lean();
+  if (!found) return fail(res, 404, 'Schedule not found');
+  const scope = machineScope(req.user as ScopedUser);
+  if (scope && !refIn(scope, found.machineRef)) return fail(res, 403, 'You are not assigned to this machine');
+  // Atomic: the apply path flips pending→applied from the ticker AND from every
+  // list request. A read-then-save here could stamp "cancelled" over a switch
+  // that already happened on the floor.
+  const doc = await ScheduledAssignment.findOneAndUpdate(
+    { _id: found._id, status: 'pending' },
+    { $set: { status: 'cancelled', cancelledBy: { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name } } },
+    { new: true },
+  ).lean();
+  if (!doc) {
+    const now = await ScheduledAssignment.findById(found._id).lean();
+    return fail(res, 400, `Already ${now?.status || 'gone'} — only pending schedules can be cancelled`);
+  }
+  audit(req.user as ScopedUser, 'schedule.cancel',
+    { type: 'schedule', id: String(doc._id), label: `${doc.machineRef} → ${doc.diaName} @ ${doc.applyAt.toISOString()}` },
+    { diaName: doc.diaName, applyAt: doc.applyAt.toISOString() }, null);
+  return ok(res, doc);
+});
+
+// POST /production/schedule/:id/ack — this reader marks the notice read. The
+// popup filters on acks.userId, so each person dismisses for themselves only.
+export const ackSchedule = asyncHandler(async (req, res) => {
+  const doc = await ScheduledAssignment.findById(req.params.id).lean();
+  if (!doc) return fail(res, 404, 'Schedule not found');
+  const user = req.user as ScopedUser;
+  const scope = machineScope(user);
+  // An operator acks their own machines' notices; the unacked list is scoped to
+  // assignedMachines, so accept that list too (a super admin has no scope).
+  if (scope && !refIn(scope, doc.machineRef) && !refIn(user?.assignedMachines, doc.machineRef)) {
+    return fail(res, 403, 'You are not assigned to this machine');
+  }
+  const uid = String((req.user as ScopedUser)?._id || '');
+  await ScheduledAssignment.updateOne(
+    { _id: doc._id, 'acks.userId': { $ne: uid } },
+    { $push: { acks: { userId: uid, name: (req.user as ScopedUser)?.name, at: new Date() } } },
+  );
+  return ok(res, { acked: true });
 });
 
 // GET /production/targets?from&to&machineId&groupBy=hour|day&page&limit

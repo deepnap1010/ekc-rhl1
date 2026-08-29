@@ -41,6 +41,7 @@ import type {
   BreakWindow,
   HourlyProduction,
   DiaTraceRow,
+  ScheduledDia,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -143,6 +144,11 @@ export const productionApi = {
   targets: (params: Params) => get<TargetRow[], TargetsMeta>('/production/targets', params),
   audit: (params?: Params) => get<AuditRow[]>('/production/audit', params),
   trace: (params?: Params) => get<DiaTraceRow[]>('/production/trace', params),
+  schedules: (params?: Params) => get<ScheduledDia[]>('/production/schedule', params),
+  schedule: (b: { machineRef: string; diaId: string; stageKey: string; applyAt: string; note?: string }) =>
+    post<ScheduledDia>('/production/schedule', b),
+  cancelSchedule: (id: string) => del<ScheduledDia>(`/production/schedule/${id}`),
+  ackSchedule: (id: string) => post<{ acked: boolean }>(`/production/schedule/${id}/ack`, {}),
   setBreaks: (breaks: BreakWindow[]) => api.put('/production/breaks', { breaks }) as unknown as Promise<ApiResponse<{ breaks: BreakWindow[] }>>,
   orders: () => get<ProductionOrder[]>('/production/orders'),
   createOrder: (b: { orderNo: string; diaId: string; quantity: number; notes?: string }) => post<ProductionOrder>('/production/orders', b),

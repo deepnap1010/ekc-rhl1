@@ -6,6 +6,7 @@ import { env } from './config/env.js';
 import { initSocket } from './sockets/io.js';
 import { startWatchers, stopWatchers } from './services/watch.service.js';
 import { startDowntimeMonitor, stopDowntimeMonitor } from './services/downtime.service.js';
+import { startScheduleTicker, stopScheduleTicker } from './services/schedule.service.js';
 
 async function start(): Promise<void> {
   await connectDB();
@@ -19,6 +20,8 @@ async function start(): Promise<void> {
   startWatchers();
   // Derive machine state (running/idle/stopped/offline) and record downtime spans.
   startDowntimeMonitor();
+  // Apply scheduled dia assignments at their minute (and catch up on startup).
+  startScheduleTicker();
 
   server.listen(env.port, () => {
     console.log(`[server] EKC SmartFactory API on :${env.port} (${env.nodeEnv})`);
@@ -26,6 +29,7 @@ async function start(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     stopDowntimeMonitor();
+    stopScheduleTicker();
     await stopWatchers();
     server.close();
     await disconnectDB();

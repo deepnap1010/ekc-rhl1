@@ -73,6 +73,10 @@ r.post('/production/assignments', authorize('production', 'update'), prod.assign
 r.delete('/production/assignments/current/:machineRef', authorize('production', 'update'), prod.unassignMachine);
 r.get('/production/targets', authorize('production'), prod.targetsReport);
 r.get('/production/trace', authorize('production'), prod.traceDias); // dia-wise assignment + production story
+r.get('/production/schedule', authorize('production'), prod.listSchedules);            // upcoming + recent dia schedules
+r.post('/production/schedule', authorize('production', 'update'), prod.createSchedule);
+r.delete('/production/schedule/:id', authorize('production', 'update'), prod.cancelSchedule);
+r.post('/production/schedule/:id/ack', authorize('production'), prod.ackSchedule);     // operator read-receipt
 r.put('/production/breaks', authorize('production', 'update'), prod.setBreaks);
 r.get('/production/orders', authorize('production'), prod.listOrders);
 r.post('/production/orders', authorize('production', 'create'), prod.createOrder);

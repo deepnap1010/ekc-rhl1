@@ -642,6 +642,23 @@ export interface HourlyProduction {
   hours: { t: string; made: number }[];  // ISO hour start (anchored to `from`) → pieces
 }
 
+// A dia assignment set for a FUTURE moment; the server applies it itself.
+export interface ScheduledDia {
+  _id: string;
+  machineRef: string;
+  diaId: string;
+  diaName: string;
+  stageKey: string;
+  stageName: string;
+  applyAt: string;
+  status: 'pending' | 'applied' | 'cancelled' | 'failed';
+  reason?: string;
+  appliedAt?: string | null;
+  createdBy?: { id?: string; name?: string };
+  acks?: { userId: string; name?: string; at: string }[];
+  createdAt: string;
+}
+
 // One run of a dia on a machine, with the pieces counted while it was live.
 export interface DiaTraceRow {
   machineRef: string;
