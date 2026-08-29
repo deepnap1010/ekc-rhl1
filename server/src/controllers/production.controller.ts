@@ -463,7 +463,16 @@ export const traceDias = asyncHandler(async (req, res) => {
   else if (scope) filter.machineRef = { $in: scope };
   if (q.dia) filter['snapshot.diaName'] = q.dia.trim();
 
-  const cacheKey = `diatrace:${ref || '*'}:${q.dia || '*'}:${(scope || []).join(',') || '*'}`;
+  // Optional window: pieces are then counted INSIDE it (clipped to each
+  // assignment's own span), and runs that never touch it drop out — "what did
+  // this dia do yesterday / on shift B / on the 26th" without a new endpoint.
+  const winFrom = q.from ? new Date(q.from) : null;
+  const winTo = q.to ? new Date(q.to) : null;
+  if ((winFrom && Number.isNaN(winFrom.getTime())) || (winTo && Number.isNaN(winTo.getTime()))) {
+    return fail(res, 400, 'from/to must be valid dates');
+  }
+
+  const cacheKey = `diatrace:${ref || '*'}:${q.dia || '*'}:${winFrom?.toISOString() || '*'}:${winTo?.toISOString() || '*'}:${(scope || []).join(',') || '*'}`;
   const rows = await cached(cacheKey, 60_000, async () => {
     const asgs = await MachineAssignment.find(filter)
       .sort({ effectiveFrom: -1 }).limit(500).lean();
@@ -473,6 +482,7 @@ export const traceDias = asyncHandler(async (req, res) => {
     // an older assignment still lists, flagged truncated.
     const capFrom = new Date(Math.max(
       now - 92 * 24 * 3_600_000,
+      winFrom ? winFrom.getTime() : -Infinity,
       Math.min(...asgs.map((a) => +new Date(a.effectiveFrom))),
     ));
     const machines = [...new Set(asgs.map((a) => a.machineRef))];
@@ -510,12 +520,18 @@ export const traceDias = asyncHandler(async (req, res) => {
       }
     }
 
-    return asgs.map((a) => {
+    const out = [];
+    for (const a of asgs) {
       const s = Math.max(+new Date(a.effectiveFrom), capFrom.getTime());
-      const e = Math.min(a.effectiveTo ? +new Date(a.effectiveTo) : now, now);
+      const e = Math.min(
+        a.effectiveTo ? +new Date(a.effectiveTo) : now,
+        winTo ? winTo.getTime() : now,
+        now,
+      );
+      if ((winFrom || winTo) && e <= s) continue;   // the run never touches the window
       const evs = evBy.get(a.machineRef);
       const produced = evs ? evs.reduce((n, ev) => (ev.t >= s && ev.t < e ? n + ev.made : n), 0) : null;
-      return {
+      out.push({
         machineRef: a.machineRef,
         dia: a.snapshot.diaName,
         dims: a.snapshot.dims || '',
@@ -525,9 +541,10 @@ export const traceDias = asyncHandler(async (req, res) => {
         to: a.effectiveTo,
         produced,                                   // null = machine counts nothing
         assignedBy: a.assignedBy?.name || '',
-        truncated: +new Date(a.effectiveFrom) < capFrom.getTime(),
-      };
-    });
+        truncated: !winFrom && +new Date(a.effectiveFrom) < capFrom.getTime(),
+      });
+    }
+    return out;
   });
   return ok(res, rows);
 });

@@ -7,12 +7,15 @@
 // Numbers come from /production/trace: the same confirmed-counter-step engine
 // as every report, summed inside each assignment's own span — so a figure here
 // always agrees with the reports that cover the same hours.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { ArrowLeft, Ruler, Search, Waypoints } from 'lucide-react';
 import { productionApi } from '../api/endpoints';
 import { Spinner } from '../components/ui';
+import { useAppConfig } from '../hooks/useAppConfig';
+import { resolveRange, shiftDayOn } from '../store/filters';
+import { shiftWindowOn } from '../lib/settings';
 import { fmtNum, fmtTime, fmtDuration } from '../lib/format';
 import { targetUnits, secToMinPerPc } from '../lib/targets';
 import type { DiaTraceRow } from '../types/api';
@@ -31,13 +34,19 @@ export function attainOf(r: DiaTraceRow): number | null {
 const attainColor = (p: number | null): string => (p == null ? SLATE : p > 90 ? TEAL : p >= 50 ? AMBER : RED);
 
 /** One run on the timeline — shared by this page and the machine-card modal. */
-export function TraceRun({ r, showMachine = true, showDia = false }: {
+export function TraceRun({ r, showMachine = true, showDia = false, win }: {
   r: DiaTraceRow; showMachine?: boolean; showDia?: boolean;
+  win?: { from: number; to: number } | null;
 }): JSX.Element {
   const current = !r.to;
-  const end = r.to ? +new Date(r.to) : Date.now();
-  const durMs = end - +new Date(r.from);
-  const p = attainOf(r);
+  const now = Date.now();
+  const end = Math.min(r.to ? +new Date(r.to) : now, win ? Math.min(win.to, now) : now);
+  const start = Math.max(+new Date(r.from), win ? win.from : -Infinity);
+  const durMs = Math.max(0, end - start);
+  const p = win
+    ? (r.produced != null && durMs >= 5 * 60_000 && targetUnits(r.processingSec, durMs) > 0
+      ? Math.round((r.produced / targetUnits(r.processingSec, durMs)) * 100) : null)
+    : attainOf(r);
   return (
     <div className="relative pl-6 pb-4 last:pb-0">
       {/* timeline rail + dot — the current run pulses accent */}
@@ -64,7 +73,7 @@ export function TraceRun({ r, showMachine = true, showDia = false }: {
       </div>
       <div className="flex items-baseline gap-2 flex-wrap mt-0.5 text-[11px] text-steel">
         <span className="data">{fmtTime(r.from)} → {r.to ? fmtTime(r.to) : 'now'}</span>
-        <span>· {fmtDuration(durMs)}</span>
+        <span>· {fmtDuration(durMs)}{win ? ' in this window' : ''}</span>
         {r.assignedBy && <span>· set by {r.assignedBy}</span>}
         {r.truncated && <span className="text-idle">· counted from the last 92 days only</span>}
         {r.produced == null && <span>· this machine publishes no counter</span>}
@@ -76,19 +85,72 @@ export function TraceRun({ r, showMachine = true, showDia = false }: {
   );
 }
 
+type WinMode = 'all' | 'today' | 'yesterday' | 'shift' | 'date';
+const dateStr = (d: Date): string => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
 export default function DiaTrace(): JSX.Element {
   const nav = useNavigate();
+  const { shifts } = useAppConfig();
   const [q, setQ] = useState('');
+  const [diaSel, setDiaSel] = useState('');
+
+  // ── The window: all time · today · yesterday · a shift of a date · a date ──
+  const [mode, setMode] = useState<WinMode>('all');
+  const [day, setDay] = useState(() => dateStr(new Date()));
+  const [shiftName, setShiftName] = useState('');
+  // keeps "today" counting without busting query keys every second
+  const [minuteStamp, setMinuteStamp] = useState(() => Math.floor(Date.now() / 60_000));
+  useEffect(() => {
+    const t = setInterval(() => setMinuteStamp(Math.floor(Date.now() / 60_000)), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const win = useMemo(() => {
+    void minuteStamp;
+    if (mode === 'all') return null;
+    if (mode === 'today' || mode === 'yesterday') {
+      return resolveRange({ preset: mode, shiftName: '', customFrom: '', customTo: '' }, shifts);
+    }
+    const d = new Date(`${day}T12:00:00`);
+    if (Number.isNaN(d.getTime())) return null;
+    if (mode === 'shift') {
+      const sh = shifts.find((x) => x.name === shiftName);
+      return sh ? shiftWindowOn(sh, d) : null;
+    }
+    return shiftDayOn(shifts, d);   // mode === 'date' → that production day
+  }, [mode, day, shiftName, shifts, minuteStamp]);
+  const fromISO = win?.from.toISOString();
+  const toISO = win?.to.toISOString();
+  const winLabel = mode === 'today' ? 'Today'
+    : mode === 'yesterday' ? 'Yesterday'
+    : mode === 'shift' ? (shiftName ? `${shiftName} · ${day}` : 'Pick a shift')
+    : mode === 'date' ? day
+    : '';
+  const winMs = win ? { from: win.from.getTime(), to: win.to.getTime() } : null;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['dia-trace', 'all'],
-    queryFn: () => productionApi.trace().then((r) => r.data),
+    queryKey: ['dia-trace', 'all', fromISO ?? '', toISO ?? ''],
+    queryFn: () => productionApi.trace(win ? { from: fromISO, to: toISO } : undefined).then((r) => r.data),
+    enabled: mode === 'all' || !!win,
     refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
+
+  // Every dia the catalogue knows — the dropdown never depends on what the
+  // current window happens to contain.
+  const { data: diaList } = useQuery({
+    queryKey: ['dia-configs'],
+    queryFn: () => productionApi.dia().then((r) => r.data),
+    staleTime: 60_000,
   });
 
   const ql = q.trim().toUpperCase();
-  const rows = (data || []).filter((r) =>
-    !ql || r.dia.toUpperCase().includes(ql) || r.machineRef.toUpperCase().includes(ql));
+  const rows = (data || [])
+    .filter((r) => !diaSel || r.dia === diaSel)
+    .filter((r) => !ql || r.dia.toUpperCase().includes(ql) || r.machineRef.toUpperCase().includes(ql));
 
   // Grouped by dia, richest first; rows inside stay newest-first (server order).
   const groups = useMemo(() => {
@@ -140,19 +202,52 @@ export default function DiaTrace(): JSX.Element {
       </div>
 
       <div className="px-4 sm:px-6 py-6 space-y-5 max-w-5xl">
-        {/* Search — one box, filters dia AND machine */}
-        <div className="relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-steel" />
-          <input value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="Filter by dia or machine — e.g. CN 410 or SPG02"
-            className="w-full bg-surface border border-line rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none focus:border-accent" />
+        {/* One control row: search · which dia · which window */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-steel" />
+            <input value={q} onChange={(e) => setQ(e.target.value)}
+              placeholder="Filter by dia or machine — e.g. CN 410 or SPG02"
+              className="w-full bg-surface border border-line rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none focus:border-accent" />
+          </div>
+          <select value={diaSel} onChange={(e) => setDiaSel(e.target.value)}
+            title="Show one dia's journey only"
+            className={`rounded-xl border px-3 py-2.5 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[220px] ${
+              diaSel ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-surface text-primary'}`}>
+            <option value="">All dias</option>
+            {(diaList || []).map((d) => (
+              <option key={d._id} value={d.name}>{d.name}{d.active ? '' : ' (retired)'}</option>
+            ))}
+          </select>
+          <select value={mode} onChange={(e) => { setMode(e.target.value as WinMode); if (e.target.value === 'shift' && !shiftName && shifts[0]) setShiftName(shifts[0].name); }}
+            title="Count pieces inside this window only"
+            className={`rounded-xl border px-3 py-2.5 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 ${
+              mode !== 'all' ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-surface text-primary'}`}>
+            <option value="all">All time</option>
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="shift">A shift…</option>
+            <option value="date">A date…</option>
+          </select>
+          {(mode === 'shift' || mode === 'date') && (
+            <input type="date" value={day} onChange={(e) => setDay(e.target.value)}
+              className="rounded-xl border border-accent/40 bg-accent/5 px-3 py-2 text-sm text-accent outline-none cursor-pointer" />
+          )}
+          {mode === 'shift' && (
+            <select value={shiftName} onChange={(e) => setShiftName(e.target.value)}
+              className="rounded-xl border border-accent/40 bg-accent/5 px-3 py-2.5 text-sm text-accent font-medium outline-none cursor-pointer">
+              {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+            </select>
+          )}
         </div>
 
         {isLoading ? <Spinner /> : !groups.length ? (
           <div className="panel p-10 text-center">
             <Waypoints size={28} className="mx-auto text-steel mb-3" />
             <p className="text-sm text-steel max-w-md mx-auto">
-              {q ? 'Nothing matches that filter.' : 'No dia has been assigned yet — the first assignment starts the trail.'}
+              {q || diaSel ? 'Nothing matches that filter.'
+                : win ? `No dia ran in this window (${winLabel}).`
+                : 'No dia has been assigned yet — the first assignment starts the trail.'}
             </p>
           </div>
         ) : groups.map((g, i) => (
@@ -172,12 +267,12 @@ export default function DiaTrace(): JSX.Element {
               </div>
               <div className="ml-auto text-right shrink-0">
                 <div className="data text-2xl font-bold text-accent leading-none">{fmtNum(g.produced)}</div>
-                <div className="label mt-0.5">pieces under this dia</div>
+                <div className="label mt-0.5">pieces under this dia{win ? ` · ${winLabel}` : ''}</div>
               </div>
             </div>
             {/* The timeline */}
             <div className="px-5 py-4">
-              {g.runs.map((r) => <TraceRun key={`${r.machineRef}-${r.from}`} r={r} />)}
+              {g.runs.map((r) => <TraceRun key={`${r.machineRef}-${r.from}`} r={r} win={winMs} />)}
             </div>
           </section>
         ))}
