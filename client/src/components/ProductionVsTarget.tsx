@@ -22,7 +22,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
-import { Target, Ruler, ArrowUpRight, ArrowLeft, CheckCircle2, AlertTriangle, Boxes } from 'lucide-react';
+import { Target, Ruler, ArrowUpRight, ArrowLeft, CheckCircle2, AlertTriangle, Boxes, Flame } from 'lucide-react';
 import { Donut } from './charts';
 import { StatusPill, TimeStat } from './ui';
 import { machineApi, productionApi } from '../api/endpoints';
@@ -182,10 +182,18 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
     const out: { code: string; reason: string }[] = [];
     for (const row of effRows) {
       if (!asgBy.get(row.code.toUpperCase()) || included.has(row.code)) continue;
-      if (row.production == null) out.push({ code: row.code, reason: 'no production counter' });
+      if (row.production == null && row.avgTemp == null) out.push({ code: row.code, reason: 'no production counter' });
     }
     return out;
   }, [effRows, targets, asgBy]);
+
+  // Furnaces: no counter — heat IS their output, so the board still owes them a
+  // card. Any machine reporting a measured temperature and no pieces gets a
+  // heat card in the same grid, dia or not.
+  const heatGroups = useMemo(() => {
+    const rows = effRows.filter((r) => r.production == null && r.avgTemp != null);
+    return groupMachines(rows).map((g) => ({ key: `heat:${g.key}`, label: g.label, rows: g.machines }));
+  }, [effRows]);
 
   // Machines bucketed into their production groups — the admin board's cards.
   const groups = useMemo<GroupTargets[]>(() => {
@@ -197,8 +205,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   // A group that vanished from the data (window change, refetch) must not
   // silently re-open the drill-down the moment it reappears.
   useEffect(() => {
-    if (openGroup && !groups.some((g) => g.key === openGroup)) setOpenGroup(null);
-  }, [openGroup, groups]);
+    if (openGroup && !groups.some((g) => g.key === openGroup) && !heatGroups.some((g) => g.key === openGroup)) setOpenGroup(null);
+  }, [openGroup, groups, heatGroups]);
   const openFor = openForCode ? targets.find((t) => t.row.code === openForCode) ?? null : null;
 
   if (!can('production', 'view')) return null;
@@ -300,6 +308,19 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
           </button>
           <OperatorMachineBoard t={openFor} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
         </div>
+      ) : openGroup?.startsWith('heat:') && heatGroups.some((g) => g.key === openGroup) ? (
+        /* ── ADMIN, a HEAT group opened — its furnaces, temperature first ── */
+        <div>
+          <button onClick={() => setOpenGroup(null)}
+            className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
+            <ArrowLeft size={13} /> All groups
+          </button>
+          <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            {heatGroups.find((g) => g.key === openGroup)!.rows.map((r) => (
+              <FurnaceMachineCard key={r.code} r={r} windowLabel={effLabel} />
+            ))}
+          </div>
+        </div>
       ) : open ? (
         /* ── ADMIN, one group opened — its machines, each with its own split ── */
         <div>
@@ -324,6 +345,9 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
         <div className="grid sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
           {groups.map((g) => (
             <GroupCard key={g.key} g={g} onOpen={() => setOpenGroup(g.key)} />
+          ))}
+          {heatGroups.map((g) => (
+            <HeatGroupCard key={g.key} g={g} onOpen={() => setOpenGroup(g.key)} />
           ))}
         </div>
       )}
@@ -354,21 +378,99 @@ function Bar({ actual, target }: { actual: number; target: number }): JSX.Elemen
 }
 
 // One dot per machine — the group's health at a glance.
-function StatusDots({ targets }: { targets: TargetRow[] }): JSX.Element {
+function StatusDots({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
-      {targets.map((t) => (
-        <span key={t.row.code} className="w-2.5 h-2.5 rounded-full shrink-0"
-          style={{ background: dotColor(t.row.status) }}
-          title={`${t.row.code.toUpperCase()} · ${t.row.status}`} />
+      {rows.map((r) => (
+        <span key={r.code} className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={{ background: dotColor(r.status) }}
+          title={`${r.code.toUpperCase()} · ${r.status}`} />
       ))}
     </div>
   );
 }
 
+// ── Furnace cards: heat where the others show pieces ─────────────────────────
+const HEAT = '#D97706';
+type HeatGroup = { key: string; label: string; rows: MachineActivityRow[] };
+
+function HeatGroupCard({ g, onOpen }: { g: HeatGroup; onOpen: () => void }): JSX.Element {
+  const temps = g.rows.filter((r) => r.avgTemp != null);
+  const avg = temps.length ? temps.reduce((n, r) => n + (r.avgTemp as number), 0) / temps.length : null;
+  const zones = g.rows.reduce((n, r) => n + (r.tempZones || 0), 0);
+  return (
+    <button onClick={onOpen} className="card p-4 flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 hover:-translate-y-0.5 group">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-semibold text-sm text-primary truncate group-hover:text-accent transition-colors">{g.label}</div>
+          <div className="flex items-center gap-1 mt-0.5 text-[10px] text-steel truncate">
+            <Flame size={10} className="shrink-0" style={{ color: HEAT }} />
+            <span>heat is the output — no piece counter</span>
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <span className="data text-2xl font-bold leading-none" style={{ color: HEAT }}>
+            {avg != null ? fmtNum(Math.round(avg)) : '—'}<span className="text-sm">°C</span>
+          </span>
+          <div className="label mt-0.5">avg temp</div>
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-end justify-between gap-2">
+        <div>
+          <div className="data text-xl font-bold leading-none text-primary">{g.rows.length}</div>
+          <div className="label mt-0.5">Machine{g.rows.length === 1 ? '' : 's'}</div>
+        </div>
+        <div className="text-right">
+          <div className="data text-xl font-bold leading-none text-steel">{zones}</div>
+          <div className="label mt-0.5">Heat zone{zones === 1 ? '' : 's'}</div>
+        </div>
+      </div>
+      <div className="mt-2 h-1.5 rounded-full overflow-hidden bg-base">
+        <div className="h-full rounded-full" style={{ width: avg != null ? '100%' : '0%', background: `linear-gradient(90deg, ${HEAT}55, ${HEAT})` }} />
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <AttentionLine rows={g.rows} />
+        <StatusDots rows={g.rows} />
+      </div>
+    </button>
+  );
+}
+
+function FurnaceMachineCard({ r, windowLabel }: { r: MachineActivityRow; windowLabel: string }): JSX.Element {
+  return (
+    <Link to={`/machines/${encodeURIComponent(r.code)}`}
+      className="card p-4 block transition-all hover:shadow-md hover:border-accent/30 group">
+      <div className="flex items-center gap-2">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: dotColor(r.status) }} />
+        <span className="data font-bold text-sm text-primary truncate group-hover:text-accent transition-colors">{r.code.toUpperCase()}</span>
+        <span className="ml-auto shrink-0"><StatusPill status={r.status} /></span>
+      </div>
+
+      <div className="mt-3">
+        <div className="label inline-flex items-center gap-1"><Flame size={10} style={{ color: HEAT }} /> Temperature · {windowLabel}</div>
+        <div className="mt-1">
+          <span className="data text-3xl font-bold leading-none" style={{ color: HEAT }}>
+            {r.avgTemp != null ? fmtNum(Math.round(r.avgTemp)) : '—'}
+          </span>
+          <span className="text-sm text-steel"> °C avg{r.tempZones ? ` · over ${r.tempZones} zone${r.tempZones === 1 ? '' : 's'}` : ''}</span>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-1.5">
+        <TimeStat label="Uptime" ms={r.runningMs} color={TEAL} />
+        <TimeStat label="Idle" ms={r.idleMs} color={AMBER} />
+        <TimeStat label="Stopped" ms={r.stoppedMs} color={RED} />
+        <TimeStat label="Offline" ms={r.offlineMs} color={SLATE} />
+      </div>
+    </Link>
+  );
+}
+
 // "All machines are working fine" — or exactly which ones aren't.
-function AttentionLine({ targets }: { targets: TargetRow[] }): JSX.Element {
-  const bad = targets.filter((t) => t.row.status === 'stopped' || t.row.status === 'offline');
+function AttentionLine({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
+  const bad = rows.filter((r) => r.status === 'stopped' || r.status === 'offline');
   if (!bad.length) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-running font-medium">
@@ -377,10 +479,10 @@ function AttentionLine({ targets }: { targets: TargetRow[] }): JSX.Element {
     );
   }
   return (
-    <span className="flex items-start gap-1 text-[10px] text-stopped font-medium min-w-0" title={bad.map((t) => t.row.code.toUpperCase()).join(', ')}>
+    <span className="flex items-start gap-1 text-[10px] text-stopped font-medium min-w-0" title={bad.map((r) => r.code.toUpperCase()).join(', ')}>
       <AlertTriangle size={11} className="shrink-0 mt-px" />
       <span className="min-w-0 break-words">
-        {bad.map((t) => t.row.code.toUpperCase()).join(', ')} need{bad.length === 1 ? 's' : ''} attention
+        {bad.map((r) => r.code.toUpperCase()).join(', ')} need{bad.length === 1 ? 's' : ''} attention
       </span>
     </span>
   );
@@ -423,8 +525,8 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
       <div className="mt-2"><Bar actual={actual} target={target} /></div>
 
       <div className="mt-3 space-y-1.5">
-        <AttentionLine targets={g.targets} />
-        <StatusDots targets={g.targets} />
+        <AttentionLine rows={g.targets.map((t) => t.row)} />
+        <StatusDots rows={g.targets.map((t) => t.row)} />
       </div>
     </button>
   );
@@ -461,8 +563,8 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <TimeStat label="Stopped" ms={stop} color={RED} />
       </div>
       <div className="space-y-1.5">
-        <AttentionLine targets={g.targets} />
-        <StatusDots targets={g.targets} />
+        <AttentionLine rows={g.targets.map((t) => t.row)} />
+        <StatusDots rows={g.targets.map((t) => t.row)} />
       </div>
       <GroupWeekChart g={g} />
     </div>
