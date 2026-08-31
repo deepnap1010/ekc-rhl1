@@ -28,7 +28,7 @@ import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
 import { sumActivity } from '../lib/metrics';
 import { useDashboardLive } from '../hooks/useLive';
-import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS } from '../store/filters';
+import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS, useCurrentShiftDefault } from '../store/filters';
 import { useAppConfig } from '../hooks/useAppConfig';
 import type { MachineActivityRow } from '../types/api';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
@@ -92,7 +92,9 @@ export default function Dashboard() {
   const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
 
   const [drill, setDrill] = useState<string | null>(null);
-  const atDefaults = !f.machineId && !f.shiftName && f.preset === 'today';
+  useCurrentShiftDefault(shifts);
+  // The shift default is not a filter the user set, so it does not count as dirty.
+  const atDefaults = !f.machineId && !f.shiftPicked && f.preset === 'today';
   const [pickRange, setPickRange] = useState(false);
 
   const selectedMachine = f.machineId
@@ -206,7 +208,7 @@ export default function Dashboard() {
             <button
               onClick={() => f.reset()}
               disabled={atDefaults}
-              title={atDefaults ? 'Filters are already at their defaults' : 'Back to All Machines · All Shifts · Today, and clear every group’s own window'}
+              title={atDefaults ? 'Filters are already at their defaults' : 'Back to All Machines · the running shift · Today, and clear every group’s own window'}
               className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-xs font-medium text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-steel disabled:hover:border-line"
             >
               <RotateCcw size={13} /> Reset

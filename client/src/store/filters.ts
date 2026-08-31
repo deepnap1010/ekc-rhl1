@@ -2,8 +2,9 @@
 // Global analysis filters — ONE machine / shift / date-range selection shared by
 // the Dashboard (and any page that opts in), so every metric on a filtered view
 // derives from the same dataset. Selection survives navigation within a session.
+import { useEffect } from 'react';
 import { create } from 'zustand';
-import { shiftWindowOn, type ShiftTiming } from '../lib/settings';
+import { currentShift, shiftWindowOn, type ShiftTiming } from '../lib/settings';
 
 export type DatePreset = 'today' | 'yesterday' | 'week' | 'prevWeek' | 'month' | 'year' | 'custom';
 
@@ -26,15 +27,46 @@ interface FiltersState {
   preset: DatePreset;
   customFrom: string;  // datetime-local strings (custom preset only)
   customTo: string;
+  // False until someone picks a shift themselves. While it is false the shift
+  // follows the clock (see useCurrentShiftDefault) — a board on the wall should
+  // be showing the shift that is on the floor, not the one that opened the page.
+  shiftPicked: boolean;
   set: (patch: Partial<Omit<FiltersState, 'set' | 'reset'>>) => void;
   reset: () => void;
 }
 
 export const useFilters = create<FiltersState>((set) => ({
-  machineId: '', shiftName: '', preset: 'today', customFrom: '', customTo: '',
-  set: (patch) => set(patch),
-  reset: () => set({ machineId: '', shiftName: '', preset: 'today', customFrom: '', customTo: '' }),
+  machineId: '', shiftName: '', preset: 'today', customFrom: '', customTo: '', shiftPicked: false,
+  // Choosing a shift by hand pins it; everything else leaves it following.
+  set: (patch) => set('shiftName' in patch ? { ...patch, shiftPicked: true } : patch),
+  reset: () => set({ machineId: '', shiftName: '', preset: 'today', customFrom: '', customTo: '', shiftPicked: false }),
 }));
+
+/** Keeps the filter on the shift that is running, until someone picks one.
+ *
+ *  The default view of a factory dashboard is the work happening now, and "now"
+ *  on a three-shift floor is a shift, not a calendar day — a full day at 08:00
+ *  averages the shift in progress with two that have not run. Re-checked every
+ *  minute, so a screen left open rolls over at the shift change on its own.
+ *  Only ever writes while the user has not chosen a shift, and never on a
+ *  multi-day preset, where a single shift window would be a lie. */
+export function useCurrentShiftDefault(shifts: ShiftTiming[]): void {
+  const shiftPicked = useFilters((s) => s.shiftPicked);
+  const preset = useFilters((s) => s.preset);
+  const shiftName = useFilters((s) => s.shiftName);
+  useEffect(() => {
+    if (shiftPicked || !shifts.length) return;
+    const apply = (): void => {
+      if (!shiftApplies(preset)) return;
+      const now = currentShift(shifts)?.name || '';
+      // setState directly: going through `set` would mark the shift as picked.
+      if (now !== useFilters.getState().shiftName) useFilters.setState({ shiftName: now });
+    };
+    apply();
+    const t = setInterval(apply, 60_000);
+    return () => clearInterval(t);
+  }, [shifts, shiftPicked, preset, shiftName]);
+}
 
 // A shift only narrows a SINGLE-DAY selection (today / yesterday) to its concrete
 // window — multi-day "shift totals" would need per-day windows the range engine
