@@ -2,6 +2,7 @@
 import http from 'http';
 import { createApp } from './app.js';
 import { connectDB, disconnectDB } from './config/db.js';
+import { runStartupMigrations } from './config/migrations.js';
 import { env } from './config/env.js';
 import { initSocket } from './sockets/io.js';
 import { startWatchers, stopWatchers } from './services/watch.service.js';
@@ -10,6 +11,8 @@ import { startScheduleTicker, stopScheduleTicker } from './services/schedule.ser
 
 async function start(): Promise<void> {
   await connectDB();
+  // Repairs that must happen before anything serves (see config/migrations).
+  await runStartupMigrations();
 
   const app    = createApp();
   const server = http.createServer(app);

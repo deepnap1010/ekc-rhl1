@@ -10,6 +10,7 @@ import mongoose from 'mongoose';
 import { Machine } from '../src/models/Machine.js';
 import { MachineLabel } from '../src/models/MachineLabel.js';
 import { listMachineLabels, setMachineLabel } from '../src/controllers/machine.controller.js';
+import { runStartupMigrations } from '../src/config/migrations.js';
 
 let bad = 0;
 const check = (c: boolean, l: string) => { console.log(`${c ? 'ok  ' : '!!  '}${l}`); if (!c) bad++; };
@@ -31,6 +32,27 @@ await Machine.create([
   { code: 'SPG-06', machineId: 'SPG-06', name: 'Spinner' },
 ]);
 const before = JSON.stringify(await Machine.find().sort({ code: 1 }).lean());
+
+// ── a stale unique index from an older shape of this collection ─────────────
+// This is the real bug it shipped with: machine_labels carried a unique index
+// on `machineId`, a field the current model does not write. Every document
+// stored null there, so ONE machine could be renamed and the next came back as
+// "Duplicate entry".
+await mongoose.connection.db!.collection('machine_labels')
+  .createIndex({ machineId: 1 }, { unique: true, name: 'machineId_1' });
+await call(setMachineLabel, { params: { code: 'CUTTINGMACHINE04' }, body: { displayName: 'PC04' } });
+let blew = false;
+try { await call(setMachineLabel, { params: { code: 'SPG-06' }, body: { displayName: 'Spinner 6' } }); }
+catch { blew = true; }
+check(blew, 'reproduced: with the stale index, the SECOND rename fails');
+
+await runStartupMigrations();
+const names = (await mongoose.connection.db!.collection('machine_labels').indexes()).map((i) => i.name);
+check(!names.includes('machineId_1'), 'the migration drops it');
+check(names.includes('machineRef_1'), "and keeps the collection's own unique index");
+await call(setMachineLabel, { params: { code: 'SPG-06' }, body: { displayName: 'Spinner 6' } });
+check(await MachineLabel.countDocuments() === 2, 'a second machine can now be renamed');
+await MachineLabel.deleteMany({});
 
 // ── rename ───────────────────────────────────────────────────────────────────
 await call(setMachineLabel, { params: { code: 'CUTTINGMACHINE04' }, body: { displayName: 'PC04' } });
