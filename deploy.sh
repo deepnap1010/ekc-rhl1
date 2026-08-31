@@ -9,6 +9,14 @@ echo "== pulling latest =="
 git checkout -- client/package-lock.json server/package-lock.json
 git pull --ff-only
 
+# Dependencies BEFORE the build: a pull can bring a new package (fonts, a lib),
+# and without this the build dies with "Unable to resolve" while the old dist
+# keeps being served — so the site silently stays on the previous version.
+# Fast no-op when nothing changed.
+echo "== installing deps =="
+(cd client && npm install --no-audit --no-fund --silent)
+(cd server && npm install --no-audit --no-fund --silent)
+
 echo "== building client =="
 cd client && npm run build && cd ..
 
