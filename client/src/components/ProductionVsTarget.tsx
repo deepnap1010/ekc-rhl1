@@ -531,7 +531,7 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
           <div className="flex items-center gap-1 mt-0.5 text-[10px] text-steel truncate">
             <Ruler size={10} className="shrink-0" />
             <span className="data font-medium text-primary truncate" title={dias.join(', ')}>
-              {dias.length === 1 ? dias[0] : `${dias.length} dias`}
+              {dias.length === 1 ? dias[0] : `${dias.length} products`}
             </span>
           </div>
         </div>
@@ -892,9 +892,11 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
             </div>
           ))}
         </div>
-        <div className="flex gap-1.5 mt-1 border-t border-line pt-1">
+        <div className="flex gap-1.5 mt-1.5 border-t border-line pt-1.5">
           {bars.map((b) => (
-            <div key={b.t} className={`flex-1 min-w-[28px] text-center text-[9px] ${b.future ? 'text-steel/40' : 'text-steel'}`}>
+            <div key={b.t}
+              className={`flex-1 min-w-[28px] text-center data text-[11px] font-semibold tracking-tight tabular-nums ${
+                b.future ? 'text-steel/40' : 'text-primary'}`}>
               {slot(b.t)}
             </div>
           ))}
