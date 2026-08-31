@@ -22,7 +22,8 @@ import { AppConfig, type IBreak } from '../models/AppConfig.js';
 import { OperatorSession } from '../models/OperatorSession.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
-import { stepEvents, clipSpans, PROD_STEP_PER_MIN, type Span } from './activity.service.js';
+import { clipSpans, type Span } from './activity.service.js';
+import { productionEventsBy } from './counters.service.js';
 
 const IST_MS = 5.5 * 3_600_000;
 const HOUR = 3_600_000;
@@ -195,43 +196,9 @@ export async function computeTargets(
   const machines = [...new Set(assignments.map((a) => a.machineRef))];
   if (!machines.length) return { rows: [], machines: [] };
 
-  // Per-machine counter key from the latest payload — same picker as everywhere.
-  const keyed: { ref: string; key: string }[] = [];
-  for (const ref of machines) {
-    const last = await Telemetry.findOne({ machineId: ref }).sort({ timestamp: -1 })
-      .select({ data: 1 }).lean();
-    const key = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
-    if (key && !key.includes('.')) keyed.push({ ref, key });
-  }
-
-  // Per-bin MAX of each machine's counter (replay-proof), stepped in Node.
-  // Bin width scales with the span — 5-minute bins keep a month's pipeline
-  // inside what this Atlas tier tolerates, and hour attribution only needs
-  // sub-hour resolution anyway. NO post-$group sort (tier ignores allowDiskUse).
-  const spanMs = toD.getTime() - fromD.getTime();
-  const binMinutes = spanMs > 2 * DAY ? 5 : 1;
-  const NUMERIC = ['int', 'long', 'double', 'decimal'];
-  const eventsBy = new Map<string, { t: number; made: number }[]>();
-  if (keyed.length) {
-    const agg = await Telemetry.aggregate([
-      { $match: { machineId: { $in: keyed.map((k) => k.ref) }, timestamp: { $gte: fromD, $lte: toD } } },
-      { $addFields: { pv: { $switch: {
-        branches: keyed.map((k) => ({
-          case: { $eq: ['$machineId', k.ref] },
-          then: { $getField: { field: k.key, input: '$data' } },
-        })),
-        default: null,
-      } } } },
-      { $match: { pv: { $type: NUMERIC } } },
-      { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute', binSize: binMinutes } } }, pv: { $max: '$pv' } } },
-      { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv' } } } },
-    ]).option({ maxTimeMS: 30_000 }).exec() as { _id: string; pts: { t: Date; v: number }[] }[];
-    for (const m of agg) {
-      const series = m.pts.map((p) => ({ t: new Date(p.t).getTime(), v: Number(p.v) }))
-        .filter((p) => Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
-      eventsBy.set(m._id, stepEvents(series, PROD_STEP_PER_MIN));
-    }
-  }
+  // Confirmed counter steps per machine — the shared engine (counters.service),
+  // which the dia trace uses too so the two can never disagree.
+  const eventsBy = await productionEventsBy(machines, fromD, toD);
 
   // Clipped downtime spans per machine, window-clipped.
   const evts = await DowntimeEvent.find({

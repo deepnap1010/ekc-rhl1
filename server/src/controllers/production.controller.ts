@@ -14,7 +14,7 @@ import { computeTargets, rollupToDays, type TargetRow } from '../services/target
 import { Telemetry } from '../models/Telemetry.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
-import { stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
+import { productionEventsBy } from '../services/counters.service.js';
 import { Order } from '../models/Order.js';
 import { ScheduledAssignment } from '../models/ScheduledAssignment.js';
 import { applyDueSchedules } from '../services/schedule.service.js';
@@ -165,22 +165,25 @@ export const setDiaActive = asyncHandler(async (req, res) => {
   return ok(res, doc);
 });
 
-// DELETE /production/dia/:id — permanent, and deliberately narrow: only a
-// RETIRED dia, and only while no machine currently holds it. History does not
-// need the record — every past assignment carries its own frozen snapshot — so
-// deleting the catalogue entry rewrites nothing.
+// DELETE /production/dia/:id — permanent, and it means EVERYWHERE: the runs
+// under this dia, the machines still set to it (they drop to "no dia"), and any
+// schedule pointing at it all go with the record. That is the difference
+// between retiring a dia and deleting it — retire keeps the history, delete
+// removes it, including the target those hours were measured against.
+// Still retired-only, so deletion is never one misclick away.
 export const deleteDia = asyncHandler(async (req, res) => {
   const doc = await DiaConfig.findById(req.params.id);
   if (!doc) return fail(res, 404, 'DIA not found');
   if (doc.active) return fail(res, 400, 'Retire the dia first — delete is for retired records');
-  const holding = await MachineAssignment.countDocuments({ diaId: doc._id, effectiveTo: null });
-  if (holding > 0) return fail(res, 400, `${holding} machine${holding === 1 ? ' still holds' : 's still hold'} this dia — reassign them first`);
-  const queued = await ScheduledAssignment.countDocuments({ diaId: doc._id, status: 'pending' });
-  if (queued > 0) return fail(res, 400, `${queued} pending schedule${queued === 1 ? ' still points' : 's still point'} at this dia — cancel ${queued === 1 ? 'it' : 'them'} first`);
+  const [asg, sch] = await Promise.all([
+    MachineAssignment.deleteMany({ diaId: doc._id }),
+    ScheduledAssignment.deleteMany({ diaId: doc._id }),
+  ]);
   await doc.deleteOne();
   audit(req.user as ScopedUser, 'dia.delete', { type: 'dia', id: String(doc._id), label: doc.name },
-    { name: doc.name, stages: doc.stages.map((s) => ({ name: s.name, processingSec: s.processingSec })) }, null);
-  return ok(res, { deleted: true });
+    { name: doc.name, stages: doc.stages.map((s) => ({ name: s.name, processingSec: s.processingSec })),
+      assignmentsRemoved: asg.deletedCount, schedulesRemoved: sch.deletedCount }, null);
+  return ok(res, { deleted: true, assignments: asg.deletedCount, schedules: sch.deletedCount });
 });
 
 // ── Assignments ──────────────────────────────────────────────────────────────
@@ -619,8 +622,14 @@ export const traceDias = asyncHandler(async (req, res) => {
 
   const cacheKey = `diatrace:${ref || '*'}:${q.dia || '*'}:${winFrom?.toISOString() || '*'}:${winTo?.toISOString() || '*'}:${(scope || []).join(',') || '*'}`;
   const rows = await cached(cacheKey, 60_000, async () => {
-    const asgs = await MachineAssignment.find(filter)
+    const all = await MachineAssignment.find(filter)
       .sort({ effectiveFrom: -1 }).limit(500).lean();
+    // Only dias the catalogue still has. A deleted dia is deleted everywhere —
+    // its runs leave the trace with it, so "4 dias in Settings" reads as 4 here
+    // rather than 4 plus the ghosts of every dia ever removed.
+    const alive = new Set((await DiaConfig.find({ _id: { $in: [...new Set(all.map((a) => a.diaId))] } })
+      .select({ _id: 1 }).lean()).map((d) => String(d._id)));
+    const asgs = all.filter((a) => alive.has(String(a.diaId)));
     if (!asgs.length) return [];
     const now = Date.now();
     // Counting is bounded to 92 days of telemetry (the report's own cap);
@@ -631,39 +640,7 @@ export const traceDias = asyncHandler(async (req, res) => {
       Math.min(...asgs.map((a) => +new Date(a.effectiveFrom))),
     ));
     const machines = [...new Set(asgs.map((a) => a.machineRef))];
-
-    // Each machine's counter key, from its latest payload — the shared picker.
-    const keyed: { ref: string; key: string }[] = [];
-    for (const m of machines) {
-      const last = await Telemetry.findOne({ machineId: m }).sort({ timestamp: -1 })
-        .select({ data: 1 }).lean();
-      const k = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
-      if (k && !k.includes('.')) keyed.push({ ref: m, key: k });
-    }
-
-    // ONE aggregation for every machine: per-bin max counter, stepped in Node.
-    const evBy = new Map<string, { t: number; made: number }[]>();
-    if (keyed.length) {
-      const binMinutes = now - capFrom.getTime() > 2 * 24 * 3_600_000 ? 5 : 1;
-      const agg = await Telemetry.aggregate([
-        { $match: { machineId: { $in: keyed.map((k) => k.ref) }, timestamp: { $gte: capFrom } } },
-        { $addFields: { pv: { $switch: {
-          branches: keyed.map((k) => ({
-            case: { $eq: ['$machineId', k.ref] },
-            then: { $getField: { field: k.key, input: '$data' } },
-          })),
-          default: null,
-        } } } },
-        { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
-        { $group: { _id: { m: '$machineId', t: { $dateTrunc: { date: '$timestamp', unit: 'minute', binSize: binMinutes } } }, pv: { $max: '$pv' } } },
-        { $group: { _id: '$_id.m', pts: { $push: { t: '$_id.t', v: '$pv' } } } },
-      ]).option({ maxTimeMS: 30_000 }).exec() as { _id: string; pts: { t: Date; v: number }[] }[];
-      for (const m of agg) {
-        const series = m.pts.map((p) => ({ t: +new Date(p.t), v: Number(p.v) }))
-          .filter((p) => Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
-        evBy.set(m._id, stepEvents(series, PROD_STEP_PER_MIN));
-      }
-    }
+    const evBy = await productionEventsBy(machines, capFrom, null);
 
     const out = [];
     for (const a of asgs) {

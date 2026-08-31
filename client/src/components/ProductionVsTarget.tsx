@@ -377,8 +377,11 @@ function AttentionLine({ targets }: { targets: TargetRow[] }): JSX.Element {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[10px] text-stopped font-medium truncate" title={bad.map((t) => t.row.code.toUpperCase()).join(', ')}>
-      <AlertTriangle size={11} className="shrink-0" /> {bad.map((t) => t.row.code.toUpperCase()).join(', ')} need{bad.length === 1 ? 's' : ''} attention
+    <span className="flex items-start gap-1 text-[10px] text-stopped font-medium min-w-0" title={bad.map((t) => t.row.code.toUpperCase()).join(', ')}>
+      <AlertTriangle size={11} className="shrink-0 mt-px" />
+      <span className="min-w-0 break-words">
+        {bad.map((t) => t.row.code.toUpperCase()).join(', ')} need{bad.length === 1 ? 's' : ''} attention
+      </span>
     </span>
   );
 }

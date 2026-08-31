@@ -135,6 +135,7 @@ export default function DiaTrace(): JSX.Element {
     queryKey: ['dia-trace', 'all', fromISO ?? '', toISO ?? ''],
     queryFn: () => productionApi.trace(win ? { from: fromISO, to: toISO } : undefined).then((r) => r.data),
     enabled: mode === 'all' || !!win,
+    staleTime: 60_000,               // arrive on the prefetched data, not a spinner
     refetchInterval: 60_000,
     placeholderData: keepPreviousData,
   });

@@ -14,7 +14,7 @@ import { ScheduledAssignment } from '../src/models/ScheduledAssignment.js';
 import { MachineAssignment } from '../src/models/MachineAssignment.js';
 import { DiaConfig } from '../src/models/DiaConfig.js';
 import { applyDueSchedules } from '../src/services/schedule.service.js';
-import { listSchedules, createSchedule, cancelSchedule, ackSchedule, setDiaActive, assignMachine } from '../src/controllers/production.controller.js';
+import { listSchedules, createSchedule, cancelSchedule, ackSchedule, setDiaActive, assignMachine, deleteDia } from '../src/controllers/production.controller.js';
 
 let bad = 0;
 const check = (cond: boolean, label: string): void => {
@@ -179,6 +179,24 @@ async function main() {
     'a case-different ref closes the SAME machine, not a second one');
   check((await call(listSchedules, { user: OP, query: { unacked: '1' } })).some((r: any) => String(r._id) === String(s12._id)),
     'the operator popup finds it despite the case difference');
+
+  // ── 12. deleting a dia takes its runs and its schedules with it ───────────
+  await MachineAssignment.deleteMany({});
+  await ScheduledAssignment.deleteMany({});
+  const doomed = await DiaConfig.create({
+    name: 'DIA-GONE', capacity: '', dims: '', active: true,
+    stages: [{ key: 'cutting', name: 'Cutting', seq: 1, processingSec: 60, active: true }],
+  });
+  await call(assignMachine, { body: { machineRef: 'MC-01', diaId: String(doomed._id), stageKey: 'cutting' } });
+  await call(createSchedule, { body: { machineRef: 'MC-01', diaId: String(doomed._id), stageKey: 'cutting', applyAt: ahead(60) } });
+  await call(deleteDia, { params: { id: String(doomed._id) } })
+    .then(() => check(false, 'an ACTIVE dia cannot be deleted'), () => check(true, 'an ACTIVE dia cannot be deleted'));
+  await call(setDiaActive, { params: { id: String(doomed._id) }, body: { active: false } });
+  const gone = await call(deleteDia, { params: { id: String(doomed._id) } });
+  check(gone.deleted === true, 'a retired dia deletes even while machines still hold it');
+  check((await MachineAssignment.countDocuments({ diaId: doomed._id })) === 0, 'its runs are gone (so it leaves Dia Trace)');
+  check((await openRows('MC-01')) === 0, 'the machine that held it drops to no dia');
+  check((await ScheduledAssignment.countDocuments({ diaId: doomed._id })) === 0, 'its schedules go with it');
 
   console.log(bad ? `\nFAIL: ${bad} check(s)` : '\nALL OK');
   await mongoose.disconnect();

@@ -66,6 +66,9 @@ export default function DiaStagesSettings(): JSX.Element {
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['dia-configs'] });
     qc.invalidateQueries({ queryKey: ['assignments'] });
+    // A deleted dia leaves the trace and takes its schedules with it.
+    qc.invalidateQueries({ queryKey: ['dia-trace'] });
+    qc.invalidateQueries({ queryKey: ['schedules'] });
   };
 
   return (
@@ -121,8 +124,9 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
       onSaved();
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not update'); }
   };
-  // Permanent delete: retired dias only, two clicks, blocked while a machine
-  // still holds the dia (the server enforces the same).
+  // Permanent delete: retired dias only, two clicks. It removes the dia
+  // everywhere — machines still set to it drop to "no dia" and its runs leave
+  // the trace — so the confirm step says so out loud.
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const deleteDia = async (d: DiaConfig) => {
     setConfirmDelete(null);
@@ -219,13 +223,16 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
                     <span className="ml-auto flex items-center gap-3 shrink-0 text-xs">
                       <button onClick={() => setActive(d, true)} className="text-accent hover:underline">Restore</button>
                       {confirmDelete === d._id ? (
-                        <button onClick={() => deleteDia(d)} className="text-stopped font-semibold hover:underline">Sure? Delete</button>
+                        <button onClick={() => deleteDia(d)} className="text-stopped font-semibold hover:underline">
+                          {held > 0 ? `Sure? Clears ${held} machine${held === 1 ? '' : 's'}` : 'Sure? Delete'}
+                        </button>
                       ) : (
                         <button
-                          onClick={() => held === 0 && setConfirmDelete(d._id)}
-                          disabled={held > 0}
-                          title={held > 0 ? 'Machines still hold this dia — reassign them first' : 'Delete this record permanently'}
-                          className="text-steel hover:text-stopped disabled:opacity-40 disabled:hover:text-steel"
+                          onClick={() => setConfirmDelete(d._id)}
+                          title={held > 0
+                            ? `Deletes this record everywhere — ${held} machine${held === 1 ? '' : 's'} still set to it will drop to no dia`
+                            : 'Deletes this record everywhere, including its runs in Dia Trace'}
+                          className="text-steel hover:text-stopped"
                         >Delete</button>
                       )}
                     </span>

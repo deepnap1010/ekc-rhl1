@@ -4,7 +4,7 @@
 // (60 min ÷ 3 min = 20/hr) — nobody ever types a target. Assigning a DIA to a
 // machine happens on the machine itself (header chip / Configure tab); this
 // page is the catalogue.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Target, X, ClipboardList, Coffee, Waypoints, ChevronRight, CalendarClock } from 'lucide-react';
 import { ScheduleDiaModal } from '../components/ScheduleDia';
@@ -27,6 +27,17 @@ export default function ProductionSetup(): JSX.Element {
   const can = useAuthStore((s) => s.can);
   const [editing, setEditing] = useState<DiaConfig | 'new' | null>(null);
   const [schedOpen, setSchedOpen] = useState(false);
+
+  // Warm the trace while the user is still on this page: it is one click away
+  // behind "Trace Dia ›", and its query is the expensive one.
+  useEffect(() => {
+    if (!can('production', 'view')) return;
+    void qc.prefetchQuery({
+      queryKey: ['dia-trace', 'all', '', ''],
+      queryFn: () => productionApi.trace().then((r) => r.data),
+      staleTime: 60_000,
+    });
+  }, [qc, can]);
 
   const { data: dias, isLoading } = useQuery({
     queryKey: ['dia-configs'],
