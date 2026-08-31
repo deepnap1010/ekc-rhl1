@@ -5,7 +5,7 @@
 // it never writes to the machine / telemetry database (live PLC data is the
 // single source of truth).
 import { useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw, Check, Save, Wifi, WifiOff } from 'lucide-react';
 import { userApi } from '../../api/endpoints';
 import { toast } from '../../store/toast';
@@ -19,13 +19,26 @@ import {
 import { useAppConfig } from '../../hooks/useAppConfig';
 import type { Machine } from '../../types/api';
 import DiaAssignmentSection from './DiaAssignmentSection';
-import { useMachineName, useMachineTitle } from '../../lib/machineName';
+import { useMachineName, useMachineTitle, hasCustomName } from '../../lib/machineName';
+import { useAuthStore } from '../../store/auth';
+import { machineApi } from '../../api/endpoints';
 
 const numOrU = (v: string): number | undefined => (v === '' ? undefined : Number(v));
 
 export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.Element {
+  const canRename = useAuthStore((st) => st.can)('machines', 'admin');
+  const qc = useQueryClient();
   const mName = useMachineName();
   const mTitle = useMachineTitle();
+  const [nameDraft, setNameDraft] = useState(() => (hasCustomName(String(machine.code || machine.machineId || '')) ? mName(String(machine.code || machine.machineId || '')) : ''));
+  const renameMut = useMutation({
+    mutationFn: (name: string) => machineApi.setLabel(String(machine.code || machine.machineId || ''), name),
+    onSuccess: (_r, name) => {
+      qc.invalidateQueries({ queryKey: ['machine-labels'] });
+      toast.success(name ? `Renamed to ${name} — everyone sees it` : 'Custom name removed');
+    },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not rename'),
+  });
   const id = machineKey(machine);
   const [cfg, setCfg] = useState<MachineConfig>(() => getConfig(id));
   const [saved, setSaved] = useState(false);
@@ -95,8 +108,13 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
       <Card title="Identity & Assignment">
         <div className="grid sm:grid-cols-2 gap-3">
           <Field label="Display name">
-            <input className="input" value={cfg.displayName || ''} placeholder={machine.name || 'Machine name'}
-              onChange={(e) => set({ displayName: e.target.value })} />
+            {/* Saved for EVERYONE the moment you leave the field — a machine's
+                name is shared, unlike the rest of this panel, which is local. */}
+            <input className="input" value={nameDraft} placeholder={machine.name || 'Machine name'}
+              disabled={!canRename}
+              title={canRename ? 'Renames this machine on every screen, for every user' : 'Only an admin can rename a machine'}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={() => { if (nameDraft.trim() !== mName(String(id))) renameMut.mutate(nameDraft.trim()); }} />
           </Field>
           <Field label="Production line / cell">
             <input className="input" value={cfg.line || ''} placeholder="e.g. HT Line 1"

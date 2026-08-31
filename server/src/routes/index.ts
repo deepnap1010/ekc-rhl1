@@ -35,6 +35,8 @@ r.get('/machines', authorize('machines'), machine.listMachines);
 r.get('/machines/summary', authorize('machines'), machine.machineSummary);
 r.get('/machines/activity', authorize('machines'), machine.machineActivity); // historical range view (read-only)
 r.get('/machines/metric-averages', authorize('machines'), machine.machineMetricAverages); // many machines, one round trip — MUST stay above /:code
+r.get('/machines/labels', authorize('machines'), machine.listMachineLabels);   // custom names — everyone reads, MUST stay above /:code
+r.put('/machines/:code/label', authorize('machines', 'admin'), machine.setMachineLabel); // …and only an admin writes one
 r.get('/machines/dias', authorize('production'), prod.machineDias); // current dia per machine — MUST stay above /:code
 r.get('/machines/:code', authorize('machines'), machine.getMachine);
 r.get('/machines/:code/hourly', authorize('machines'), machine.machineHourly); // pieces per hour — the target board's bars

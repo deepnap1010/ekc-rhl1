@@ -1,7 +1,7 @@
 // client/src/pages/Machines.tsx
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Ruler, Waypoints, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
@@ -22,10 +22,10 @@ import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { todayWindow } from '../store/filters';
-import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
-import { useMachineName, useMachineTitle } from '../lib/machineName';
+import { useMachineName, useMachineTitle, hasCustomName, useAdoptLocalNames } from '../lib/machineName';
 import ParametersModal from '../components/machine/MachineParameters';
 import type { Machine, MachineTick, MachineActivityRow, MachineAssignment } from '../types/api';
+import { toast } from '../store/toast';
 
 const TEAL = '#0D9488';
 const AMBER = '#D97706';
@@ -77,6 +77,7 @@ function tallyActivity(rows: MachineActivityRow[]) {
 }
 
 export default function Machines() {
+  useAdoptLocalNames(useAuthStore((st) => st.can)('machines', 'admin'));
   const mName = useMachineName();
   const mTitle = useMachineTitle();
   const [search, setSearch] = useState('');
@@ -463,22 +464,35 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
   // Custom (user-editable) display name — local presentation layer, same store the
   // Configure tab uses. The machine-sent code stays visible in small font below,
   // since that identity can't be changed from here.
-  const mkey = machineKey(machine);
-  const cfg = useMachineConfig(mkey);
-  const customName = (cfg.displayName || '').trim();
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
+  const customName = hasCustomName(String(code)) ? mName(String(code)) : '';
   const [editing, setEditing] = useState(false);
   const [diaOpen, setDiaOpen] = useState(false);          // Assign-DIA modal, right from the card
   const [traceOpen, setTraceOpen] = useState(false);      // this machine's dia trail
   const canSetDia = useAuthStore((st) => st.can)('production', 'update');
+  // Renaming is an admin act: one name reaches every user, so one person owns it.
+  const canRename = useAuthStore((st) => st.can)('machines', 'admin');
+  const qc = useQueryClient();
   const [draft, setDraft] = useState('');
   const startEdit = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
     setDraft(customName); setEditing(true);
   };
+  // The rename is saved for EVERYONE — it is a server-side label, not a note in
+  // this browser. Only an admin can write one; the server enforces it too.
+  const renameMut = useMutation({
+    mutationFn: (name: string) => machineApi.setLabel(String(code), name),
+    onSuccess: (_r, name) => {
+      qc.invalidateQueries({ queryKey: ['machine-labels'] });
+      toast.success(name ? `Renamed to ${name} — everyone sees it` : 'Custom name removed');
+    },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not rename'),
+  });
   const commitEdit = () => {
     const name = draft.trim();
-    saveConfig(mkey, { ...getConfig(mkey), displayName: name || undefined });
     setEditing(false);
+    if (name !== customName) renameMut.mutate(name);
   };
 
   const title = customName || String(code).toUpperCase();
@@ -582,12 +596,15 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
             />
           ) : (
             <div className="flex items-center gap-1.5 min-w-0">
-              <div className="data font-bold text-sm text-primary group-hover:text-accent transition-colors truncate" title={customName ? `Custom name · machine sends "${String(code).toUpperCase()}"` : undefined}>
+              <div className="data font-bold text-sm text-primary group-hover:text-accent transition-colors truncate" title={mTitle(String(code))}>
                 {title}
               </div>
-              <button onClick={startEdit} title="Set custom name" className="shrink-0 text-steel/40 hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
-                <Pencil size={12} />
-              </button>
+              {canRename && (
+                <button onClick={startEdit} title="Rename this machine for everyone — the machine keeps its own code"
+                  className="shrink-0 text-steel/40 hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
+                  <Pencil size={12} />
+                </button>
+              )}
             </div>
           )}
           {subtitle && <div className="text-[11px] text-steel mt-0.5 truncate">{subtitle}</div>}

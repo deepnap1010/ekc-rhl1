@@ -17,8 +17,11 @@ import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { computeActivity, stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
-import { cached } from '../utils/cache.js';
+import { cached, invalidate } from '../utils/cache.js';
 import { readingSignature, pickColumns } from '../utils/history.js';
+import { MachineLabel } from '../models/MachineLabel.js';
+import { AuditLog } from '../models/AuditLog.js';
+import { refMatch } from '../utils/machineRef.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -702,4 +705,57 @@ export const machineHourly = asyncHandler(async (req, res) => {
       .map(([t, made]) => ({ t: new Date(t).toISOString(), made }));
   });
   return ok(res, { key, hours }, { from: fromD.toISOString(), to: endD.toISOString() });
+});
+
+// ── Display names ────────────────────────────────────────────────────────────
+// A label is not an identity. These two endpoints are the ONLY writes involved
+// in renaming a machine: nothing here touches the machines collection, the
+// telemetry, or any historical row, all of which stay keyed by the real code
+// the PLC posts under.
+
+// GET /machines/labels — every custom name, for everyone who can see machines.
+// Small (one row per renamed machine) and read on every page, so it is cached.
+export const listMachineLabels = asyncHandler(async (_req, res) => {
+  const rows = await cached('machinelabels', 30_000, () =>
+    MachineLabel.find().select({ machineRef: 1, displayName: 1, updatedBy: 1, updatedAt: 1 }).lean());
+  return ok(res, rows);
+});
+
+// PUT /machines/:code/label { displayName } — admin only (see the route).
+// An empty name removes the label and the machine goes back to its own code.
+export const setMachineLabel = asyncHandler(async (req, res) => {
+  const ref = String(req.params.code || '').trim();
+  if (!ref) return fail(res, 400, 'machine code is required');
+  const raw = String((req.body as { displayName?: unknown })?.displayName ?? '').trim();
+  if (raw.length > 60) return fail(res, 400, 'Name is too long (60 characters max)');
+
+  // The machine has to exist — a label for a code nobody posts under is a typo
+  // that would then haunt every screen.
+  const machine = await findMachine(ref);
+  if (!machine) return fail(res, 404, `No machine posts as "${ref}"`);
+  const realRef = String(machine.code || machine.machineId || ref);
+
+  const who = { id: String((req.user as { _id?: unknown })?._id || ''), name: (req.user as { name?: string })?.name };
+  const before = await MachineLabel.findOne({ machineRef: refMatch(realRef) }).lean();
+
+  if (!raw) {
+    await MachineLabel.deleteMany({ machineRef: refMatch(realRef) });
+  } else {
+    // deleteMany + create, not upsert: an older row could carry a differently
+    // punctuated ref (SPG-06 vs SPG06) and leave two labels for one machine.
+    await MachineLabel.deleteMany({ machineRef: refMatch(realRef) });
+    await MachineLabel.create({ machineRef: realRef, displayName: raw, updatedBy: who });
+  }
+  invalidate('machinelabels');
+
+  AuditLog.create({
+    at: new Date(),
+    user: who,
+    action: raw ? 'machine.rename' : 'machine.rename.clear',
+    entity: { type: 'machine', id: realRef, label: raw ? `${realRef} → ${raw}` : realRef },
+    before: before ? { displayName: before.displayName } : null,
+    after: raw ? { displayName: raw } : null,
+  }).catch(() => {});
+
+  return ok(res, { machineRef: realRef, displayName: raw });
 });

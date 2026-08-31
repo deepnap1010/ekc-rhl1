@@ -28,3 +28,11 @@ export function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Pro
   store.set(key, { at: Date.now(), p });
   return p as Promise<T>;
 }
+
+/** Drop one entry (or every entry whose key starts with the prefix) so the next
+ *  read recomputes. A write that changes what a cached read returns must call
+ *  this, or the change appears up to a TTL later — on a shared label, that
+ *  looks like the rename simply not working. */
+export function invalidate(prefix: string): void {
+  for (const k of [...store.keys()]) if (k === prefix || k.startsWith(prefix)) store.delete(k);
+}

@@ -642,6 +642,15 @@ export interface HourlyProduction {
   hours: { t: string; made: number }[];  // ISO hour start (anchored to `from`) → pieces
 }
 
+// The name people call a machine. Server-side and shared, so one rename
+// reaches every user on every device; the machine's real code never changes.
+export interface MachineLabel {
+  machineRef: string;      // the REAL code the PLC posts under
+  displayName: string;
+  updatedBy?: { id?: string; name?: string };
+  updatedAt?: string;
+}
+
 // A dia assignment set for a FUTURE moment; the server applies it itself.
 export interface ScheduledDia {
   _id: string;

@@ -21,6 +21,7 @@ import Departments from './pages/Departments';
 import Settings from './pages/Settings';
 import ProductionSetup from './pages/ProductionSetup';
 import DiaTrace from './pages/DiaTrace';
+import { useMachineLabelsSync } from './lib/machineName';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1, staleTime: 10000 } },
@@ -31,6 +32,8 @@ const P = (module: string, el: ReactElement): ReactElement => (
 );
 
 export default function App() {
+  // Custom machine names, fetched once for the whole app (lib/machineName).
+  useMachineLabelsSync();
   return (
     <QueryClientProvider client={qc}>
       <Toaster />

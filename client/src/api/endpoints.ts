@@ -41,6 +41,7 @@ import type {
   BreakWindow,
   HourlyProduction,
   DiaTraceRow,
+  MachineLabel,
   ScheduledDia,
 } from '../types/api';
 
@@ -88,6 +89,9 @@ export const configApi = {
 export const machineApi = {
   list: (params?: Params) => get<Machine[]>('/machines', params),
   summary: () => get<MachineSummary>('/machines/summary'),
+  labels: () => get<MachineLabel[]>('/machines/labels'),
+  setLabel: (code: string, displayName: string) =>
+    api.put(`/machines/${encodeURIComponent(code)}/label`, { displayName }) as unknown as Promise<ApiResponse<MachineLabel>>,
   activity: (params: { from: string; to: string }) => get<MachineActivityRow[], ActivityMeta>('/machines/activity', params),
   get: (code: string) => get<Machine>(`/machines/${code}`),
   stats: (code: string, params?: Params) => get<MachineStats>(`/machines/${code}/stats`, params),
