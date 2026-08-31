@@ -48,6 +48,31 @@ export function processCompare(a: Orderable, b: Orderable): number {
 // simply forms a family of its own — no list to maintain.
 export interface MachineGroup { key: string; label: string }
 
+// One family, spelled differently by different collectors. ISB01 and
+// INTERNALSHOTBLASTING03 are the same shot-blasting line, and two cards for one
+// line splits its output in half on every board. Alias -> canonical stem.
+const FAMILY_ALIASES: Record<string, string> = {
+  INTERNALSHOTBLASTING: 'ISB',
+  SHOTBLASTING: 'ISB',
+  SPINNING: 'SPG',
+};
+
+// What a merged family is called. Without an entry the label is derived from
+// the code, which is right for every family that only spells itself one way.
+const FAMILY_LABELS: Record<string, string> = {
+  ISB: 'Internal Shot Blasting',
+};
+
+/** The one stem a family is filed under, whichever spelling arrived. */
+export const canonicalFamily = (stem: string): string => FAMILY_ALIASES[stem] ?? stem;
+
+/** Every spelling of a family — canonical first. Stage matching (lib/diaStage)
+ *  reads the same table, so grouping and stage auto-pick cannot disagree. */
+export function familySpellings(stem: string): string[] {
+  const canon = canonicalFamily(stem);
+  return [canon, ...Object.keys(FAMILY_ALIASES).filter((k) => FAMILY_ALIASES[k] === canon)];
+}
+
 // Words we know how to split so a run-together code reads like a name
 // ("CUTTINGMACHINE" -> "Cutting Machine"). Longest first; unknown stems are
 // shown as-is, which is still correct, just less pretty.
@@ -62,7 +87,8 @@ const titleCase = (w: string): string => (w.length <= 3 ? w : w[0] + w.slice(1).
 
 export function groupOf(m: Orderable): MachineGroup {
   const ref = refOf(m);
-  const stem = ref.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '') || ref || 'OTHER';
+  const raw = ref.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '') || ref || 'OTHER';
+  const stem = canonicalFamily(raw);
   const words: string[] = [];
   let rest = stem;
   while (rest) {
@@ -71,7 +97,7 @@ export function groupOf(m: Orderable): MachineGroup {
     words.push(hit);
     rest = rest.slice(hit.length);
   }
-  return { key: stem, label: words.map(titleCase).join(' ') };
+  return { key: stem, label: FAMILY_LABELS[stem] ?? words.map(titleCase).join(' ') };
 }
 
 /** Bucket machines into families, each already in production-flow order.

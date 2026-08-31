@@ -6,6 +6,7 @@
 // DIA's order that matches wins; no match → null, and the assign modal falls
 // back to asking.
 import type { DiaConfig, DiaStage } from '../types/api';
+import { familySpellings } from './machineOrder';
 
 const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -13,10 +14,9 @@ const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
 // performs on the right. "SPG02 runs Spinning" is vocabulary, not something a
 // substring can discover. Mirrored on the server (production.controller's
 // setMachineDia), so the UI and the API auto-pick identically.
-const FAMILY_STAGE_ALIASES: Record<string, string[]> = {
-  SPG: ['SPINNING'],
-  ISB: ['INTERNALSHOTBLASTING', 'SHOTBLASTING'],
-};
+// The family vocabulary lives in lib/machineOrder, next to the grouping that
+// uses it — one table, so a machine cannot be grouped as ISB here and matched
+// as INTERNALSHOTBLASTING there.
 
 export function stageForMachine(
   machine: { code?: string; machineId?: string; name?: string; type?: string | null } | string,
@@ -28,7 +28,7 @@ export function stageForMachine(
   const hay = typeof machine === 'string'
     ? norm(machine)
     : norm(`${machine.code || ''} ${machine.machineId || ''} ${machine.name || ''} ${machine.type || ''}`);
-  const candidates = [stem, ...(FAMILY_STAGE_ALIASES[stem] ?? [])];
+  const candidates = familySpellings(stem);
   for (const st of dia.stages) {
     if (!st.active) continue;
     const n = norm(st.name);
