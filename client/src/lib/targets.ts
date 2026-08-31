@@ -86,9 +86,20 @@ export function achievementPct(actual: number, processingSec: number, ms: number
   return Math.round((actual / target) * 1000) / 10;
 }
 
-/** Display form of a target: whole number when it is one, else 1 decimal. */
-export const fmtTarget = (n: number): string =>
-  Number.isInteger(Math.round(n * 10) / 10) ? String(Math.round(n)) : (Math.round(n * 10) / 10).toFixed(1);
+/** Display form of a target: a whole number of pieces.
+ *
+ *  Nobody makes 749.7 pieces. The tenth comes from dividing a window by a cycle
+ *  time, and it is DROPPED rather than rounded: a target is the pieces you can
+ *  actually finish in the window, and 749.7 means the 750th is still on the
+ *  machine. Reads at a glance, which is what a board on a wall is for.
+ *
+ *  Rates below one an hour keep their decimals: a 4-hour furnace cycle is
+ *  0.25/hr, and "0/hr" would read as a machine that makes nothing. */
+export const fmtTarget = (n: number): string => {
+  const a = Math.abs(n);
+  if (a === 0 || a >= 1) return String(Math.trunc(n));
+  return String(Math.round(n * 100) / 100);
+};
 
 /** "3m" / "2m 30s" — how a processing time reads on a card. */
 export function fmtProcessing(sec: number): string {

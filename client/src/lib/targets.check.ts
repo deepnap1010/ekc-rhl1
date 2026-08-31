@@ -21,7 +21,11 @@ close(hourlyRate(180), 20, 'hourlyRate agrees');
 
 // 60/7 stays EXACT — never floored to 8 or ceiled to 9.
 close(targetUnits(7 * 60, HOUR), 60 / 7, '60/7 exact');
-eq(fmtTarget(60 / 7), '8.6', '60/7 displays 8.6');
+eq(fmtTarget(60 / 7), '8', '60/7 shows 8 — a part-made piece is not a piece');
+eq(fmtTarget(749.7), '749', 'a board target reads whole');
+eq(fmtTarget(115.3), '115', 'and so does a per-machine target');
+eq(fmtTarget(0.25), '0.25', 'a sub-hourly rate keeps its decimals, never "0"');
+eq(fmtTarget(0), '0', 'zero stays zero');
 close(targetUnits(7 * 60, 8 * HOUR), 480 / 7, '8h at 60/7 = 68.57…, not 64 or 72');
 
 // Overlap: assigned mid-window → partial target.
