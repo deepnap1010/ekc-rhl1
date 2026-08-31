@@ -1,4 +1,16 @@
 /* client/src/styles/index.css */
+
+/* Fonts are VENDORED, not fetched from Google. The plant server runs with no
+   internet: a <link> to fonts.googleapis.com would stall every page load until
+   it timed out and then fall back to system faces. These ship in the bundle. */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/700.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
