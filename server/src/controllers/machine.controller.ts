@@ -11,6 +11,8 @@ import { ok, fail, asyncHandler } from '../utils/http.js';
 import { flattenData } from '../utils/flatten.js';
 import { computeStats } from '../utils/metrics.js';
 import { normalizeData, rankNamed, isNumericValue } from '../utils/normalize.js';
+import { derivedCounterFor } from '../config/derivedCounters.js';
+import { derivedEvents } from '../services/derivedCounter.service.js';
 import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
@@ -652,6 +654,26 @@ export const machineHourly = asyncHandler(async (req, res) => {
   if (fromD >= toD) return fail(res, 400, 'from must be before to');
   if (toD.getTime() - fromD.getTime() > 7 * 24 * 3600_000) return fail(res, 400, 'window too large (max 7 days)');
   const endD = new Date(Math.min(toD.getTime(), Date.now()));
+
+  // A derived-counter machine's hours come from edge events in its raw signal
+  // (config/derivedCounters) — same engine as its card and the targets board.
+  const dc = derivedCounterFor(m.code || m.machineId || '');
+  if (dc) {
+    const HOUR_MS = 3600_000;
+    const hours = await cached(`hourly:${refs.join('|')}:edge:${fromD.toISOString()}:${endD.toISOString()}`, 30_000, async () => {
+      const offset = fromD.getTime();
+      const byHour = new Map<number, number>();
+      for (const ev of await derivedEvents(refs, dc, fromD, endD)) {
+        const b = Math.floor((ev.t - offset) / HOUR_MS) * HOUR_MS + offset;
+        byHour.set(b, (byHour.get(b) || 0) + ev.made);
+      }
+      // `t` and the {from,to} meta, exactly as the register branch below —
+      // the client reads h.t, and `start` rendered every bar as zero.
+      return [...byHour.entries()].sort((a, b) => a[0] - b[0])
+        .map(([t, made]) => ({ t: new Date(t).toISOString(), made }));
+    });
+    return ok(res, { key: dc.key, hours }, { from: fromD.toISOString(), to: endD.toISOString() });
+  }
 
   // Counter key from the machine's current snapshot — the timeline's choice too.
   const snapKey = pickProductionKey(flattenData((m.currentParameters as Record<string, unknown>) || {}));

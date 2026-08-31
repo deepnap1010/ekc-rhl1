@@ -15,6 +15,8 @@ import { pickTemperatureKeys, TEMP_MIN, TEMP_MAX } from '../utils/temperature.js
 import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
 import { lineLinkFor, normRef } from '../config/lineLinks.js';
+import { derivedCounterFor } from '../config/derivedCounters.js';
+import { derivedEvents } from './derivedCounter.service.js';
 
 export interface ActivityRow {
   code: string;
@@ -556,6 +558,19 @@ export async function computeActivity(
       tempZones: heat?.zones ?? 0,
     };
   });
+
+  // ── Derived counters ──────────────────────────────────────────────────────
+  // A machine with no counter register but a signal that bursts once per piece
+  // (config/derivedCounters) counts its own work: rising edges in the window.
+  // Runs before line links so a machine that counts — either way — never
+  // borrows. Raw series, not bins: edges live in the dips between bursts.
+  await Promise.all(rows.map(async (row) => {
+    const dc = derivedCounterFor(row.code);
+    if (!dc) return;
+    const evs = await derivedEvents([row.code], dc, fromD, new Date(endMs));
+    row.production = evs.reduce((n, e) => n + e.made, 0);
+    row.productionKey = dc.key;
+  }));
 
   // ── Line links ────────────────────────────────────────────────────────────
   // A milling machine with no counter still makes pieces: the ones the machine

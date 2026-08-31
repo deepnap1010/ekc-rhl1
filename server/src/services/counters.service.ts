@@ -9,6 +9,8 @@ import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { cached } from '../utils/cache.js';
 import { stepEvents, PROD_STEP_PER_MIN } from './activity.service.js';
+import { derivedCounterFor } from '../config/derivedCounters.js';
+import { derivedEventsBy } from './derivedCounter.service.js';
 
 const NUMERIC = ['int', 'long', 'double', 'decimal'];
 const DAY = 24 * 3_600_000;
@@ -22,6 +24,7 @@ export function counterKeys(machines: string[]): Promise<{ ref: string; key: str
     const found = await Promise.all(machines.map(async (ref) => {
       const last = await Telemetry.findOne({ machineId: ref }).sort({ timestamp: -1 })
         .select({ data: 1 }).lean();
+      if (derivedCounterFor(ref)) return null;   // edge-counted, never a register
       const k = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
       return k && !k.includes('.') ? { ref, key: k } : null;
     }));
@@ -37,7 +40,16 @@ export async function productionEventsBy(
 ): Promise<Map<string, { t: number; made: number }[]>> {
   const out = new Map<string, { t: number; made: number }[]>();
   if (!machines.length) return out;
-  const keyed = await counterKeys(machines);
+
+  // Machines with a DERIVED counter (config/derivedCounters) count edges in a
+  // raw signal, not steps of a register. Edges live in the dips between bursts,
+  // and per-bin $max erases dips — so these few machines read their raw series.
+  // The volume is bounded by telemetry retention, and the derived rule wins
+  // even if the machine one day also grows a register.
+  for (const [ref, evs] of await derivedEventsBy(machines, from, to)) out.set(ref, evs);
+
+  const rest = machines.filter((m) => !derivedCounterFor(m));
+  const keyed = await counterKeys(rest);
   if (!keyed.length) return out;
 
   // Bin width scales with the span — 5-minute bins keep a month's pipeline

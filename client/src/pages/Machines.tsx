@@ -535,7 +535,11 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
     tone: madeToday > 0 ? 'good' : 'neutral',
     // A borrowed count says so instead of quoting a counter this machine
     // doesn't have.
-    sub: borrowedFrom(activity) ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}` : undefined),
+    // A derived count has no register to quote: the server counted bursts of a
+    // signal (config/derivedCounters), so the sub-line says that instead.
+    sub: borrowedFrom(activity)
+      ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
+        : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
   };
   const show = dayHero ?? hero;
 

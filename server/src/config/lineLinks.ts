@@ -1,15 +1,12 @@
 // server/src/config/lineLinks.ts
 // Machines that finish what another machine started.
 //
-// BOTTOMMILLING03 reports no piece counter of its own — its PLC publishes
-// feed speed and torque, nothing that counts. But the pieces it mills are
-// exactly the pieces the machine upstream counted, arriving about two minutes
-// later down the line. So its production is that upstream count, shifted by
-// the transit time.
-//
-// BOTTOMMILLING04 used to be here too (borrowing from SPG08) — it was DELINKED
-// on 27 Aug 2026 the day its PLC started publishing PROD_COUNT: a machine that
-// counts its own work never borrows.
+// BOTTOMMILLING04 used to be here (borrowing from SPG08) — DELINKED on
+// 27 Aug 2026 the day its PLC started publishing PROD_COUNT. BOTTOMMILLING03
+// too (borrowing from HYDRAULICPRESS02, which has since left the fleet) —
+// DELINKED on 31 Aug 2026 when its processing_speed bursts became its own
+// counter (config/derivedCounters). A machine that counts its own work never
+// borrows. The mechanism stays for the next counterless machine down a line.
 //
 // This is borrowed, not measured: every surface that shows the number also
 // shows which machine counted it, because a card reading "34 pcs" with no
@@ -22,9 +19,7 @@ export interface LineLink {
 const MIN = 60_000;
 
 // Keyed by machine code, matched loosely (SPG08 === SPG-08 === spg 08).
-const LINKS: Record<string, LineLink> = {
-  BOTTOMMILLING03: { source: 'HYDRAULICPRESS02', delayMs: 2 * MIN },
-};
+const LINKS: Record<string, LineLink> = {};
 
 /** Codes differ by punctuation across collector versions (SPG-08 vs SPG08), so
  *  every comparison goes through this. */
@@ -41,8 +36,7 @@ if (process.argv[1]?.includes('lineLinks')) {
   const eq = (a: unknown, b: unknown, m: string): void => {
     if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
   };
-  eq(lineLinkFor('BOTTOMMILLING03')?.source, 'HYDRAULICPRESS02', 'exact code');
-  eq(lineLinkFor('bottom-milling 03')?.source, 'HYDRAULICPRESS02', 'punctuation + case');
+  eq(lineLinkFor('BOTTOMMILLING03'), null, 'delinked: edges of its own signal count now');
   eq(lineLinkFor('BOTTOMMILLING04'), null, 'delinked: it counts its own work now');
   eq(lineLinkFor('BOTTOMMILLING2'), null, 'unlinked machine stays unlinked');
   eq(normRef('SPG-08') === normRef('SPG08'), true, 'hyphen variant matches');
