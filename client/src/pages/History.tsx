@@ -23,6 +23,7 @@ import { fmtTime, prettyKey, fmtNum, fmtMetric, fmtDuration, prettyType } from '
 import { effectiveStatus } from '../lib/machineStatus';
 import { isFault, isRegisterKey, isMetaKey } from '../lib/metrics';
 import type { ApiMeta, MetricStat, MetricValue, MachineEventRow } from '../types/api';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 
 
 export default function History() {
@@ -69,6 +70,7 @@ const STATE_META: Record<string, { icon: LucideIcon; color: string; verb: string
 };
 
 function EventsArchive(): JSX.Element {
+  const mName = useMachineName();
   const [machineId, setMachineId] = useState('');
   // The same window control the dashboard uses — presets plus a custom date+time
   // range — instead of two bare datetime boxes nobody could scan.
@@ -178,7 +180,7 @@ function EventsArchive(): JSX.Element {
         <Counter label="Stops" value={fmtNum(sum?.sessions.stopped || 0)} sub={fmtDuration(sum?.durations.stoppedMs || 0)} color="#DC2626" />
         <Counter label="Offline periods" value={fmtNum(sum?.sessions.offline || 0)} sub={fmtDuration(sum?.durations.offlineMs || 0)} color="#94A3B8" />
         <Counter label="Production events" value={fmtNum(sum?.production.events || 0)} sub={`${fmtNum(sum?.production.pieces || 0)} pcs`} color="#0D9488" />
-        <Counter label="Total events" value={fmtNum(sum?.totalEvents || 0)} sub={machineId ? machineId.toUpperCase() : 'all machines'} color="#6366F1" />
+        <Counter label="Total events" value={fmtNum(sum?.totalEvents || 0)} sub={machineId ? mName(machineId) : 'all machines'} color="#6366F1" />
       </div>
 
       {/* Filters — composable: machine + range + type + search */}
@@ -190,7 +192,7 @@ function EventsArchive(): JSX.Element {
             <option value="">All machines</option>
             {(machines || []).map((m) => {
               const c = m.code || m.machineId || m._id;
-              return <option key={c} value={c}>{String(c).toUpperCase()} — {prettyType(m.type || m.machineType)}</option>;
+              return <option key={c} value={c}>{mName(c)} — {prettyType(m.type || m.machineType)}</option>;
             })}
           </select>
         </div>
@@ -260,6 +262,8 @@ function EventsArchive(): JSX.Element {
 }
 
 function GlobalEventRow({ e }: { e: MachineEventRow }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const isProd = e.kind === 'production';
   const reset = !!(e.meta as { reset?: boolean } | undefined)?.reset;
   const meta = isProd ? null : (STATE_META[e.state || 'offline'] || STATE_META.offline);
@@ -271,7 +275,7 @@ function GlobalEventRow({ e }: { e: MachineEventRow }): JSX.Element {
   return (
     <tr className="border-t border-line hover:bg-base/60">
       <td className="px-4 py-2.5 data text-xs">{fmtTime(e.startedAt)}</td>
-      <td className="px-4 py-2.5 data text-xs font-semibold text-primary">{e.machineId.toUpperCase()}</td>
+      <td className="px-4 py-2.5 data text-xs font-semibold text-primary" title={mTitle(e.machineId)}>{mName(e.machineId)}</td>
       <td className="px-4 py-2.5">
         <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color }}>
           <Icon size={13} />
@@ -306,6 +310,7 @@ function Counter({ label, value, sub, color }: { label: string; value: string; s
 
 // ─── Raw telemetry archive (previous History page, preserved) ────────────────
 function RawArchive(): JSX.Element {
+  const mName = useMachineName();
   const [code, setCode] = useState('');
   const win = useRangeFilter('week');
   const from = win.fromISO || '';
@@ -401,7 +406,7 @@ function RawArchive(): JSX.Element {
             <option value="">Select a machine…</option>
             {(machines || []).map((m) => (
               <option key={m.code || m._id} value={m.code || m.machineId || m._id}>
-                {String(m.code || m.machineId || m._id || '').toUpperCase()} — {prettyType(m.type || m.machineType)}{m.plant?.name ? ` (${m.plant.name})` : ''}
+                {mName(String(m.code || m.machineId || m._id || ''))} — {prettyType(m.type || m.machineType)}{m.plant?.name ? ` (${m.plant.name})` : ''}
               </option>
             ))}
           </select>
@@ -428,7 +433,7 @@ function RawArchive(): JSX.Element {
               <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
                 <div className="flex flex-wrap items-center gap-3 min-w-0">
                   <div className="min-w-0">
-                    <h3 className="font-semibold text-primary truncate">{machine.name || code}</h3>
+                    <h3 className="font-semibold text-primary truncate">{mName(code)}</h3>
                     <div className="data text-[11px] text-steel truncate">{String(code).toUpperCase()}{machine.subtitle ? ` · ${machine.subtitle}` : ''}</div>
                   </div>
                   <StatusPill status={effectiveStatus({

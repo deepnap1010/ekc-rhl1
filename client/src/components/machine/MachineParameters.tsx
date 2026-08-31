@@ -17,6 +17,7 @@ import { paramLabel } from '../../lib/params';
 import { isProductionKey } from '../../lib/production';
 import { useMachineTelemetry } from '../../hooks/useLive';
 import type { Machine, MetricStat, MetricValue } from '../../types/api';
+import { useMachineName } from '../../lib/machineName';
 
 interface Row {
   key: string;
@@ -141,6 +142,7 @@ export function MachineParameters({ machine, code, snapshot }: { machine: Machin
 // The modal shell. `at` set → fetch that minute's reading (snapshot mode);
 // omitted → live parameters.
 export default function ParametersModal({ machine, code, at, onClose }: { machine: Machine; code: string; at?: string; onClose: () => void }): JSX.Element {
+  const mName = useMachineName();
   const ts = at ? new Date(at) : null;
   const { data, isLoading } = useQuery({
     queryKey: ['timeline-reading', code, at],
@@ -164,7 +166,7 @@ export default function ParametersModal({ machine, code, at, onClose }: { machin
         <div className="flex items-center gap-2 mb-4">
           <div className="flex-1 min-w-0">
             <h3 className="font-semibold text-sm text-primary truncate">
-              {String(machine.code || machine.machineId || code).toUpperCase()} · Parameters{at ? ' — snapshot' : ' — live'}
+              {mName(String(machine.code || machine.machineId || code))} · Parameters{at ? ' — snapshot' : ' — live'}
             </h3>
           </div>
           <button onClick={onClose} className="text-steel hover:text-primary transition-colors shrink-0"><X size={18} /></button>

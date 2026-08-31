@@ -30,6 +30,7 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
 import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
 import { processCompare, groupMachines } from '../lib/machineOrder';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { resolveRange, shiftDayOn } from '../store/filters';
 import { fmtNum, fmtDuration } from '../lib/format';
 import type { MachineActivityRow, MachineAssignment } from '../types/api';
@@ -69,6 +70,8 @@ const hourLabel = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`
 
 export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to }: Props): JSX.Element | null {
   const { shifts, breaks } = useAppConfig();
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const user = useAuthStore((st) => st.user);
   const can = useAuthStore((st) => st.can);
   const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
@@ -201,6 +204,14 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
     return groupMachines(targets.map((t) => t.row))
       .map((g) => ({ key: g.key, label: g.label, targets: g.machines.map((m) => byRow.get(m) as TargetRow) }));
   }, [targets]);
+  // An operator with several machines in ONE family reads them as a line, not
+  // as a row of unrelated boards — so that family gets a group card, opening to
+  // the same drill-down an admin sees. A family holding only ONE of their
+  // machines has nothing to summarise, so it stays the full board it already
+  // was. Both rules are per family, so a mixed assignment gets both shapes.
+  const grouped = useMemo(() => groups.filter((g) => g.targets.length > 1), [groups]);
+  const lone = useMemo(() => groups.filter((g) => g.targets.length === 1).map((g) => g.targets[0]), [groups]);
+
   const open = openGroup ? groups.find((g) => g.key === openGroup) ?? null : null;
   // A group that vanished from the data (window change, refetch) must not
   // silently re-open the drill-down the moment it reappears.
@@ -291,16 +302,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
         <div className="text-sm text-steel py-6 text-center">Pick a shift to measure against.</div>
       ) : targets.length === 0 ? (
         <div className="text-sm text-steel py-6 text-center">No production counted for {effLabel}.</div>
-      ) : isOperator ? (
-        /* ── OPERATOR — a rich board per assigned machine. One machine takes
-            the full row; only a second one splits the width. ── */
-        <div className={`grid gap-4 ${targets.length > 1 ? 'xl:grid-cols-2' : ''}`}>
-          {targets.map((t) => (
-            <OperatorMachineBoard key={t.row.code} t={t} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
-          ))}
-        </div>
       ) : open && openFor ? (
-        /* ── ADMIN, one MACHINE opened — the full operator-style board ── */
+        /* ── One MACHINE opened — the full board. Same for either role. ── */
         <div>
           <button onClick={() => setOpenForCode(null)}
             className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
@@ -322,7 +325,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
           </div>
         </div>
       ) : open ? (
-        /* ── ADMIN, one group opened — its machines, each with its own split ── */
+        /* ── One group opened — its machines, each with its own split ── */
         <div>
           <button onClick={() => { setOpenGroup(null); setOpenForCode(null); }}
             className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
@@ -339,6 +342,28 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
               ))}
             </div>
           </div>
+        </div>
+      ) : isOperator ? (
+        /* ── OPERATOR — families they hold more than one of become group cards;
+            a family holding just one of their machines stays a full board. ── */
+        <div className="space-y-4">
+          {(grouped.length > 0 || heatGroups.length > 0) && (
+            <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {grouped.map((g) => (
+                <GroupCard key={g.key} g={g} onOpen={() => setOpenGroup(g.key)} />
+              ))}
+              {heatGroups.map((g) => (
+                <HeatGroupCard key={g.key} g={g} onOpen={() => setOpenGroup(g.key)} />
+              ))}
+            </div>
+          )}
+          {lone.length > 0 && (
+            <div className={`grid gap-4 ${lone.length > 1 ? 'xl:grid-cols-2' : ''}`}>
+              {lone.map((t) => (
+                <OperatorMachineBoard key={t.row.code} t={t} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         /* ── ADMIN — one card per group ── */
@@ -360,7 +385,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
           <Link to="/settings?section=diastages" className="text-accent hover:underline inline-flex items-center gap-0.5 float-right">
             Settings → Dia &amp; Stages <ArrowUpRight size={11} />
           </Link>
-          {excluded.map((e) => <span key={e.code}><span className="data font-medium text-primary">{e.code.toUpperCase()}</span> — {e.reason}. </span>)}
+          {excluded.map((e) => <span key={e.code}><span className="data font-medium text-primary" title={mTitle(e.code)}>{mName(e.code)}</span> — {e.reason}. </span>)}
         </div>
       )}
     </div>
@@ -379,12 +404,13 @@ function Bar({ actual, target }: { actual: number; target: number }): JSX.Elemen
 
 // One dot per machine — the group's health at a glance.
 function StatusDots({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
+  const mName = useMachineName();
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
       {rows.map((r) => (
         <span key={r.code} className="w-2.5 h-2.5 rounded-full shrink-0"
           style={{ background: dotColor(r.status) }}
-          title={`${r.code.toUpperCase()} · ${r.status}`} />
+          title={`${mName(r.code)} · ${r.status}`} />
       ))}
     </div>
   );
@@ -439,12 +465,14 @@ function HeatGroupCard({ g, onOpen }: { g: HeatGroup; onOpen: () => void }): JSX
 }
 
 function FurnaceMachineCard({ r, windowLabel }: { r: MachineActivityRow; windowLabel: string }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   return (
     <Link to={`/machines/${encodeURIComponent(r.code)}`}
       className="card p-4 block transition-all hover:shadow-md hover:border-accent/30 group">
       <div className="flex items-center gap-2">
         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: dotColor(r.status) }} />
-        <span className="data font-bold text-sm text-primary truncate group-hover:text-accent transition-colors">{r.code.toUpperCase()}</span>
+        <span className="data font-bold text-sm text-primary truncate group-hover:text-accent transition-colors" title={mTitle(r.code)}>{mName(r.code)}</span>
         <span className="ml-auto shrink-0"><StatusPill status={r.status} /></span>
       </div>
 
@@ -470,6 +498,7 @@ function FurnaceMachineCard({ r, windowLabel }: { r: MachineActivityRow; windowL
 
 // "All machines are working fine" — or exactly which ones aren't.
 function AttentionLine({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
+  const mName = useMachineName();
   const bad = rows.filter((r) => r.status === 'stopped' || r.status === 'offline');
   if (!bad.length) {
     return (
@@ -479,10 +508,10 @@ function AttentionLine({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
     );
   }
   return (
-    <span className="flex items-start gap-1 text-[10px] text-stopped font-medium min-w-0" title={bad.map((r) => r.code.toUpperCase()).join(', ')}>
+    <span className="flex items-start gap-1 text-[10px] text-stopped font-medium min-w-0" title={bad.map((r) => mName(r.code)).join(', ')}>
       <AlertTriangle size={11} className="shrink-0 mt-px" />
       <span className="min-w-0 break-words">
-        {bad.map((r) => r.code.toUpperCase()).join(', ')} need{bad.length === 1 ? 's' : ''} attention
+        {bad.map((r) => mName(r.code)).join(', ')} need{bad.length === 1 ? 's' : ''} attention
       </span>
     </span>
   );
@@ -662,6 +691,8 @@ function GroupWeekChart({ g }: { g: GroupTargets }): JSX.Element {
 
 // One machine inside an opened group — donut, produced/target, own time split.
 function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const pct = t.target ? t.actual / t.target : 0;
   const color = attainColor(pct);
   const rate = hourlyRate(t.processingSec);
@@ -677,7 +708,7 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
         </Donut>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="data font-bold text-xs text-primary truncate group-hover:text-accent transition-colors">{t.row.code.toUpperCase()}</span>
+            <span className="data font-bold text-xs text-primary truncate group-hover:text-accent transition-colors" title={mTitle(t.row.code)}>{mName(t.row.code)}</span>
             <StatusPill status={t.row.status} />
           </div>
           <div className="flex items-center gap-1 mt-1 text-[10px] text-steel truncate">
@@ -706,6 +737,8 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
 
 // ── OPERATOR · one assigned machine, everything on one board ─────────────────
 function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow; windowMs: number; from?: string; to?: string; fullDay?: boolean }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const pct = t.target ? t.actual / t.target : 0;
   const color = attainColor(pct);
   const rate = hourlyRate(t.processingSec);
@@ -715,7 +748,7 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow
     <div className="card p-4">
       {/* Header strip — machine · dia · stage · rate, like the operator screen's part strip */}
       <div className="flex items-center gap-2.5 flex-wrap pb-3 border-b border-line">
-        <span className="data font-bold text-sm text-primary">{t.row.code.toUpperCase()}</span>
+        <span className="data font-bold text-sm text-primary" title={mTitle(t.row.code)}>{mName(t.row.code)}</span>
         <StatusPill status={t.row.status} />
         <span className="inline-flex items-center gap-1 pill bg-accent/10 text-accent data !text-[10px]"><Ruler size={10} /> {t.dia}</span>
         <span className="text-[11px] text-steel ml-auto">{t.stage} · {fmtProcessing(t.processingSec)}/pc · target {fmtTarget(rate)}/hr</span>

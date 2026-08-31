@@ -11,6 +11,7 @@ import DeleteEmployeeModal from '../components/DeleteEmployeeModal';
 import EmployeeHistoryModal from '../components/EmployeeHistoryModal';
 import { useAuthStore } from '../store/auth';
 import { classifyRoleGroup, allRoleDepartments, displayRoleName, machineKey, DEPARTMENTS, usersForRole, isPlantHead, isSuperAdminUser, type RoleLike, type DeptRole } from '../lib/departments';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import type { User, Role, Machine, UserWritePayload } from '../types/api';
 
 function useDebounced<T>(value: T, ms = 300): T {
@@ -292,6 +293,8 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
     mut.mutate();
   };
 
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const toggleMachine = (id: string) => set('assignedMachines', form.assignedMachines.includes(id) ? form.assignedMachines.filter((x) => x !== id) : [...form.assignedMachines, id]);
 
   return (
@@ -369,7 +372,7 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
               return (
                 <label key={id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded cursor-pointer ${on ? 'bg-accent/10 text-accent' : 'hover:bg-line/50 text-steel'}`}>
                   <input type="checkbox" checked={on} onChange={() => toggleMachine(id)} className="accent-accent shrink-0" />
-                  <span className="truncate">{id.toUpperCase()}</span>
+                  <span className="truncate" title={mTitle(id)}>{mName(id)}</span>
                 </label>
               );
             })}

@@ -12,6 +12,7 @@ import { useCurrentAssignment } from './AssignDia';
 import Modal from '../Modal';
 import { useAuthStore } from '../../store/auth';
 import { toast } from '../../store/toast';
+import { useMachineName } from '../../lib/machineName';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtNum } from '../../lib/format';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from '../../lib/targets';
@@ -159,6 +160,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
 // everyone else just sees the name.
 function OperatorBadge({ code }: { code: string }): JSX.Element | null {
   const can = useAuthStore((s) => s.can);
+  const mName = useMachineName();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [userId, setUserId] = useState('');
@@ -197,7 +199,7 @@ function OperatorBadge({ code }: { code: string }): JSX.Element | null {
   const done = () => { qc.invalidateQueries({ queryKey: ['operators'] }); qc.invalidateQueries({ queryKey: ['targets-report'] }); setOpen(false); };
   const setMut = useMutation({
     mutationFn: () => productionApi.setOperator({ machineRef: code, userId }),
-    onSuccess: (r) => { toast.success(`${r.data.userName} is on ${code}`); done(); },
+    onSuccess: (r) => { toast.success(`${r.data.userName} is on ${mName(code)}`); done(); },
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not set operator'),
   });
   const endMut = useMutation({
@@ -224,7 +226,7 @@ function OperatorBadge({ code }: { code: string }): JSX.Element | null {
         <UserRound size={11} /> {shown}
       </button>
       {open && (
-        <Modal title={`Operator — ${code}`} subtitle="Report rows split at every handover" icon={UserRound} onClose={() => setOpen(false)} maxW="max-w-sm">
+        <Modal title={`Operator — ${mName(code)}`} subtitle="Report rows split at every handover" icon={UserRound} onClose={() => setOpen(false)} maxW="max-w-sm">
           <div className="space-y-4">
             <div>
               <div className="label mb-1.5">Employee</div>

@@ -10,6 +10,7 @@ import { productionApi } from '../api/endpoints';
 import { Spinner } from './ui';
 import Pager, { DEFAULT_PAGE_SIZE } from './Pager';
 import { fmtNum, fmtTime, fmtDate, fmtDuration } from '../lib/format';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { fmtTarget } from '../lib/targets';
 import type { TargetRow, TargetsMeta } from '../types/api';
 
@@ -28,6 +29,8 @@ function TargetsReportInner({ machineId, from, to }: {
   machineId?: string; from: string; to: string;
 }): JSX.Element {
   const qc = useQueryClient();
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const [groupBy, setGroupBy] = useState<'day' | 'hour'>('day');
   const [adjust, setAdjust] = useState(false);
   const [operator, setOperator] = useState('');
@@ -165,7 +168,7 @@ function TargetsReportInner({ machineId, from, to }: {
                   return (
                     <tr key={`${r.bucket}-${r.machineRef}-${i}`} className="border-t border-line hover:bg-base/60">
                       <td className="px-4 py-2.5 data text-xs">{groupBy === 'day' ? fmtDate(r.bucket) : fmtTime(r.bucket)}</td>
-                      <td className="px-4 py-2.5 data text-xs font-medium">{r.machineRef}</td>
+                      <td className="px-4 py-2.5 data text-xs font-medium" title={mTitle(r.machineRef)}>{mName(r.machineRef)}</td>
                       <td className="px-4 py-2.5 text-xs text-steel">{r.dia} · {r.stage}</td>
                       {(meta?.operators || []).length > 0 && (
                         <td className="px-4 py-2.5 text-xs">{r.operator || <span className="text-steel/50">—</span>}</td>

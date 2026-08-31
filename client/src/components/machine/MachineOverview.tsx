@@ -29,6 +29,7 @@ import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { isFurnaceRef } from '../../lib/temperature';
 import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent, MachineActivityRow } from '../../types/api';
+import { useMachineName, useMachineTitle } from '../../lib/machineName';
 
 const isZoneTemp = (k: string) => /(^|_)t\d+$/i.test(k);
 const isPressure = (k: string) => /press|(^|[_-])bar$/i.test(k);
@@ -46,6 +47,8 @@ interface Props {
 }
 
 export default function MachineOverview({ machine, status, lastSeenAt, onTab }: Props): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const id = machine.machineId || machine.id || machine._id;
   const liveTel = useMachineTelemetry(id);
 
@@ -119,7 +122,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold truncate">{machine.name || id}</h2>
+              <h2 className="text-lg font-bold truncate" title={mTitle(String(id))}>{mName(String(id))}</h2>
               <StatusPill status={status} />
             </div>
             <div className="text-xs text-white/55 truncate">{String(id).toLowerCase()} · {machine.subtitle || prettyType(machine.type) || 'Machine'}</div>
@@ -292,7 +295,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
       {drill && (
         <MetricTrendModal
           machineId={String(id)}
-          machineTitle={machine.name || String(id)}
+          machineTitle={mName(String(id))}
           title={drill.title}
           unit={drill.unit}
           entries={drill.entries}

@@ -23,6 +23,7 @@ import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { todayWindow } from '../store/filters';
 import { useMachineConfig, machineKey, getConfig, saveConfig } from '../lib/machineConfig';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import ParametersModal from '../components/machine/MachineParameters';
 import type { Machine, MachineTick, MachineActivityRow, MachineAssignment } from '../types/api';
 
@@ -76,6 +77,8 @@ function tallyActivity(rows: MachineActivityRow[]) {
 }
 
 export default function Machines() {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
   const [sortBy, setSortBy] = useState('process');
@@ -319,8 +322,8 @@ export default function Machines() {
                   {activityRows.map((r) => (
                     <tr key={r.code} className="border-b border-line/60 last:border-0 hover:bg-base/60 transition-colors">
                       <td className="px-4 py-3">
-                        <Link to={`/machines/${r.code}`} className="data font-bold text-xs text-primary hover:text-accent transition-colors">
-                          {r.code.toUpperCase()}
+                        <Link to={`/machines/${r.code}`} title={mTitle(r.code)} className="data font-bold text-xs text-primary hover:text-accent transition-colors">
+                          {mName(r.code)}
                         </Link>
                         {r.name.toUpperCase() !== r.code.toUpperCase() && (
                           <div className="text-[10px] text-steel truncate max-w-[180px]">{r.name}</div>

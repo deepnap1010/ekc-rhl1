@@ -13,6 +13,7 @@ import { userApi, machineApi } from '../api/endpoints';
 import { Spinner, Avatar } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import type { User, Machine } from '../types/api';
+import { useMachineName } from '../lib/machineName';
 import {
   COMPANY, ORG_LEVELS, DEPARTMENTS,
   isSuperAdminUser, isPlantHead, usersForRole, machinesForKeywords, machineKey,
@@ -126,6 +127,7 @@ interface DepartmentSectionProps {
 }
 
 function DepartmentSection({ dept, users, machines, navigate }: DepartmentSectionProps) {
+  const mName = useMachineName();
   return (
     <div className="panel overflow-hidden">
       {/* Department header */}
@@ -173,7 +175,7 @@ function DepartmentSection({ dept, users, machines, navigate }: DepartmentSectio
                         return (
                           <button key={id} onClick={() => navigate(`/machines/${encodeURIComponent(id)}`)}
                             className="data text-[11px] bg-surface border border-line hover:border-accent/40 hover:text-accent rounded px-1.5 py-0.5 transition-colors">
-                            {id.toUpperCase()}
+                            {mName(id)}
                           </button>
                         );
                       })}

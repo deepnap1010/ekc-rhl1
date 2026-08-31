@@ -18,6 +18,7 @@ import { resolveRange, shiftDayOn } from '../store/filters';
 import { shiftWindowOn } from '../lib/settings';
 import { fmtNum, fmtTime, fmtDuration } from '../lib/format';
 import { targetUnits, secToMinPerPc } from '../lib/targets';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import type { DiaTraceRow } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', SLATE = '#94A3B8';
@@ -38,6 +39,8 @@ export function TraceRun({ r, showMachine = true, showDia = false, win }: {
   r: DiaTraceRow; showMachine?: boolean; showDia?: boolean;
   win?: { from: number; to: number } | null;
 }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const current = !r.to;
   const now = Date.now();
   const end = Math.min(r.to ? +new Date(r.to) : now, win ? Math.min(win.to, now) : now);
@@ -56,7 +59,7 @@ export function TraceRun({ r, showMachine = true, showDia = false, win }: {
       }`} aria-hidden />
 
       <div className="flex items-baseline gap-2 flex-wrap">
-        {showMachine && <span className="data font-bold text-sm text-primary">{r.machineRef.toUpperCase()}</span>}
+        {showMachine && <span className="data font-bold text-sm text-primary" title={mTitle(r.machineRef)}>{mName(r.machineRef)}</span>}
         {showDia && (
           <span className="inline-flex items-center gap-1 pill bg-accent/10 text-accent data !text-[10px]">
             <Ruler size={10} /> {r.dia}
@@ -94,6 +97,7 @@ const dateStr = (d: Date): string => {
 export default function DiaTrace(): JSX.Element {
   const nav = useNavigate();
   const { shifts } = useAppConfig();
+  const mName = useMachineName();
   const [q, setQ] = useState('');
   const [diaSel, setDiaSel] = useState('');
 
@@ -151,7 +155,9 @@ export default function DiaTrace(): JSX.Element {
   const ql = q.trim().toUpperCase();
   const rows = (data || [])
     .filter((r) => !diaSel || r.dia === diaSel)
-    .filter((r) => !ql || r.dia.toUpperCase().includes(ql) || r.machineRef.toUpperCase().includes(ql));
+    .filter((r) => !ql || r.dia.toUpperCase().includes(ql)
+      || r.machineRef.toUpperCase().includes(ql)
+      || mName(r.machineRef).toUpperCase().includes(ql));   // search finds renamed machines too
 
   // Grouped by dia, richest first; rows inside stay newest-first (server order).
   const groups = useMemo(() => {

@@ -12,6 +12,7 @@ import Modal from '../components/Modal';
 import { prettyType } from '../lib/format';
 import { roleStyle } from '../lib/orgRole';
 import type { User } from '../types/api';
+import { useMachineName } from '../lib/machineName';
 
 const sortFn = (a: User, b: User) => roleStyle(a).rank - roleStyle(b).rank || a.name.localeCompare(b.name);
 
@@ -20,6 +21,7 @@ interface MachineOwner { id: string; name: string; color: string; role: string; 
 interface MachineRow { rawId: string; label: string; type?: string; status?: string; plant?: string; owners: MachineOwner[] }
 
 export default function OrgPersonDetail() {
+  const mName = useMachineName();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
@@ -40,7 +42,7 @@ export default function OrgPersonDetail() {
     const m = new Map<string, MachineInfo>();
     (machineList || []).forEach((mc) => {
       const mid = mc.machineId || mc.code || mc._id;
-      if (mid) m.set(mid, { label: mc.machineId || mc.code || mc.name || mid, type: mc.type || mc.machineType, status: mc.status, plant: mc.plant?.name });
+      if (mid) m.set(mid, { label: mName(mc.machineId || mc.code || mc.name || mid), type: mc.type || mc.machineType, status: mc.status, plant: mc.plant?.name });
     });
     return m;
   }, [machineList]);

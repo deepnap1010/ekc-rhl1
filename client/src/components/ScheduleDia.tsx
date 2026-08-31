@@ -18,6 +18,7 @@ import { toast } from '../store/toast';
 import { stageForMachine } from '../lib/diaStage';
 import { fmtTarget, hourlyRate, secToMinPerPc } from '../lib/targets';
 import { fmtTime } from '../lib/format';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import type { ScheduledDia } from '../types/api';
 
 /** Tomorrow at the first shift's start, as a datetime-local value. */
@@ -43,6 +44,8 @@ const STATUS_LABEL: Record<ScheduledDia['status'], string> = {
 /** Supervisor console: schedule a dia onto any machine, manage the queue. */
 export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Element {
   const qc = useQueryClient();
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const { shifts } = useAppConfig();
   const { data: machines } = useQuery({
     queryKey: ['machines', 'list'],
@@ -85,7 +88,7 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
       machineRef: machine, diaId, stageKey, applyAt: new Date(when).toISOString(),
     }),
     onSuccess: () => {
-      toast.success(`Scheduled: ${machine} → ${dia?.name} from ${fmtTime(new Date(when).toISOString())}`);
+      toast.success(`Scheduled: ${mName(machine)} → ${dia?.name} from ${fmtTime(new Date(when).toISOString())}`);
       qc.invalidateQueries({ queryKey: ['schedules'] });
       setMachine(''); setDiaId(''); setStageKey('');
       void refetch();
@@ -111,7 +114,7 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
               onChange={(e) => { setMachine(e.target.value); if (diaId) matchStage(e.target.value, diaId); }}
               className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
               <option value="">Select a machine…</option>
-              {codes.map((c) => <option key={c} value={c}>{c}</option>)}
+              {codes.map((c) => <option key={c} value={c}>{mName(c)}</option>)}
             </select>
           </div>
           <div>
@@ -147,7 +150,7 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
 
         {dia && stage && machine && (
           <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-2.5 text-sm">
-            <span className="data font-bold text-primary">{machine}</span>
+            <span className="data font-bold text-primary" title={mTitle(machine)}>{mName(machine)}</span>
             <span className="text-steel"> switches to </span>
             <span className="data font-bold text-accent">{dia.name}</span>
             <span className="text-steel"> · {stage.name} ({secToMinPerPc(stage.processingSec)} min/pc → {fmtTarget(hourlyRate(stage.processingSec))}/hr) at </span>
@@ -191,9 +194,11 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
 }
 
 function ScheduleRow({ s, onCancel }: { s: ScheduledDia; onCancel?: () => void }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   return (
     <div className="text-[11px] flex items-baseline gap-1.5 flex-wrap rounded-lg border border-line bg-base px-2.5 py-1.5">
-      <span className="data font-bold text-primary">{s.machineRef}</span>
+      <span className="data font-bold text-primary" title={mTitle(s.machineRef)}>{mName(s.machineRef)}</span>
       <span className="text-steel">→</span>
       <span className="data font-semibold text-accent">{s.diaName}</span>
       <span className="text-steel">· {s.stageName} · {fmtTime(s.applyAt)}</span>

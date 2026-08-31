@@ -10,8 +10,10 @@ import { Spinner } from '../ui';
 import { productionApi } from '../../api/endpoints';
 import { fmtNum } from '../../lib/format';
 import { TraceRun } from '../../pages/DiaTrace';
+import { useMachineName } from '../../lib/machineName';
 
 export default function DiaTraceModal({ code, onClose }: { code: string; onClose: () => void }): JSX.Element {
+  const mName = useMachineName();
   const { data, isLoading } = useQuery({
     queryKey: ['dia-trace', code],
     queryFn: () => productionApi.trace({ machineRef: code }).then((r) => r.data),
@@ -21,7 +23,7 @@ export default function DiaTraceModal({ code, onClose }: { code: string; onClose
   const dias = new Set(rows.map((r) => r.dia)).size;
 
   return (
-    <Modal title={`Dia trace · ${code.toUpperCase()}`}
+    <Modal title={`Dia trace · ${mName(code)}`}
       subtitle={rows.length ? `${rows.length} run${rows.length === 1 ? '' : 's'} · ${dias} dia${dias === 1 ? '' : 's'} · ${fmtNum(produced)} pcs counted` : 'Every dia this machine has run'}
       icon={Waypoints} onClose={onClose} maxW="max-w-lg">
       {isLoading ? <Spinner /> : !rows.length ? (

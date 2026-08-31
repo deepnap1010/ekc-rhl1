@@ -31,10 +31,12 @@ import { useDashboardLive } from '../hooks/useLive';
 import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS } from '../store/filters';
 import { useAppConfig } from '../hooks/useAppConfig';
 import type { MachineActivityRow } from '../types/api';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', VIOLET = '#8B5CF6', DEEP_RED = '#991B1B';
 
 export default function Dashboard() {
+  const mName = useMachineName();
   const live = useDashboardLive();
   const { shifts } = useAppConfig();   // shared server-side shift config
   const f = useFilters();
@@ -96,7 +98,7 @@ export default function Dashboard() {
   const selectedMachine = f.machineId
     ? (machineList || []).find((m) => (m.code || m.machineId) === f.machineId)
     : null;
-  const scopeLabel = f.machineId ? String(f.machineId).toUpperCase() : 'All machines';
+  const scopeLabel = f.machineId ? mName(f.machineId) : 'All machines';
   const windowLabel = f.preset === 'custom' && range
     ? fmtRangeLabel(range.from, range.to)
     : f.shiftName && shiftApplies(f.preset)
@@ -169,7 +171,7 @@ export default function Dashboard() {
               <option value="">All Machines</option>
               {(machineList || []).map((m) => {
                 const code = m.code || m.machineId || m._id;
-                return <option key={code} value={code}>{String(code).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+                return <option key={code} value={code}>{mName(code)}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
               })}
             </select>
 
@@ -359,6 +361,8 @@ interface RankRow { code: string; rank: number; availabilityPct: number; product
 // Performance ranking table — availability-based (the only officially derivable
 // performance metric; OEE inputs don't exist and are never fabricated).
 function RankPanel({ title, icon, color, rows, onPick, emptyNote }: { title: string; icon: LucideIcon; color: string; rows: RankRow[]; onPick: (code: string) => void; emptyNote?: string }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   return (
     <Panel title={title} subtitle="availability over the selected window · click to inspect" icon={icon}>
       {rows.length === 0 ? (
@@ -381,7 +385,7 @@ function RankPanel({ title, icon, color, rows, onPick, emptyNote }: { title: str
                 <tr key={r.code} onClick={() => onPick(r.code)}
                   className="border-t border-line hover:bg-base/60 cursor-pointer">
                   <td className="px-2 py-2 data text-xs text-steel">{r.rank}</td>
-                  <td className="px-2 py-2 data text-xs font-semibold text-primary">{String(r.code).toUpperCase()}</td>
+                  <td className="px-2 py-2 data text-xs font-semibold text-primary" title={mTitle(r.code)}>{mName(r.code)}</td>
                   <td className="px-2 py-2 data text-xs text-right font-semibold" style={{ color: r.availabilityPct >= 75 ? TEAL : r.availabilityPct >= 50 ? AMBER : color }}>{r.availabilityPct}%</td>
                   <td className="px-2 py-2 data text-xs text-right">{r.production != null ? fmtNum(r.production) : <span className="text-steel/50">—</span>}</td>
                   <td className="px-2 py-2 data text-xs text-right">{fmtDuration(r.runningMs)}</td>

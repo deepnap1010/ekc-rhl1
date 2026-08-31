@@ -15,6 +15,7 @@ import { fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../../lib/t
 import { stageForMachine } from '../../lib/diaStage';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtTime } from '../../lib/format';
+import { useMachineName } from '../../lib/machineName';
 import { defaultApplyAt } from '../ScheduleDia';
 import type { MachineAssignment } from '../../types/api';
 
@@ -63,6 +64,7 @@ export function AssignDiaModal({ code, current, onClose }: {
   code: string; current: MachineAssignment | null; onClose: () => void;
 }): JSX.Element {
   const qc = useQueryClient();
+  const mName = useMachineName();
   const { data: dias } = useQuery({
     queryKey: ['dia-configs'],
     queryFn: () => productionApi.dia().then((r) => r.data),
@@ -121,7 +123,7 @@ export function AssignDiaModal({ code, current, onClose }: {
   };
   const assignMut = useMutation({
     mutationFn: () => productionApi.assign({ machineRef: code, diaId, stageKey }),
-    onSuccess: () => { toast.success(`${code} → ${dia?.name} / ${stage?.name}`); done(); },
+    onSuccess: () => { toast.success(`${mName(code)} → ${dia?.name} / ${stage?.name}`); done(); },
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not assign'),
   });
   const unassignMut = useMutation({
@@ -132,7 +134,7 @@ export function AssignDiaModal({ code, current, onClose }: {
   const scheduleMut = useMutation({
     mutationFn: () => productionApi.schedule({ machineRef: code, diaId, stageKey, applyAt: new Date(when).toISOString() }),
     onSuccess: () => {
-      toast.success(`Scheduled: ${code} → ${dia?.name} from ${fmtTime(new Date(when).toISOString())}`);
+      toast.success(`Scheduled: ${mName(code)} → ${dia?.name} from ${fmtTime(new Date(when).toISOString())}`);
       qc.invalidateQueries({ queryKey: ['schedules'] });
       onClose();
     },
@@ -145,7 +147,7 @@ export function AssignDiaModal({ code, current, onClose }: {
   });
 
   return (
-    <Modal title={`Assign dia · ${code}`} subtitle="The dia defines the product this machine is set up to make" icon={Ruler} onClose={onClose} maxW="max-w-md">
+    <Modal title={`Assign dia · ${mName(code)}`} subtitle="The dia defines the product this machine is set up to make" icon={Ruler} onClose={onClose} maxW="max-w-md">
       <div className="space-y-4">
         {/* What it's making right now — the anchor for the change below */}
         {current && (

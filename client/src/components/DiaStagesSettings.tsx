@@ -25,6 +25,7 @@ import { machineApi, configApi, productionApi } from '../api/endpoints';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { fmtTime } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
 import { stageForMachine } from '../lib/diaStage';
@@ -422,6 +423,8 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
   canEdit: boolean;
   onSaved: () => void;
 }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   // When no stage name matches the machine's family (an SPG on a dia whose
@@ -434,7 +437,7 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
   const doAssign = async (code: string, diaName: string, stage?: string) => {
     try {
       await productionApi.setDiaByName(code, diaName, stage);
-      toast.success(diaName ? `${code.toUpperCase()} → ${diaName}` : `${code.toUpperCase()} dia cleared`);
+      toast.success(diaName ? `${mName(code)} → ${diaName}` : `${mName(code)} dia cleared`);
       onSaved();
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not assign dia'); }
   };
@@ -482,7 +485,7 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
                     const cur = asgBy.get(code.toUpperCase());
                     return (
                       <div key={code} className="flex items-center gap-3 px-3 py-2 flex-wrap">
-                        <span className="data text-xs font-medium text-primary flex-1 min-w-[150px] truncate">{code.toUpperCase()}</span>
+                        <span className="data text-xs font-medium text-primary flex-1 min-w-[150px] truncate" title={mTitle(code)}>{mName(code)}</span>
                         {cur && <span className="text-[10px] text-steel shrink-0">{cur.stage}</span>}
                         <select value={cur?.dia || ''} disabled={!canEdit}
                           onChange={(e) => assign(code, e.target.value, m)}
@@ -502,7 +505,7 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
         })}
       </div>
       {askStage && (
-        <Modal title={`Which stage — ${askStage.code.toUpperCase()}`}
+        <Modal title={`Which stage — ${mName(askStage.code)}`}
           subtitle={`No stage of "${askStage.dia.name}" matches this machine's family — pick the one it runs`}
           icon={Layers} onClose={() => setAskStage(null)} maxW="max-w-sm">
           <div className="space-y-1.5">

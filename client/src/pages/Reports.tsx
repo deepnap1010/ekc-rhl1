@@ -18,6 +18,7 @@ import { borrowedFrom } from '../lib/production';
 import TargetsReport from '../components/TargetsReport';
 import type { MetricValue } from '../types/api';
 import type { ReactNode } from 'react';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 
 const ACCENT = '#0D9488';
 const IDLE   = '#D97706';
@@ -27,6 +28,8 @@ const SLATE  = '#94A3B8';
 const PIE_COLORS = [ACCENT, '#6366F1', '#EC4899', '#8B5CF6', '#3B82F6', IDLE];
 
 export default function Reports() {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const [tab, setTab] = useState('overview');
   const [machineId, setMachineId] = useState('');
   const mid = machineId || undefined;
@@ -106,7 +109,7 @@ export default function Reports() {
     <div>
       <PageHeader
         title="Reports"
-        subtitle={machineId ? `Machine Report — ${machineId.toUpperCase()}` : 'Fleet Report — production, OEE & downtime'}
+        subtitle={machineId ? `Machine Report — ${mName(machineId)}` : 'Fleet Report — production, OEE & downtime'}
         right={exportable ? (
           <button onClick={exportCsv} className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20">
             <Download size={14} /> Export CSV
@@ -126,7 +129,7 @@ export default function Reports() {
             <option value="">All Machines</option>
             {(machineList || []).map((m) => {
               const c = m.code || m.machineId || m._id;
-              return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+              return <option key={c} value={c}>{mName(c)}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
             })}
           </select>
           <RangeFilter value={win.value} onChange={win.setValue} range={win.range}
@@ -194,7 +197,7 @@ export default function Reports() {
                   <tbody>
                     {(prodData?.machines || []).map((m) => (
                       <tr key={m.code} className="border-t border-line hover:bg-white/5">
-                        <td className="px-4 py-2.5 data font-medium text-xs">{(m.code || '').toUpperCase()}</td>
+                        <td className="px-4 py-2.5 data font-medium text-xs" title={mTitle(m.code || '')}>{mName(m.code || '')}</td>
                         <td className="px-4 py-2.5 text-xs text-steel">{prettyType(m.type)}</td>
                         <td className="px-4 py-2.5 text-xs text-steel">{borrowedFrom(m) ?? (m.productionKey ? prettyKey(m.productionKey) : '—')}</td>
                         <td className="px-4 py-2.5">
@@ -309,7 +312,7 @@ export default function Reports() {
                   <tbody>
                     {(fleetData?.machines || []).map((m) => (
                       <tr key={m.machineId} className="border-t border-line hover:bg-base/60">
-                        <td className="px-4 py-2.5 data font-medium text-xs">{m.machineId.toUpperCase()}</td>
+                        <td className="px-4 py-2.5 data font-medium text-xs" title={mTitle(m.machineId)}>{mName(m.machineId)}</td>
                         <td className="px-4 py-2.5">
                           <span className="data text-xs font-semibold" style={{ color: m.health === 'critical' ? STOPPED : m.health === 'warning' ? IDLE : m.health === 'healthy' ? ACCENT : STEEL }}>{m.score}</span>
                           <span className="text-[10px] text-steel capitalize ml-1">{m.health}</span>
@@ -350,7 +353,7 @@ export default function Reports() {
                     <tbody>
                       {(relData?.machines || []).map((m) => (
                         <tr key={m.machineId} className="border-t border-line hover:bg-base/60">
-                          <td className="px-4 py-2.5 data font-medium text-xs">{m.machineId.toUpperCase()}</td>
+                          <td className="px-4 py-2.5 data font-medium text-xs" title={mTitle(m.machineId)}>{mName(m.machineId)}</td>
                           <td className="px-4 py-2.5 data text-xs text-right" style={{ color: m.availability >= 95 ? ACCENT : m.availability >= 80 ? IDLE : STOPPED }}>{m.availability}%</td>
                           <td className="px-4 py-2.5 data text-xs text-right">{fmtDuration(m.mtbfMs)}</td>
                           <td className="px-4 py-2.5 data text-xs text-right text-idle">{fmtDuration(m.mttrMs)}</td>
@@ -402,6 +405,7 @@ function DtTooltip({ active, payload, label }: ChartTooltipProps) {
 // The window comes from the page control; this section had its own 7d/30d/90d
 // buttons, which is one control too many on a screen that already has one.
 function OverviewReport({ machineId, from, to }: { machineId?: string; from?: string; to?: string }) {
+  const mName = useMachineName();
   const { data, isLoading } = useQuery({
     queryKey: ['reports', 'overview', from, to, machineId || ''],
     queryFn: () => reportsApi.overview({ from, to, machineId }).then((r) => r.data),
@@ -418,7 +422,7 @@ function OverviewReport({ machineId, from, to }: { machineId?: string; from?: st
   const errSeg = errorsByStatus.map((e, i) => ({ label: e.label, value: e.count, color: ERROR_COLORS[e.key] || PALETTE[i % PALETTE.length] || STEEL }));
   const statusSeg = statusMix.map((s) => ({ label: s.label, value: s.count, color: STATUS_COLORS[s.key] || STEEL }));
   const dtTotal = downtimeByMachine.reduce((s, m) => s + m.totalMs, 0);
-  const dtSeg = downtimeByMachine.map((m, i) => ({ label: m.machineId.toUpperCase(), value: m.totalMs, color: BLUE_RAMP[i % BLUE_RAMP.length] || STEEL }));
+  const dtSeg = downtimeByMachine.map((m, i) => ({ label: mName(m.machineId), value: m.totalMs, color: BLUE_RAMP[i % BLUE_RAMP.length] || STEEL }));
 
   return (
     <div className="space-y-5">

@@ -8,6 +8,7 @@ import { StatCard, Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import { fmtNum, fmtTime, prettyType } from '../lib/format';
 import type { Alert, AlertMachineHealth } from '../types/api';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 
 const RED = '#DC2626', AMBER = '#D97706', STEEL = '#64748B', TEAL = '#0D9488';
 
@@ -81,11 +82,13 @@ export default function Alerts() {
 }
 
 function HealthCard({ m }: { m: AlertMachineHealth }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const color = HEALTH[m.health] || STEEL;
   return (
     <Link to={`/machines/${encodeURIComponent(m.machineId)}`} className="card p-3 hover:border-accent/30 transition-colors block">
       <div className="flex items-center justify-between gap-2">
-        <span className="data text-xs font-bold text-primary truncate" title={m.machineId}>{String(m.machineId).toUpperCase()}</span>
+        <span className="data text-xs font-bold text-primary truncate" title={mTitle(m.machineId)}>{mName(m.machineId)}</span>
         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
       </div>
       <div className="flex items-baseline gap-1 mt-1.5">
@@ -98,6 +101,7 @@ function HealthCard({ m }: { m: AlertMachineHealth }): JSX.Element {
 }
 
 function AlertItem({ a }: { a: Alert }): JSX.Element {
+  const mName = useMachineName();
   const s = SEV[a.severity] || SEV.info;
   const isSignal = a.key && !a.key.startsWith('__');
   return (
@@ -107,7 +111,7 @@ function AlertItem({ a }: { a: Alert }): JSX.Element {
       <div className="min-w-0 flex-1">
         <div className="text-sm text-primary truncate">{a.message}</div>
         <div className="text-[11px] text-steel mt-0.5">
-          {a.machineName}{a.class ? ` · ${prettyType(a.class)}` : ''}{isSignal ? ` · ${a.key}` : ''}
+          {mName(a.machineName)}{a.class ? ` · ${prettyType(a.class)}` : ''}{isSignal ? ` · ${a.key}` : ''}
         </div>
       </div>
       <span className="text-[10px] text-steel shrink-0 hidden sm:block">{fmtTime(a.ts || a.lastSeenAt)}</span>

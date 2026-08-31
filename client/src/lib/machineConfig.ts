@@ -68,6 +68,17 @@ function writeStore(map: ConfigMap): void {
 export function getConfig(id: string): MachineConfig {
   return readStore()[id] || {};
 }
+
+/** The whole map — lib/machineName builds its lookup index from this. */
+export function readAll(): ConfigMap {
+  return readStore();
+}
+
+/** Subscribe to any save; returns the unsubscribe. */
+export function subscribe(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => { listeners.delete(fn); };
+}
 export function saveConfig(id: string, cfg: MachineConfig): void {
   const map = readStore();
   map[id] = { ...cfg, updatedAt: Date.now() };

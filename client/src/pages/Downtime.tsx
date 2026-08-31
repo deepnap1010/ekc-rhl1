@@ -12,6 +12,7 @@ import { useRangeFilter } from '../hooks/useRangeFilter';
 import { presetLabel } from '../store/filters';
 import { fmtDuration, fmtTime, fmtNum, prettyType } from '../lib/format';
 import type { ApiMeta, DowntimeEvent } from '../types/api';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 
 const TYPES = ['all', 'idle', 'stopped', 'offline'];
 const STATUS_OPTS = ['all', 'open', 'closed'];
@@ -19,6 +20,8 @@ const REVIEW_OPTS = ['all', 'unacknowledged', 'acknowledged'];
 // Bounding every query by a time window keeps it index-backed at production scale.
 
 export default function Downtime() {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const qc = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const [type, setType] = useState('all');
@@ -125,7 +128,7 @@ export default function Downtime() {
               {summary!.worstMachines.map((m) => (
                 <div key={m._id} className="card px-3 py-2.5 text-center">
                   <div className="data text-sm font-bold text-idle">{fmtDuration(m.totalMs)}</div>
-                  <div className="text-[10px] text-steel mt-0.5 truncate">{m._id}</div>
+                  <div className="text-[10px] text-steel mt-0.5 truncate" title={mTitle(m._id)}>{mName(m._id)}</div>
                   <div className="text-[10px] text-steel/60">{m.events} events</div>
                 </div>
               ))}
@@ -144,7 +147,7 @@ export default function Downtime() {
             <option value="">All Machines</option>
             {(machineList || []).map((m) => {
               const c = m.code || m.machineId || m._id;
-              return <option key={c} value={c}>{String(c).toUpperCase()}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
+              return <option key={c} value={c}>{mName(c)}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
             })}
           </select>
           <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
@@ -177,7 +180,7 @@ export default function Downtime() {
                     </tr>
                   ) : events.map((e) => (
                     <tr key={e._id} className="border-t border-line hover:bg-white/5">
-                      <td className="px-4 py-3 data font-medium">{e.machineId}</td>
+                      <td className="px-4 py-3 data font-medium" title={mTitle(e.machineId)}>{mName(e.machineId)}</td>
                       <td className="px-4 py-3">
                         <span className={`pill ${e.type === 'stopped' ? 'bg-stopped/10 text-stopped' : e.type === 'offline' ? 'bg-steel/10 text-steel' : 'bg-idle/10 text-idle'}`}>
                           <span className={`w-1.5 h-1.5 rounded-full ${e.type === 'stopped' ? 'bg-stopped' : e.type === 'offline' ? 'bg-steel' : 'bg-idle'}`} />
@@ -292,6 +295,7 @@ interface ReasonModalProps {
 }
 
 function ReasonModal({ event, onClose, onSaved }: ReasonModalProps) {
+  const mName = useMachineName();
   const [reason, setReason] = useState(event.reason || '');
   const user = useAuthStore((s) => s.user);
   const mut = useMutation({
@@ -303,7 +307,7 @@ function ReasonModal({ event, onClose, onSaved }: ReasonModalProps) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm" onClick={onClose}>
       <div className="card p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-semibold mb-1">{event.reason ? 'Edit' : 'Log'} Downtime Reason</h3>
-        <p className="text-xs text-steel mb-4">{event.machineId} — {event.type}</p>
+        <p className="text-xs text-steel mb-4">{mName(event.machineId)} — {event.type}</p>
         <textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}

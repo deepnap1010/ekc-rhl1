@@ -14,6 +14,7 @@
 //   - Raw PLC register addresses are never counters.
 import type { MetricValue, ParameterMap } from '../types/api';
 import { isRawAddress, paramLabel } from './params';
+import { machineNameOf } from './machineName';
 
 export const PROD_TIERS: RegExp[] = [/workpiece/, /\bprod\b|production|output|piece/, /\b(parts?|count)\b/];
 
@@ -67,5 +68,6 @@ export function borrowedFrom(
 ): string | null {
   if (!r?.productionFrom) return null;
   const min = Math.round((r.productionLagMs || 0) / 60_000);
-  return `from ${r.productionFrom}${min ? ` · ${min} min behind` : ''}`;
+  // The upstream machine is named the way the rest of the UI names it.
+  return `from ${machineNameOf(r.productionFrom)}${min ? ` · ${min} min behind` : ''}`;
 }

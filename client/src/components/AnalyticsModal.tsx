@@ -11,6 +11,7 @@ import {
 import Modal from './Modal';
 import { userApi, rbacApi } from '../api/endpoints';
 import { fmtNum, prettyType } from '../lib/format';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 import type { DashboardOverview, OvMachine } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', SLATE = '#94A3B8', INDIGO = '#6366F1';
@@ -137,7 +138,10 @@ function Td({ children, right }: { children: ReactNode; right?: boolean }): JSX.
 }
 
 function MachineLink({ id }: { id: string }): JSX.Element {
-  return <Link to={`/machines/${encodeURIComponent(id)}`} className="data text-xs font-semibold text-primary hover:text-accent">{String(id).toUpperCase()}</Link>;
+  // The link still travels on the real id — only the text is the label.
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
+  return <Link to={`/machines/${encodeURIComponent(id)}`} title={mTitle(id)} className="data text-xs font-semibold text-primary hover:text-accent">{mName(id)}</Link>;
 }
 function Pctbar({ pct, color = TEAL }: { pct: number; color?: string }): JSX.Element {
   return (
@@ -297,6 +301,7 @@ function FleetDetail({ machines }: { machines: OvMachine[] }): JSX.Element {
   );
 }
 function GroupRow({ label, machines }: { label: string; machines: OvMachine[] }): JSX.Element {
+  const mName = useMachineName();
   const alerts = machines.reduce((s, m) => s + m.health.counts.total, 0);
   return (
     <div className="rounded-lg border border-line bg-base p-3">
@@ -307,7 +312,7 @@ function GroupRow({ label, machines }: { label: string; machines: OvMachine[] })
       <div className="flex flex-wrap gap-1.5">
         {machines.map((m) => (
           <Link key={m.machineId} to={`/machines/${encodeURIComponent(m.machineId)}`} className="inline-flex items-center gap-1.5 pill bg-surface border border-line text-steel hover:border-accent/40 hover:text-primary !text-[10px]">
-            <StatusDot status={m.health.status} />{String(m.machineId).toUpperCase()}
+            <StatusDot status={m.health.status} />{mName(m.machineId)}
           </Link>
         ))}
       </div>

@@ -18,6 +18,7 @@ import { effectiveStatus } from '../lib/machineStatus';
 import { useMachineLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine } from '../types/api';
+import { useMachineName, useMachineTitle } from '../lib/machineName';
 
 const TABS = [
   { key: 'overview',  label: 'Overview',  icon: Activity },
@@ -28,6 +29,8 @@ const TABS = [
 ];
 
 export default function MachineDetail() {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const { code } = useParams<{ code: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -57,7 +60,7 @@ export default function MachineDetail() {
     <div className="flex items-center justify-center h-64"><Spinner label="Loading machine" /></div>
   );
   if (!machine) return (
-    <div className="px-6 py-10 text-center text-steel">Machine not found: {code}</div>
+    <div className="px-6 py-10 text-center text-steel">Machine not found: {mName(String(code || ''))}</div>
   );
 
   const id = machine.machineId || machine.id || code;
@@ -79,7 +82,7 @@ export default function MachineDetail() {
             <ArrowLeft size={16} /> Machines
           </button>
           <span className="text-line">/</span>
-          <span className="data text-sm text-primary font-medium">{String(id).toUpperCase()}</span>
+          <span className="data text-sm text-primary font-medium" title={mTitle(String(id))}>{mName(String(id))}</span>
         </div>
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="min-w-0">

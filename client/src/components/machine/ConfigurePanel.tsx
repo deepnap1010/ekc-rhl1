@@ -19,10 +19,13 @@ import {
 import { useAppConfig } from '../../hooks/useAppConfig';
 import type { Machine } from '../../types/api';
 import DiaAssignmentSection from './DiaAssignmentSection';
+import { useMachineName, useMachineTitle } from '../../lib/machineName';
 
 const numOrU = (v: string): number | undefined => (v === '' ? undefined : Number(v));
 
 export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const id = machineKey(machine);
   const [cfg, setCfg] = useState<MachineConfig>(() => getConfig(id));
   const [saved, setSaved] = useState(false);
@@ -60,7 +63,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
     <div className="max-w-4xl space-y-5">
       {/* Machine summary bar */}
       <div className="panel px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1">
-        <span className="data font-bold text-sm text-primary">{String(id).toUpperCase()}</span>
+        <span className="data font-bold text-sm text-primary" title={mTitle(String(id))}>{mName(String(id))}</span>
         <span className="text-xs text-steel">{typeLabel}</span>
         <span className="text-xs text-steel">· {cfg.stage || 'Process stage —'}</span>
         <span className={`ml-auto inline-flex items-center gap-1.5 text-xs ${online ? 'text-accent' : 'text-steel'}`}>
