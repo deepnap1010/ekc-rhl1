@@ -16,6 +16,7 @@ interface SanitizableUser {
   isSuperAdmin?: boolean;
   role?: AuthRole | null;
   assignedMachines?: string[];
+  kiosk?: boolean;
   avatar?: string;
   lastLoginAt?: Date | null;
 }
@@ -52,9 +53,13 @@ export const login = asyncHandler(async (req, res) => {
   // role is populated here, so it carries the AuthRole fields (key, etc.).
   const role = user.role as unknown as AuthRole | null;
   const payload: JwtPayload = { sub: user._id.toString(), role: role?.key, sa: user.isSuperAdmin };
+  // A machine terminal gets a session with no end: the tablet on the floor is
+  // signed in once when it is installed and never asks again. Revoking it is
+  // switching the account off — middleware/auth re-reads the user every request.
+  const forever = !!user.kiosk;
   return ok(res, {
-    accessToken:  signAccessToken(payload),
-    refreshToken: signRefreshToken(payload),
+    accessToken:  signAccessToken(payload, forever),
+    refreshToken: signRefreshToken(payload, forever),
     user:         sanitize(user as unknown as SanitizableUser),
   });
 });
@@ -117,6 +122,7 @@ function sanitize(user: SanitizableUser) {
         }
       : null,
     assignedMachines: user.assignedMachines || [],
+    kiosk: !!user.kiosk,
     avatar: user.avatar || '',
     lastLoginAt: user.lastLoginAt ?? null,
   };

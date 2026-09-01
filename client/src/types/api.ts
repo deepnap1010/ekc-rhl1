@@ -59,6 +59,8 @@ export interface User {
   isSuperAdmin?: boolean;
   role: UserRole | null;
   assignedMachines?: string[];
+  /** A machine-terminal login: one machine, and a session that never expires. */
+  kiosk?: boolean;
   reportsTo?: string | null;
   avatar?: string | null;
   active?: boolean;

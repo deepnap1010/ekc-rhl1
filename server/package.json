@@ -12,7 +12,9 @@
     "check:schedule": "tsx checks/schedule.check.ts",
     "sync:atlas": "node scripts/sync-to-atlas.mjs",
     "check:sync": "node checks/sync.check.mjs",
-    "check:label": "tsx checks/label.check.ts"
+    "check:label": "tsx checks/label.check.ts",
+    "check:kiosk": "tsx checks/kiosk.check.ts",
+    "machine-logins": "tsx scripts/create-machine-logins.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
