@@ -12,6 +12,7 @@ import { useT } from '../lib/i18n';
 import { Avatar } from '../components/ui';
 import { toast } from '../store/toast';
 import { disconnectSocket } from '../lib/socket';
+import ReviewCopyBanner from '../components/ReviewCopyBanner';
 
 interface NavItem {
   to: string;
@@ -176,6 +177,7 @@ export default function AppLayout() {
         </header>
 
         <main className="flex-1 overflow-y-auto overflow-x-hidden min-w-0">
+          <ReviewCopyBanner />
           <Outlet />
         </main>
       </div>

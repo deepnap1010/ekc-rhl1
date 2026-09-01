@@ -17,6 +17,8 @@ export interface Env {
   port: number;
   mongoUri: string;
   dbName: string;
+  // True on a deployment that only MIRRORS the plant (see middleware/readOnly).
+  readOnly: boolean;
   jwtSecret: string;
   jwtExpiry: string;
   refreshExpiry: string;
@@ -35,6 +37,8 @@ export const env: Env = {
   // Explicit target database. The real data lives in `test` on the EKC cluster.
   // Overrides any db path in the URI so we never accidentally hit the wrong DB.
   dbName:   process.env.DB_NAME || 'test',
+  // READ_ONLY=1 on the cloud review copy; unset on the factory server.
+  readOnly: /^(1|true|yes)$/i.test(process.env.READ_ONLY || ''),
 
   jwtSecret:    required('JWT_SECRET', 'dev-only-change-me'),
   jwtExpiry:    process.env.JWT_EXPIRY    || '12h',

@@ -1,12 +1,21 @@
 // server/src/services/derivedCounter.service.ts
 // The ONE way to count a derived-counter machine's pieces (config/derivedCounters).
 // Every surface — machine card, targets board, dia trace, hourly bars — goes
-// through here, because three hand-rolled copies of "fetch the signal, map it,
-// find the edges" is exactly how they drift apart.
+// through here, because three hand-rolled copies of "fetch the signal, find the
+// edges" is exactly how they drift apart.
+//
+// The edges are found IN THE DATABASE, not in Node. Reading the raw signal back
+// meant pulling 36,563 documents across the wire for one machine over six days:
+// the query itself took 76ms and the transfer took 33 SECONDS on this tier. The
+// same window asked as an aggregation returns the 274 edges themselves in 850ms.
+// The rule is the general one — move the filter to the data, not the data to the
+// filter — and it is worth remembering here because the naive version looked
+// perfectly reasonable right up until the collection grew.
 import { Telemetry } from '../models/Telemetry.js';
-import { isNumericValue } from '../utils/normalize.js';
-import { refMatch } from '../utils/machineRef.js';
-import { derivedCounterFor, edgeEvents, REFRACTORY_MS, type DerivedCounter } from '../config/derivedCounters.js';
+import { refCandidates } from '../utils/machineRef.js';
+import { derivedCounterFor, REFRACTORY_MS, type DerivedCounter } from '../config/derivedCounters.js';
+
+const NUMERIC = ['int', 'long', 'double', 'decimal'];
 
 /** Edge events for one machine inside [from, to].
  *
@@ -20,20 +29,44 @@ export async function derivedEvents(
 ): Promise<{ t: number; made: number }[]> {
   const range: Record<string, Date> = { $gte: new Date(from.getTime() - REFRACTORY_MS) };
   if (to) range.$lte = to;
-  const rows = await Telemetry.find({
-    machineId: refs.length > 1 ? { $in: refs } : refMatch(refs[0] ?? ''),
-    timestamp: range,
-  }).sort({ timestamp: 1 }).select({ timestamp: 1, [`data.${dc.key}`]: 1 }).lean();
 
-  // isNumericValue, not Number(): a null/'' reading is a MISSING sample, and
-  // Number(null) === 0 would read as a dip below the threshold — manufacturing
-  // a fresh rising edge, and a piece, out of a collector hiccup.
-  const series = rows
-    .filter((r) => isNumericValue((r.data as Record<string, unknown>)?.[dc.key]))
-    .map((r) => ({ t: +new Date(r.timestamp as Date), v: Number((r.data as Record<string, unknown>)[dc.key]) }));
+  const rows = await Telemetry.aggregate([
+    // $in of exact strings, never a regex: a case-insensitive regex cannot use
+    // {machineId, timestamp} and turns this into a full collection scan.
+    { $match: { machineId: { $in: refs.flatMap(refCandidates) }, timestamp: range } },
+    { $addFields: { pv: { $getField: { field: dc.key, input: '$data' } } } },
+    // Numeric only — a null or '' reading is a MISSING sample, and treating it
+    // as 0 would read a collector hiccup as a dip and invent a piece from it.
+    { $match: { pv: { $type: NUMERIC } } },
+    { $setWindowFields: {
+      partitionBy: '$machineId',
+      sortBy: { timestamp: 1 },
+      output: { prev: { $shift: { output: '$pv', by: -1, default: null } } },
+    } },
+    // A rising edge: at or above the threshold, with the previous numeric
+    // reading below it. The first sample in the window has no previous reading,
+    // and $ifNull makes it not-below — so a window opening mid-burst does not
+    // count that burst, and no piece is counted twice across adjacent windows.
+    { $match: { $expr: { $and: [
+      { $gte: ['$pv', dc.threshold] },
+      { $lt: [{ $ifNull: ['$prev', dc.threshold] }, dc.threshold] },
+    ] } } },
+    { $project: { _id: 0, t: '$timestamp' } },
+    { $sort: { t: 1 } },
+  ]).option({ maxTimeMS: 30_000 }).exec() as { t: Date }[];
 
+  // The refractory still belongs in Node: it is a judgement about what counts
+  // as one piece, not a property of the data.
   const fromMs = from.getTime();
-  return edgeEvents(series, dc.threshold).filter((e) => e.t >= fromMs);
+  const out: { t: number; made: number }[] = [];
+  let lastEdge = -Infinity;
+  for (const r of rows) {
+    const t = +new Date(r.t);
+    if (t - lastEdge < REFRACTORY_MS) continue;   // a flap, not a second piece
+    lastEdge = t;
+    if (t >= fromMs) out.push({ t, made: 1 });    // pre-window edges only set the clock
+  }
+  return out;
 }
 
 /** Same, keyed by machine, for the machines in `machines` that have a derived

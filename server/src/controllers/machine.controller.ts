@@ -154,7 +154,15 @@ export const machineActivity = asyncHandler(async (req, res) => {
   }
   // Shared engine (services/activity.service) — same source as the dashboard
   // range metrics and rankings, so all three always agree.
-  const act = await computeActivity(machineScope(req.user as ScopeUser), fromD, toD);
+  //
+  // CACHED, because this is the dashboard's heaviest read and every open board
+  // polls it every 15 seconds: without this, ten tabs meant ten full
+  // recomputations a minute, and the server spent its life rebuilding the same
+  // answer. The client rounds `to` down to the minute, so every client in the
+  // same minute shares one computation.
+  const scope = machineScope(req.user as ScopeUser);
+  const key = `activity:${(scope || []).join(',') || '*'}:${fromD.toISOString()}:${toD.toISOString()}`;
+  const act = await cached(key, 20_000, () => computeActivity(scope, fromD, toD));
   return ok(res, act.rows, { from: act.from.toISOString(), to: act.to.toISOString(), windowMs: act.windowMs });
 });
 

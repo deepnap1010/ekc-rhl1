@@ -4,6 +4,7 @@
 // the first write. PUT upserts (settings.update permission, enforced in routes).
 import { AppConfig, type IShift, type IStageTemplate } from '../models/AppConfig.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
+import { env } from '../config/env.js';
 
 // Canonical seeds (mirror the client's previous hard-coded lists).
 const DEFAULTS: Record<string, unknown> & { shifts: IShift[]; products: string[]; processStages: string[]; stageTemplates: IStageTemplate[] } = {
@@ -48,6 +49,8 @@ export const getConfig = asyncHandler(async (_req, res) => {
     products: doc?.products?.length ? doc.products : DEFAULTS.products,
     processStages: doc?.processStages?.length ? doc.processStages : DEFAULTS.processStages,
     stored: !!doc,
+    // The client shows a banner and hides its edit controls on a review copy.
+    readOnly: env.readOnly,
   });
 });
 

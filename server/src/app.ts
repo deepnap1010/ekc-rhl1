@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import { env } from './config/env.js';
 import routes from './routes/index.js';
 import { notFound, errorHandler } from './middleware/error.js';
+import { readOnlyGuard } from './middleware/readOnly.js';
 
 export function createApp(): Express {
   const app = express();
@@ -30,8 +31,9 @@ export function createApp(): Express {
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
   app.use('/api/v1/auth', authLimiter);
 
-  app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
-  app.use('/api/v1', routes);
+  app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now(), readOnly: env.readOnly }));
+  // Before the routes: a review copy refuses every write, whatever the route.
+  app.use('/api/v1', readOnlyGuard, routes);
 
   // Single-service hosting (e.g. Render): when the client has been built, serve its
   // static bundle + SPA fallback so the whole app runs from ONE origin — API,

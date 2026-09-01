@@ -12,3 +12,15 @@ export const refMatch = (ref: string): RegExp => new RegExp(`^${ref.replace(ESCA
 /** Case-insensitive membership, for scope lists. */
 export const refIn = (list: string[] | null | undefined, ref: string): boolean =>
   (list || []).some((r) => r.toUpperCase() === ref.toUpperCase());
+
+/** Case variants of a ref, for an $in that can still USE the index.
+ *
+ *  refMatch's regex is fine on the small collections, but on `telemetries` a
+ *  case-insensitive regex cannot use {machineId, timestamp} and turns a 36k-doc
+ *  read into a 900k-doc collection scan — measured 2656ms against 76ms. Machine
+ *  codes are a closed set of known strings, so listing their variants keeps the
+ *  tolerance and keeps the index. */
+export const refCandidates = (ref: string): string[] => {
+  const r = String(ref || '');
+  return [...new Set([r, r.toUpperCase(), r.toLowerCase()])].filter(Boolean);
+};

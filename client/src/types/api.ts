@@ -403,6 +403,9 @@ export interface AppConfigShape {
   products: string[];
   processStages: string[];
   stored: boolean;
+  // True when this deployment only MIRRORS the plant: it is refreshed from the
+  // factory server, so changes made here would be overwritten.
+  readOnly?: boolean;
 }
 
 // Range KPIs reconstructed for the dashboard's selected window (real figures

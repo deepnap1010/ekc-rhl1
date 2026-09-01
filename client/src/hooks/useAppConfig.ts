@@ -14,6 +14,8 @@ export interface AppConfigLists {
   products: string[];
   processStages: string[];
   fromServer: boolean;
+  /** This deployment mirrors the plant — it takes no changes. */
+  readOnly: boolean;
 }
 
 export function useAppConfig(): AppConfigLists {
@@ -46,5 +48,6 @@ export function useAppConfig(): AppConfigLists {
     products: data?.products?.length ? data.products : s.production.products,
     processStages: data?.processStages?.length ? data.processStages : s.production.processStages,
     fromServer: !!data,
+    readOnly: !!data?.readOnly,
   };
 }
