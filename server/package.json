@@ -13,8 +13,7 @@
     "sync:atlas": "node scripts/sync-to-atlas.mjs",
     "check:sync": "node checks/sync.check.mjs",
     "check:label": "tsx checks/label.check.ts",
-    "check:kiosk": "tsx checks/kiosk.check.ts",
-    "machine-logins": "tsx scripts/create-machine-logins.ts"
+    "check:session": "tsx checks/session.check.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

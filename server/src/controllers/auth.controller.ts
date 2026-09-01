@@ -1,6 +1,7 @@
 // server/src/controllers/auth.controller.ts
 import { User } from '../models/User.js';
 import { signAccessToken, signRefreshToken } from '../utils/jwt.js';
+import { sessionNeverExpires } from '../utils/session.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
 import { BOOTSTRAP_SUB, isBootstrapMode, bootstrapUser } from '../utils/bootstrap.js';
@@ -16,7 +17,6 @@ interface SanitizableUser {
   isSuperAdmin?: boolean;
   role?: AuthRole | null;
   assignedMachines?: string[];
-  kiosk?: boolean;
   avatar?: string;
   lastLoginAt?: Date | null;
 }
@@ -53,10 +53,11 @@ export const login = asyncHandler(async (req, res) => {
   // role is populated here, so it carries the AuthRole fields (key, etc.).
   const role = user.role as unknown as AuthRole | null;
   const payload: JwtPayload = { sub: user._id.toString(), role: role?.key, sa: user.isSuperAdmin };
-  // A machine terminal gets a session with no end: the tablet on the floor is
-  // signed in once when it is installed and never asks again. Revoking it is
-  // switching the account off — middleware/auth re-reads the user every request.
-  const forever = !!user.kiosk;
+  // An operator's session has no end: the tablet at the machine is signed in
+  // once and never asks again. Revoking it is switching the account off —
+  // middleware/auth re-reads the user on every request, so an inactive account
+  // stops working immediately, token or no token.
+  const forever = sessionNeverExpires(role, user.isSuperAdmin);
   return ok(res, {
     accessToken:  signAccessToken(payload, forever),
     refreshToken: signRefreshToken(payload, forever),
@@ -122,7 +123,6 @@ function sanitize(user: SanitizableUser) {
         }
       : null,
     assignedMachines: user.assignedMachines || [],
-    kiosk: !!user.kiosk,
     avatar: user.avatar || '',
     lastLoginAt: user.lastLoginAt ?? null,
   };

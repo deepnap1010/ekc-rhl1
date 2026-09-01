@@ -20,10 +20,6 @@ export interface IUser {
   plant: string;
   reportsTo: Types.ObjectId | null;
   assignedMachines: string[];
-  // A machine-terminal account: one fixed login on the shop floor, tied to one
-  // machine, whose session never expires (see utils/jwt). Ordinary staff logins
-  // leave this false and keep the normal 12-hour session.
-  kiosk: boolean;
   avatar: string; // profile photo as a compressed data URL ('' = use default icon)
   active: boolean;
   lastLoginAt?: Date;
@@ -50,7 +46,6 @@ const userSchema = new mongoose.Schema<IUser, UserModel, IUserMethods>(
     plant: { type: String, default: '' },
     reportsTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // org chart
     assignedMachines: { type: [String], default: [] }, // machineIds for operators
-    kiosk: { type: Boolean, default: false },
     avatar: { type: String, default: '' }, // profile photo (compressed data URL), display-only
 
     active: { type: Boolean, default: true },

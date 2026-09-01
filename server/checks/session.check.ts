@@ -1,10 +1,11 @@
-// Self-check for machine-terminal logins, on a real (in-memory) MongoDB.
+// Self-check for operator sessions, on a real (in-memory) MongoDB.
 //   npm i --no-save mongodb-memory-server     (one-off)
-//   npm run check:kiosk
+//   npm run check:session
 //
-// Two promises: a terminal sees ONE machine, and its session never ends —
-// while still being revocable, because a token nobody can switch off is a key
-// that never stops working.
+// Three promises: an operator sees ONE machine, their session never ends, and
+// NOBODY ELSE gets that — an admin session still expires, because that login
+// can change production settings and delete data. And a session that never
+// ends must still be revocable, or it is a key that never stops working.
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
@@ -44,21 +45,30 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 const role = await Role.create({ name: 'Operator', key: 'operator',
   permissions: { dashboard: ['view'], machines: ['view'], production: ['view'] } });
 
-const term = new User({ name: 'SPG02 Operator', email: 'spg02operator@ekc.local',
-  role: role._id, assignedMachines: ['SPG02'], kiosk: true, active: true });
+const supervisorRole = await Role.create({ name: 'Production Supervisor', key: 'production_supervisor',
+  permissions: { dashboard: ['view'], machines: ['view'], production: ['view', 'update'] } });
+
+// Made by hand in the Employees screen, exactly as the plant does it: an
+// operator, one machine ticked, their own email and password.
+const term = new User({ name: 'SPG02', email: 'spg2@gmail.com',
+  role: role._id, assignedMachines: ['SPG02'], active: true });
 await term.setPassword('spg02-abc123');
 await term.save();
 
-const staff = new User({ name: 'Ramesh', email: 'ramesh@ekc.local',
-  role: role._id, assignedMachines: ['CUTTINGMACHINE06', 'CUTTINGMACHINE07'], active: true });
+const staff = new User({ name: 'Ramesh', email: 'ramesh@gmail.com',
+  role: supervisorRole._id, assignedMachines: ['CUTTINGMACHINE06', 'CUTTINGMACHINE07'], active: true });
 await staff.setPassword('ramesh-pw');
 await staff.save();
 
+const boss = new User({ name: 'EKC', email: 'admin@ekc.in', role: null, isSuperAdmin: true, active: true });
+await boss.setPassword('admin-pw');
+await boss.save();
+
 // ── the terminal signs in ────────────────────────────────────────────────────
-const s = await call(login, { body: { email: 'spg02operator@ekc.local', password: 'spg02-abc123' } });
-check(!!s.accessToken, 'the terminal can sign in');
-check(s.user.kiosk === true, 'the client is told this is a terminal (so it never signs itself out)');
-check(JSON.stringify(s.user.assignedMachines) === '["SPG02"]', 'it is tied to exactly one machine');
+const s = await call(login, { body: { email: 'spg2@gmail.com', password: 'spg02-abc123' } });
+check(!!s.accessToken, 'the operator can sign in');
+check(s.user.role?.key === 'operator', 'the client can see it is an operator (so it never signs itself out)');
+check(JSON.stringify(s.user.assignedMachines) === '["SPG02"]', 'tied to exactly one machine');
 
 // ── THE PROMISE: no expiry ───────────────────────────────────────────────────
 const decoded = jwt.decode(s.accessToken) as Record<string, unknown>;
@@ -73,13 +83,16 @@ catch { stillValid = false; }
 check(stillValid, 'and it still verifies ten years from now');
 
 // ── an ordinary login is unchanged ───────────────────────────────────────────
-const st = await call(login, { body: { email: 'ramesh@ekc.local', password: 'ramesh-pw' } });
+const st = await call(login, { body: { email: 'ramesh@gmail.com', password: 'ramesh-pw' } });
 check(typeof (jwt.decode(st.accessToken) as Record<string, unknown>).exp === 'number',
-  'a normal staff login still expires — this is for terminals only');
+  'a SUPERVISOR session still expires');
+const ad = await call(login, { body: { email: 'admin@ekc.in', password: 'admin-pw' } });
+check(typeof (jwt.decode(ad.accessToken) as Record<string, unknown>).exp === 'number',
+  'an ADMIN session still expires — never-expiring is for operators only');
 
 // ── it sees ONE machine ──────────────────────────────────────────────────────
 const who = await auth(s.accessToken);
-check(who?.name === 'SPG02 Operator', 'the token authenticates');
+check(who?.name === 'SPG02', 'the token authenticates');
 const scope = machineScope(who);
 check(JSON.stringify(scope) === '["SPG02"]', 'every scoped query is limited to SPG02');
 check(!scope?.includes('CUTTINGMACHINE06'), 'and cannot reach another machine');
