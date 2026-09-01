@@ -536,7 +536,10 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
           </div>
         </div>
         <div className="text-right shrink-0">
-          <span className="data text-2xl font-bold leading-none" style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}<span className="text-sm">%</span></span>
+          <span className="flex items-baseline justify-end gap-0.5" style={{ color: attainColor(pct) }}>
+            <span className="data text-2xl font-bold leading-tight tabular-nums">{Math.round(pct * 100)}</span>
+            <span className="data text-base font-bold leading-tight">%</span>
+          </span>
           <div className="label mt-0.5">of target</div>
         </div>
       </div>
@@ -579,7 +582,10 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <span className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center shrink-0"><Boxes size={14} className="text-accent" /></span>
         <div className="font-semibold text-sm text-primary truncate">{g.label}</div>
       </div>
-      <div className="data text-3xl font-bold leading-none" style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}<span className="text-base">%</span></div>
+      <div className="flex items-baseline gap-0.5" style={{ color: attainColor(pct) }}>
+        <span className="data text-3xl font-bold leading-tight tabular-nums">{Math.round(pct * 100)}</span>
+        <span className="data text-xl font-bold leading-tight">%</span>
+      </div>
       <div className="label mt-0.5 mb-3">of target · {avail}% availability</div>
       <div className="flex items-end justify-between gap-2">
         <div><div className="data text-lg font-bold leading-none text-primary">{fmtNum(actual)}</div><div className="label mt-0.5">Produced</div></div>
@@ -704,7 +710,7 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
             { label: 'Produced', value: Math.min(t.actual, t.target), color },
             { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
           ]}>
-          <span className="data text-sm font-bold leading-none" style={{ color }}>{Math.round(pct * 100)}%</span>
+          <span className="data text-sm font-bold leading-tight tabular-nums" style={{ color }}>{Math.round(pct * 100)}%</span>
         </Donut>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
