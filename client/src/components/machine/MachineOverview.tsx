@@ -8,8 +8,8 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
-  Cpu, Thermometer, Activity, Gauge, Database, Clock, Power,
-  ArrowRight, Search, BarChart3, Bell, ChevronRight, ChevronDown, LineChart, Calendar,
+  Cpu, Thermometer, Activity, Database,
+  ArrowRight, Search, BarChart3, ChevronRight, ChevronDown, LineChart, Calendar,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../../api/endpoints';
 import TargetPanel from './TargetPanel';
@@ -24,7 +24,7 @@ import { flattenParams } from '../../lib/params';
 import { computeHeadline } from '../../lib/headline';
 import { useMachineTelemetry } from '../../hooks/useLive';
 import RangeFilter, { type RangeValue } from '../RangeFilter';
-import { resolveRange, shiftApplies, presetLabel, todayWindow } from '../../store/filters';
+import { resolveRange, shiftApplies, presetLabel } from '../../store/filters';
 import { shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { isFurnaceRef } from '../../lib/temperature';
@@ -66,24 +66,85 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
     enabled: !!id,
   });
 
-  // TODAY's activity from the SHARED engine — the same PRODUCTION day (07:00 ->
-  // 07:00, the boundary the PLC itself stamps into SHIFT_DATE) and query key as
-  // the machine cards, so react-query shares one fetch and no two panels on this
-  // page quote different days. Runtime is credited only for time the machine
-  // actually reported (silence is never uptime).
-  const { shifts: cfgShifts } = useAppConfig();
-  const day = todayWindow(cfgShifts);
-  const dayFromISO = day.from.toISOString();
-  const dayToISO = day.to.toISOString();
-  const { data: dayAct } = useQuery({
-    queryKey: ['machine-activity-today', dayFromISO, dayToISO],
-    queryFn: () => machineApi.activity({ from: dayFromISO, to: dayToISO }),
+  // ── ONE window for the whole page ────────────────────────────────────────
+  // This filter used to live inside a single card, so that card answered "what
+  // did Shift A make last Tuesday" while every other figure on the page still
+  // answered "today". Two different truths on one screen is how a shop floor
+  // stops trusting a dashboard. The selection lives here now, and the target,
+  // the hourly bars, the runtime split and the piece count all read it.
+  const { shifts } = useAppConfig();
+  const [range, setRange] = useState<RangeValue>({ preset: 'today', customFrom: '', customTo: '' });
+  const [shiftName, setShiftName] = useState('');
+  // A shift only narrows a SINGLE day: Today/Yesterday (as on the dashboard),
+  // or a custom range covering one WHOLE day. A custom range carrying its own
+  // times is already the window that was asked for — substituting the shift's
+  // hours for it WIDENS what this control promises to narrow, and with a night
+  // shift it walks off the chosen day altogether.
+  const isCustom = range.preset === 'custom';
+  const wholeDayCustom = range.customFrom.slice(11) === '00:00' && range.customTo.slice(11) === '23:59';
+  const customDay = isCustom && wholeDayCustom && range.customFrom.slice(0, 10) && range.customFrom.slice(0, 10) === range.customTo.slice(0, 10)
+    ? range.customFrom.slice(0, 10)
+    : null;
+  const shiftOk = shiftApplies(range.preset) || !!customDay;
+  const shift = shiftOk ? shifts.find((s) => s.name === shiftName) || null : null;
+  let win = resolveRange(
+    { preset: range.preset, shiftName: shiftOk ? shiftName : '', customFrom: range.customFrom, customTo: range.customTo },
+    shifts,
+  );
+  // resolveRange takes a custom range literally, so narrow it to the shift here.
+  if (customDay && shift) win = shiftWindowOn(shift, new Date(`${customDay}T00:00:00`));
+  // A shift window runs to the shift's SCHEDULED end, so mid-shift it reaches
+  // into the future. Readings cannot, so the page would print a range it had no
+  // data for and a reading count that covered only part of it. Rounded to the
+  // minute: an unrounded now() would change the query key on every render and
+  // refetch in a loop.
+  if (win && win.to.getTime() > Date.now()) {
+    const now = Math.max(Math.floor(Date.now() / 60_000) * 60_000, win.from.getTime() + 60_000);
+    win = { from: win.from, to: new Date(now) };
+  }
+  const winFromISO = win?.from.toISOString();
+  const winToISO = win?.to.toISOString();
+  // What the window is CALLED. Every figure that has to name its window prints
+  // THIS, so no card can invent its own wording and disagree with its neighbour.
+  const winLabel = `${isCustom ? (customDay ? fmtDate(`${customDay}T00:00:00`) : 'Custom range') : presetLabel(range.preset)}${shift ? ` · ${shift.name}` : ''}`;
+
+  // Activity for the selected window, from the SHARED engine. The RESOLVED
+  // window is the cache key, never the preset: keying on "today" alone survived
+  // midnight and then served yesterday's totals under today's label. The key
+  // keeps its 'today' NAME because on the default preset it matches the machine
+  // list's key, and react-query then serves this page from that warm fetch.
+  const { data: dayAct, isFetching: actFetching } = useQuery({
+    queryKey: ['machine-activity-today', winFromISO, winToISO],
+    queryFn: () => machineApi.activity({ from: winFromISO as string, to: winToISO as string }),
+    enabled: !!win,
     placeholderData: keepPreviousData,
     refetchInterval: 60000,
   });
   const codes = [machine.code, machine.machineId, machine.id, machine._id]
     .filter(Boolean).map((c) => String(c).toUpperCase());
   const actRow = (dayAct?.data || []).find((r) => codes.includes(String(r.code).toUpperCase()));
+
+  // A furnace makes heat, not pieces; and a machine with no counter still
+  // measures something (lib/headline decides WHICH signal). Both answers stand
+  // where the piece count would otherwise go, over exactly this window.
+  const furnace = codes.some((c) => isFurnaceRef(c));
+  const liveParams = flattenParams(
+    Object.keys(machine.currentParameters || {}).length ? machine.currentParameters as Record<string, unknown> : (machine.latestData || {}),
+  );
+  const headline = !furnace && actRow && actRow.productionKey == null ? computeHeadline(liveParams) : null;
+  const avgKey = headline?.key;
+  // The stored code VERBATIM, not the upper-cased comparison form: /machines/:code
+  // resolves by EXACT match (controllers/machine.controller#findMachine), so an
+  // upper-cased ref 404s for any machine whose code is not already upper-case.
+  const rawCode = String(machine.code || machine.machineId || machine.id || machine._id || '');
+  const { data: avgData } = useQuery({
+    queryKey: ['machine-metric-avg', rawCode, winFromISO, winToISO, avgKey],
+    queryFn: () => machineApi.metricAverage(rawCode, { from: winFromISO as string, to: winToISO as string, key: avgKey as string }),
+    enabled: !!win && !!avgKey && !!rawCode,
+    placeholderData: keepPreviousData,
+    refetchInterval: 60000,
+  });
+  const avg = avgKey ? avgData?.data : undefined;
 
   // Live-merge: a fresh socket reading wins over the polled snapshot's metrics.
   const metrics = useMemo<NamedMetric[]>(
@@ -143,19 +204,36 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
         </div>
       </div>
 
-      {/* Operator target — what am I making, what's the target, how far am I */}
-      <TargetPanel code={String(id)} actRow={actRow} dayFrom={dayFromISO} dayTo={dayToISO} />
+      {/* The page's ONE window control. It sits above every figure it governs,
+          because a filter below its own results reads as a footnote. */}
+      <div className="panel px-4 py-3 flex items-center gap-2 flex-wrap">
+        <Calendar size={15} className="text-accent shrink-0" />
+        <span className="text-[11px] uppercase tracking-wide text-steel">Window</span>
+        <select value={shiftOk ? shiftName : ''} onChange={(e) => setShiftName(e.target.value)}
+          disabled={!shiftOk}
+          title={shiftOk ? 'Narrow the day to one shift' : 'Shifts apply to a single day — Today, Yesterday, or a custom range within one day'}
+          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent disabled:opacity-45 disabled:cursor-not-allowed">
+          <option value="">Full day</option>
+          {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+        </select>
+        <RangeFilter value={range} onChange={setRange} range={win} title="Pick the window for this machine" />
+        <span className="ml-auto text-[11px] text-steel/70 truncate">
+          {win ? `${fmtTime(win.from)} → ${fmtTime(win.to)}` : 'Pick a start date and an end date'}
+          {actFetching && <span className="text-accent"> · updating…</span>}
+        </span>
+      </div>
 
-      {/* Row 1 — equal-height cards (grid stretches each card in the row to match) */}
-      <div className="grid lg:grid-cols-3 gap-4">
+      {/* Operator target — what am I making, what's the target, how far am I */}
+      {win && <TargetPanel code={String(id)} actRow={actRow} dayFrom={winFromISO as string} dayTo={winToISO as string} label={winLabel} />}
+
+      {/* Equal-height cards (the grid stretches each card in a row to match). */}
+      <div className="grid lg:grid-cols-2 gap-4">
         <Panel icon={Activity} title="Machine Status">
           <div className="divide-y divide-line">
             <Row label="Status"><StatusPill status={status} /></Row>
             <Row label="Last Seen"><span className="data text-primary">{fmtClock(lastSeenAt)}</span></Row>
-            <Row label="Payload Count"><span className="data font-semibold text-primary">{fmtNum(machine.telemetryCount || 0)}</span></Row>
             <Row label="Uptime"><span className="data font-semibold text-running">{m.uptimePct}%</span></Row>
             <Row label="Active Alarms"><span className={`data font-semibold ${m.faultCount ? 'text-stopped' : 'text-running'}`}>{m.faultCount}</span></Row>
-            <Row label="Machine Type"><span className="text-primary">{machine.subtitle || prettyType(machine.type) || '—'}</span></Row>
             <Row label="PLC Type"><span className="data text-primary">{m.plcType}</span></Row>
           </div>
           <button onClick={() => onTab?.('specs')} className="mt-auto pt-3 w-full flex items-center justify-center gap-1.5 text-sm text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10 rounded-lg py-2 font-medium transition-colors">
@@ -163,7 +241,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           </button>
         </Panel>
 
-        {m.hasTemp ? (
+        {m.hasTemp && (
           <Panel icon={Thermometer} title="Temperature Overview" right={<span className="text-xs text-steel">°C</span>}>
             <div className="grid grid-cols-2 gap-2">
               {m.zones.slice(0, 8).map((z, i) => (
@@ -191,85 +269,57 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
               </div>
             )}
           </Panel>
-        ) : (
-          <Panel icon={m.hasIO && !m.primary.length ? Power : Gauge} title={m.primary.length ? 'Primary Readings' : m.hasIO ? 'Digital I/O' : 'Primary Readings'}>
-            {m.primary.length ? (
-              <div className="grid grid-cols-2 gap-2">
-                {m.primary.map((p) => {
-                  const st = statByKey[p.key];
-                  return (
-                    <button key={p.key} type="button" title="Click to view trend"
-                      onClick={() => openMetric([{ key: p.key, label: prettyKey(p.key), stat: st }], prettyKey(p.key))}
-                      className="group relative min-w-0 overflow-hidden text-left rounded-lg border border-line bg-base px-3 py-2 hover:border-accent/50 hover:bg-accent/5 transition-colors">
-                      <LineChart size={12} className="absolute top-2 right-2 text-accent opacity-0 group-hover:opacity-100 transition-opacity" />
-                      <div className="text-[10px] text-steel uppercase tracking-wide truncate" title={prettyKey(p.key)}>{prettyKey(p.key)}</div>
-                      {/* long values (bit arrays etc.) must clip inside the tile — full value on hover */}
-                      <div className={`data text-lg font-bold truncate ${p.fault ? 'text-stopped' : 'text-primary'}`} title={p.fault ? 'FAULT' : String(fmtMetric(p.value))}>{p.fault ? 'FAULT' : fmtMetric(p.value)}</div>
-                      {(st?.spark?.length ?? 0) > 1 && !p.fault && <div className="mt-1 -mx-0.5"><Sparkline data={st.spark} width={160} height={24} /></div>}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : m.hasIO ? (
-              <>
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <MiniStat label="Inputs Active" value={`${m.io.activeIn}/${m.io.inputs.length}`} color="#2563EB" />
-                  <MiniStat label="Outputs Active" value={`${m.io.activeOut}/${m.io.outputs.length}`} color="#7C3AED" />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {[...m.io.inputs, ...m.io.outputs].slice(0, 8).map((s) => (
-                    <div key={s.key} className="rounded-lg border border-line bg-base px-3 py-2 flex items-center justify-between gap-2">
-                      <span className="text-[10px] text-steel uppercase tracking-wide truncate" title={prettyKey(s.key)}>{prettyKey(s.key)}</span>
-                      <span className={`data text-xs font-bold shrink-0 ${s.on ? 'text-running' : 'text-steel/70'}`}>{s.on ? 'ON' : 'OFF'}</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : m.registers.length ? (
-              <div className="grid grid-cols-2 gap-2">
-                {m.registers.slice(0, 8).map((r) => (
-                  <div key={r.key} className="rounded-lg border border-line bg-base px-3 py-2">
-                    <div className="data text-[10px] text-steel uppercase tracking-wide truncate" title={r.key}>{r.key}</div>
-                    <div className="data text-lg font-bold text-primary truncate">{fmtMetric(r.value)}</div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-sm text-steel py-6 text-center">No parameters in the latest reading.</div>
-            )}
-          </Panel>
         )}
 
-        <Panel icon={Activity} title="Process Health">
-          <div className="flex items-center gap-4">
-            <div className="flex-1 space-y-2.5">
-              {m.checks.map((c) => (
-                <div key={c.label} className="flex items-center justify-between text-sm">
-                  <span className="text-steel">{c.label}</span>
-                  <span className="flex items-center gap-1.5 font-medium" style={{ color: c.color }}>
-                    {c.text} <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
-                  </span>
-                </div>
-              ))}
+        <Panel icon={BarChart3} title={furnace ? 'Temperature & Runtime' : 'Production & Runtime'}
+          className={`${m.hasTemp ? 'lg:col-span-2' : ''} ${actFetching ? 'opacity-60 transition-opacity' : 'transition-opacity'}`}>
+          {/* What the window produced — or, for a machine that counts nothing,
+              what it measured instead. */}
+          <div className="rounded-lg border border-line bg-base px-4 py-3 mb-4">
+            <div className="text-[10px] uppercase tracking-wide text-steel">
+              {furnace ? 'Avg temperature' : avgKey ? prettyKey(avgKey) : 'Production'} · {winLabel}
             </div>
-            <PressureRing value={m.health} status={m.healthStatus} size={92} stroke={8} label="Health" />
+            {furnace ? (
+              <>
+                <div className="data text-3xl font-bold text-primary leading-tight">
+                  {actRow?.avgTemp != null ? fmtNum(actRow.avgTemp) : '—'} <span className="text-sm font-medium text-steel">°C</span>
+                </div>
+                <div className="text-[10px] text-steel mt-0.5">
+                  {actRow?.avgTemp != null
+                    ? `mean of ${actRow.tempZones} work zone${actRow.tempZones === 1 ? '' : 's'} over this window`
+                    : 'no temperature signal — the furnace reports no measured zone value'}
+                </div>
+              </>
+            ) : avgKey ? (
+              <>
+                <div className="data text-3xl font-bold text-primary leading-tight">
+                  {avg?.avg != null ? fmtNum(avg.avg) : '—'}
+                  {headline?.unit && avg?.avg != null && <span className="text-sm font-medium text-steel"> {headline.unit}</span>}
+                </div>
+                <div className="text-[10px] text-steel mt-0.5">
+                  {avg?.avg != null
+                    ? `${prettyKey(avgKey)} · mean of ${fmtNum(avg.samples)} readings${avg.min != null && avg.max != null ? ` · ${fmtNum(avg.min)}–${fmtNum(avg.max)}` : ''}`
+                    : `${prettyKey(avgKey)} — nothing reported in this window`}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="data text-3xl font-bold text-primary leading-tight">
+                  {actRow ? fmtNum(Math.max(actRow.production ?? 0, 0)) : '—'} <span className="text-sm font-medium text-steel">pcs</span>
+                </div>
+                {(borrowedFrom(actRow) || actRow?.productionKey) && (
+                  <div className="text-[10px] text-steel mt-0.5">
+                    {borrowedFrom(actRow) ?? prettyKey(actRow?.productionKey as string)}
+                  </div>
+                )}
+              </>
+            )}
           </div>
-          <div className="grid grid-cols-2 gap-2 mt-auto pt-4">
-            <MiniTile icon={Bell} accent={m.faultCount ? '#DC2626' : '#64748B'} label="Active Alarms" value={fmtNum(m.faultCount)} />
-            <MiniTile icon={Clock} accent="#2563EB" label="Last Seen" value={fmtClock(lastSeenAt)} />
-          </div>
-        </Panel>
-      </div>
-
-      {/* Row 2 — equal-height pair */}
-      <div className="grid lg:grid-cols-2 gap-4">
-        <Panel icon={BarChart3} title="Production & Runtime">
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
             <MiniStat label="Runtime" value={fmtDuration(m.runtimeMs)} color="#059669" />
             <MiniStat label="Idle" value={fmtDuration(m.idleMs)} color="#D97706" />
             <MiniStat label="Stopped" value={fmtDuration(m.stoppedMs)} color="#DC2626" />
             <MiniStat label="Downtime" value={fmtDuration(m.downMs)} color="#991B1B" />
-            <MiniStat label="Payloads" value={fmtNum(machine.telemetryCount || 0)} color="#2563EB" />
             <MiniStat label="Efficiency" value={`${m.efficiency}%`} color="#7C3AED" />
           </div>
           <div className="flex items-center gap-5 rounded-lg border border-line bg-base p-4">
@@ -279,9 +329,10 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
               <Bar label="Downtime" value={m.downMs}    total={m.runtimeMs + m.downMs} color="#DC2626" text={fmtDuration(m.downMs)} />
             </div>
           </div>
+          <div className="text-[10px] text-steel/60 mt-3">
+            {fmtNum(actRow?.readings || 0)} readings{win ? ` · ${fmtTime(win.from)} → ${fmtTime(win.to)}` : ''}
+          </div>
         </Panel>
-
-        <ShiftProductionPanel machine={machine} />
       </div>
 
       <AllSignalsPanel
@@ -304,151 +355,6 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
         />
       )}
     </div>
-  );
-}
-
-// ── window/shift production filter — replaces the old static Key Parameters ────
-// Pick a window (today / yesterday / week / month / year, or a custom date+time
-// range) and a shift, and see what THIS machine produced in it, plus its runtime
-// split. Same control and the same resolver as the dashboard filter, so a window
-// means the same thing everywhere. Data comes from /machines/activity (read-only
-// reconstruction from telemetry + downtime). A machine without its own production
-// counter borrows the linked machine's (same pairing as the cards).
-function ShiftProductionPanel({ machine }: { machine: Machine }): JSX.Element {
-  const { shifts } = useAppConfig();   // shared server-side shift config
-  const [range, setRange] = useState<RangeValue>({ preset: 'today', customFrom: '', customTo: '' });
-  const [shiftName, setShiftName] = useState('');
-  // A shift only narrows a SINGLE day: Today/Yesterday (as on the dashboard), or
-  // a custom range whose two dates are the same day — that keeps this panel's
-  // original job, "what did this machine make on Shift A last Tuesday".
-  const isCustom = range.preset === 'custom';
-  const customDay = isCustom && range.customFrom.slice(0, 10) && range.customFrom.slice(0, 10) === range.customTo.slice(0, 10)
-    ? range.customFrom.slice(0, 10)
-    : null;
-  const shiftOk = shiftApplies(range.preset) || !!customDay;
-  const shift = shiftOk ? shifts.find((s) => s.name === shiftName) || null : null;
-
-  let win = resolveRange(
-    { preset: range.preset, shiftName: shiftOk ? shiftName : '', customFrom: range.customFrom, customTo: range.customTo },
-    shifts,
-  );
-  // resolveRange takes a custom range literally, so narrow it to the shift here.
-  if (customDay && shift) win = shiftWindowOn(shift, new Date(`${customDay}T00:00:00`));
-
-  // The RESOLVED window IS the cache key. Keying on the preset alone let the
-  // fetched numbers and the window printed below drift apart: "today" stayed one
-  // key across midnight, so the 00:00 refetch still ran the closure resolved
-  // before midnight and served YESTERDAY's day totals under today's label. `to`
-  // is already minute-rounded, so this also gives the panel a fresh
-  // midnight-to-now figure every minute instead of a frozen one.
-  const fromISO = win?.from.toISOString();
-  const toISO = win?.to.toISOString();
-  const { data, isLoading } = useQuery({
-    queryKey: ['machine-shift-prod', fromISO, toISO],
-    queryFn: () => machineApi.activity({ from: fromISO as string, to: toISO as string }),
-    enabled: !!win,
-    placeholderData: keepPreviousData,
-    refetchInterval: 60000,
-  });
-
-  const rows = data?.data || [];
-  const codes = [machine.code, machine.machineId, machine.id, machine._id].filter(Boolean).map(String);
-  const row = rows.find((r) => codes.includes(r.code));
-  // A furnace makes heat, not pieces: for it this panel answers "what temperature
-  // did it hold during that shift" instead of a piece count.
-  const furnace = codes.some((c) => isFurnaceRef(c));
-  const production = row?.production ?? null;
-
-  // Machines that count nothing still measure something. BOTTOMMILLING03 has no
-  // counter and never will, and answering "0 pcs" for every shift says nothing
-  // about a machine that ran all day — so the panel falls back to the AVERAGE of
-  // the same signal its card already headlines (feed speed, cut depth, spindle
-  // load…), over exactly this window. Which signal that is stays decided in one
-  // place, lib/headline; the server just averages the key it is handed.
-  const liveParams = flattenParams(
-    Object.keys(machine.currentParameters || {}).length ? machine.currentParameters as Record<string, unknown> : (machine.latestData || {}),
-  );
-  const headline = !furnace && row && row.productionKey == null ? computeHeadline(liveParams) : null;
-  const avgKey = headline?.key;
-  const { data: avgData } = useQuery({
-    queryKey: ['machine-metric-avg', codes[0], fromISO, toISO, avgKey],
-    queryFn: () => machineApi.metricAverage(String(codes[0]), { from: fromISO as string, to: toISO as string, key: avgKey as string }),
-    enabled: !!win && !!avgKey && !!codes[0],
-    placeholderData: keepPreviousData,
-    refetchInterval: 60000,
-  });
-  const avg = avgKey ? avgData?.data : undefined;
-
-  return (
-    <Panel icon={Calendar} title={furnace ? 'Temperature by Shift' : avgKey ? `${headline?.label ?? 'Reading'} by Shift` : 'Production by Shift'}>
-      <div className="flex items-center gap-2 flex-wrap mb-4">
-        <select value={shiftOk ? shiftName : ''} onChange={(e) => setShiftName(e.target.value)}
-          disabled={!shiftOk}
-          title={shiftOk ? 'Narrow the day to one shift' : 'Shifts apply to a single day — Today, Yesterday, or a custom range within one day'}
-          className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent disabled:opacity-45 disabled:cursor-not-allowed">
-          <option value="">Full day</option>
-          {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
-        </select>
-        <RangeFilter value={range} onChange={setRange} range={win} title="Pick the window for this machine" />
-      </div>
-      {!win ? (
-        <div className="text-sm text-steel py-6 text-center">Pick a start date and an end date.</div>
-      ) : isLoading && !row ? (
-        <div className="text-sm text-steel py-6 text-center">Loading…</div>
-      ) : (
-        <>
-          <div className="rounded-lg border border-line bg-base px-4 py-3 mb-3">
-            <div className="text-[10px] uppercase tracking-wide text-steel">
-              {furnace ? 'Avg temperature' : 'Production'} · {isCustom ? (customDay ? fmtDate(`${customDay}T00:00:00`) : 'Custom range') : presetLabel(range.preset)}{shift ? ` · ${shift.name}` : ''}
-            </div>
-            {furnace ? (
-              <>
-                <div className="data text-3xl font-bold text-primary leading-tight">
-                  {row?.avgTemp != null ? fmtNum(row.avgTemp) : '—'} <span className="text-sm font-medium text-steel">°C</span>
-                </div>
-                <div className="text-[10px] text-steel mt-0.5">
-                  {row?.avgTemp != null
-                    ? `mean of ${row.tempZones} work zone${row.tempZones === 1 ? '' : 's'} over this window`
-                    : 'no temperature signal — the furnace reports no measured zone value'}
-                </div>
-              </>
-            ) : avgKey ? (
-              <>
-                <div className="data text-3xl font-bold text-primary leading-tight">
-                  {avg?.avg != null ? fmtNum(avg.avg) : '—'}
-                  {headline?.unit && avg?.avg != null && <span className="text-sm font-medium text-steel"> {headline.unit}</span>}
-                </div>
-                <div className="text-[10px] text-steel mt-0.5">
-                  {avg?.avg != null
-                    ? `${prettyKey(avgKey)} · mean of ${fmtNum(avg.samples)} readings${avg.min != null && avg.max != null ? ` · ${fmtNum(avg.min)}–${fmtNum(avg.max)}` : ''}`
-                    : `${prettyKey(avgKey)} — nothing reported in this window`}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="data text-3xl font-bold text-primary leading-tight">
-                  {production != null ? fmtNum(Math.max(production, 0)) : '0'} <span className="text-sm font-medium text-steel">pcs</span>
-                </div>
-                {(borrowedFrom(row) || row?.productionKey) && (
-                  <div className="text-[10px] text-steel mt-0.5">
-                    {borrowedFrom(row) ?? prettyKey(row?.productionKey as string)}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <MiniStat label="Runtime" value={fmtDuration(row?.runningMs || 0)} color="#059669" />
-            <MiniStat label="Idle" value={fmtDuration(row?.idleMs || 0)} color="#D97706" />
-            <MiniStat label="Stopped" value={fmtDuration(row?.stoppedMs || 0)} color="#DC2626" />
-            <MiniStat label="Downtime" value={fmtDuration((row?.idleMs || 0) + (row?.stoppedMs || 0))} color="#991B1B" />
-          </div>
-          <div className="text-[10px] text-steel/60 mt-3">
-            {fmtNum(row?.readings || 0)} readings · {fmtTime(win.from)} → {fmtTime(win.to)}
-          </div>
-        </>
-      )}
-    </Panel>
   );
 }
 
@@ -486,7 +392,6 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
 
   const fr = freshness(lastSeenAt);
   const dataFlowing = fr.state === 'live';
-  const plcConnected = fr.state === 'live' || fr.state === 'recent';
   const dataQuality = namedCount > 0 ? Math.round(((namedCount - faultCount) / namedCount) * 100) : 100;
 
   // Runtime / downtime / efficiency come from the SHARED activity engine
@@ -501,16 +406,6 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
   const uptimePct = accounted > 0 ? Math.round((runtimeMs / accounted) * 100) : 0;
   const efficiency = machine.oee != null ? Math.round(machine.oee) : uptimePct;
 
-  const checks: { label: string; text: string; color: string }[] = [];
-  if (hasTemp && temp) {
-    const high = temp.max >= 900; const low = temp.min < 50;
-    checks.push({ label: 'Temperature', text: high ? 'High' : low ? 'Low' : 'Normal', color: high || low ? '#D97706' : '#059669' });
-  }
-  if (pressure) checks.push({ label: 'Pressure', text: 'Reporting', color: '#059669' });
-  checks.push({ label: 'PLC Connection', text: plcConnected ? 'Connected' : 'Lost', color: plcConnected ? '#059669' : '#DC2626' });
-  checks.push({ label: 'Data Flow', text: dataFlowing ? 'Active' : 'Stopped', color: dataFlowing ? '#059669' : '#D97706' });
-  checks.push({ label: 'Sensor Health', text: faultCount ? `${faultCount} fault${faultCount > 1 ? 's' : ''}` : 'Good', color: faultCount ? '#DC2626' : '#059669' });
-
   let health = 100;
   if (!dataFlowing) health -= 30; else if (fr.state !== 'live') health -= 8;
   if (status === 'stopped') health -= 20; else if (status === 'offline') health -= 15; else if (status === 'idle') health -= 8;
@@ -523,7 +418,7 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
     hasTemp, zones, temp, primary, pressure, cycles,
     io, hasIO, registers,
     namedCount, faultCount, dataQuality,
-    checks, health, healthStatus,
+    health, healthStatus,
     runtimeMs, idleMs, stoppedMs, downMs, uptimePct, efficiency, openDowntime,
     plcType: plcTypeOf(machine),
   };
@@ -540,9 +435,9 @@ function plcTypeOf(machine: Machine): string {
 }
 
 // ── presentational building blocks ─────────────────────────────────────────────
-function Panel({ icon: Icon, title, right, children }: { icon?: LucideIcon; title: string; right?: ReactNode; children: ReactNode }): JSX.Element {
+function Panel({ icon: Icon, title, right, className = '', children }: { icon?: LucideIcon; title: string; right?: ReactNode; className?: string; children: ReactNode }): JSX.Element {
   return (
-    <div className="panel p-5 flex flex-col h-full">
+    <div className={`panel p-5 flex flex-col h-full ${className}`}>
       <div className="flex items-center gap-2 mb-4">
         {Icon && <Icon size={16} className="text-accent" />}
         <h3 className="font-semibold text-sm text-primary flex-1">{title}</h3>
@@ -567,18 +462,6 @@ function MiniStat({ label, value, color }: { label: string; value: ReactNode; co
     <div className="rounded-lg border border-line bg-base px-3 py-2 text-center">
       <div className="text-[10px] text-steel uppercase tracking-wide truncate">{label}</div>
       <div className="data text-base font-bold mt-0.5 truncate" style={{ color }}>{value}</div>
-    </div>
-  );
-}
-
-function MiniTile({ icon: Icon, accent, label, value }: { icon: LucideIcon; accent: string; label: string; value: ReactNode }): JSX.Element {
-  return (
-    <div className="rounded-lg border border-line bg-base px-3 py-2.5 flex items-center gap-2.5">
-      <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${accent}18`, color: accent }}><Icon size={15} /></span>
-      <div className="min-w-0">
-        <div className="text-[10px] text-steel uppercase tracking-wide truncate">{label}</div>
-        <div className="data text-sm font-bold text-primary truncate">{value}</div>
-      </div>
     </div>
   );
 }

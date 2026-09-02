@@ -37,7 +37,13 @@ export function breakOverlapMs(s: number, e: number, breaks: { start: string; en
   };
   let sum = 0;
   const base0 = Math.floor((s + IST_MS) / DAY_MS) * DAY_MS - IST_MS;
-  for (const base of [base0 - DAY_MS, base0, base0 + DAY_MS]) {
+  // EVERY day the interval touches, not the three around its start. Three was
+  // enough while the server was the only caller (it asks per hour-slice) and
+  // the client only ever passed a day or a shift. The machine page now hands
+  // this whole weeks and months, and stopping at day two left five of a week's
+  // seven lunches sitting inside the target — the divisor came out too big and
+  // achievement too low, quietly, on every long window.
+  for (let base = base0 - DAY_MS; base <= e + DAY_MS; base += DAY_MS) {
     for (const b of breaks) {
       const bs = base + hm(b.start);
       let be = base + hm(b.end);

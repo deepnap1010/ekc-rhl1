@@ -58,6 +58,23 @@ eq(netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, tea), 45 * 60_
 close(targetUnits(180, netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, tea)), 15, 'target over the break-hour is 15, not 20');
 eq(netAssignedMs(asg(H10IST - HOUR, null), H10IST, H10IST + HOUR, []), HOUR, 'no breaks → net equals gross');
 
+// A LONG window counts the break on every day it spans, not just the first few.
+// The machine page hands windowNetMs whole weeks and months now; when this only
+// looked at three days around the start, a month's target was inflated by ~27
+// lunches and achievement read low for it.
+const DAY = 24 * HOUR;
+const lunch = [{ start: '13:00', end: '13:30' }];
+const D0 = Date.parse('2026-08-01T00:00:00+05:30');      // IST midnight, day 1
+eq(breakOverlapMs(D0, D0 + DAY, lunch), 30 * 60_000, 'one day → one lunch');
+eq(breakOverlapMs(D0, D0 + 7 * DAY, lunch), 7 * 30 * 60_000, 'a week → seven lunches');
+eq(breakOverlapMs(D0, D0 + 30 * DAY, lunch), 30 * 30 * 60_000, 'a month → thirty lunches');
+// A break that wraps midnight is clipped to the window on BOTH sides: a whole
+// day contains the tail of last night's break (00:00-01:00) and the head of
+// tonight's (23:00-24:00) — two hours, from two different days' breaks.
+const night = [{ start: '23:00', end: '01:00' }];
+eq(breakOverlapMs(D0, D0 + DAY, night), 2 * 60 * 60_000, 'midnight-wrapping break clipped at both ends of the day');
+eq(breakOverlapMs(D0 + 60 * 60_000, D0 + 23 * 60 * 60_000, night), 0, 'a window between two nights touches neither');
+
 // Live-surface window target: the window itself, whenever the assignment began.
 eq(windowNetMs(H10IST, H10IST + HOUR, []), HOUR, 'past 1-hour window → the full hour');
 close(targetUnits(180, windowNetMs(H10IST, H10IST + HOUR, [])), 20, '1-hour filter at 3 min/unit → target 20');

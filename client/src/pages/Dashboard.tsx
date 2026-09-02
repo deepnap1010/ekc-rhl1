@@ -11,7 +11,7 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
-  Bell, AlertTriangle, CheckCircle2,
+  Bell, AlertTriangle,
   Gauge, Clock, ArrowUpRight, CalendarRange,
   Boxes,
   Sparkles, Wrench, TrendingUp, Zap,
@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
-import AnalyticsModal from '../components/AnalyticsModal';
 import { CustomRangeModal } from '../components/RangeFilter';
 import ProductionVsTarget from '../components/ProductionVsTarget';
 import { ScheduledDiaPopup } from '../components/ScheduleDia';
@@ -91,7 +90,6 @@ export default function Dashboard() {
 
   const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
 
-  const [drill, setDrill] = useState<string | null>(null);
   useCurrentShiftDefault(shifts);
   // The shift default is not a filter the user set, so it does not count as dirty.
   const atDefaults = !f.machineId && !f.shiftPicked && f.preset === 'today';
@@ -229,7 +227,7 @@ export default function Dashboard() {
         <ScheduledDiaPopup />
 
         {/* ── Fleet totals for the same window, under the groups they sum ── */}
-        <div className="grid lg:grid-cols-2 gap-5">
+        <div>
           {/* Output & time split — production, runtime, idle, stopped, downtime */}
           <Panel title="Output & time split" subtitle={`how the fleet spent ${windowLabel}`} icon={Factory}>
             <div className="flex items-center gap-5 flex-wrap">
@@ -260,16 +258,6 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
-          </Panel>
-
-          <Panel title="Alert Composition" subtitle={`${alerts.total} active in scope`} icon={AlertTriangle} onClick={() => setDrill('alerts')}>
-            <CategoryBars data={[
-              { label: 'Sensor faults', value: alerts.byCategory.fault || 0, color: RED },
-              { label: 'Out of range', value: alerts.byCategory.range || 0, color: RED },
-              { label: 'Set/actual drift', value: alerts.byCategory.deviation || 0, color: AMBER },
-              { label: 'Stale (running, no data)', value: alerts.byCategory.stale || 0, color: AMBER },
-              { label: 'Offline', value: alerts.byCategory.offline || 0, color: SLATE },
-            ]} />
           </Panel>
         </div>
 
@@ -328,7 +316,6 @@ export default function Dashboard() {
           onApply={(customFrom, customTo) => { f.set({ preset: 'custom', customFrom, customTo }); setPickRange(false); }}
         />
       )}
-      {drill && ov && <AnalyticsModal dimension={drill} ov={ov} onClose={() => setDrill(null)} />}
     </div>
   );
 }
@@ -435,18 +422,3 @@ function Panel({ title, subtitle, icon: Icon, children, onClick }: { title: stri
   );
 }
 
-function CategoryBars({ data }: { data: { label: string; value: number; color: string }[] }): JSX.Element {
-  const max = Math.max(...data.map((d) => d.value), 1);
-  const any = data.some((d) => d.value > 0);
-  if (!any) return <div className="text-sm text-running py-4 text-center flex items-center justify-center gap-1.5"><CheckCircle2 size={15} /> No active alerts.</div>;
-  return (
-    <div className="space-y-2.5">
-      {data.map((d) => (
-        <div key={d.label}>
-          <div className="flex justify-between text-xs mb-1"><span className="text-steel">{d.label}</span><span className="data font-medium" style={{ color: d.value ? d.color : STEEL }}>{d.value}</span></div>
-          <div className="h-1.5 bg-line rounded-full overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(d.value / max) * 100}%`, background: d.color }} /></div>
-        </div>
-      ))}
-    </div>
-  );
-}

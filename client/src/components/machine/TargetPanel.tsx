@@ -18,21 +18,31 @@ import { fmtNum } from '../../lib/format';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from '../../lib/targets';
 import type { MachineActivityRow, OperatorSession } from '../../types/api';
 
-export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
+export default function TargetPanel({ code, actRow, dayFrom, dayTo, label = 'Today' }: {
   code: string;
-  actRow?: MachineActivityRow | null;   // TODAY's activity row (07:00 → now)
-  dayFrom: string;                      // the production-day window the row covers
+  actRow?: MachineActivityRow | null;   // the SELECTED window's activity row
+  dayFrom: string;                      // the window that row covers
   dayTo: string;
+  label?: string;                       // what that window is called — "Yesterday · Shift A"
 }): JSX.Element | null {
   const current = useCurrentAssignment(code);
   const { breaks } = useAppConfig();   // planned pauses — targets exclude them
 
-  // Hour-by-hour actual vs target for the day — the operator's pacing view.
-  // Same report the Targets tab reads, scoped to this machine and today.
-  const { data: hourData } = useQuery({
-    queryKey: ['targets-report', code, dayFrom, dayTo, 'hour', 48, 1],
-    queryFn: () => productionApi.targets({ from: dayFrom, to: dayTo, machineId: code, groupBy: 'hour', limit: 48 }),
-    enabled: !!current,
+  // Bar-by-bar actual vs target — the operator's pacing view, the same report
+  // the Targets tab reads. HOURS for a day or a shift; DAYS once the window is
+  // longer, because 48 hourly bars cannot hold a month and would quietly show
+  // its first two days as if they were the whole thing.
+  const spanMs = new Date(dayTo).getTime() - new Date(dayFrom).getTime();
+  const byDay = spanMs > 36 * 3_600_000;
+  const groupBy = byDay ? 'day' : 'hour';
+  const limit = byDay ? 400 : 48;
+  // A window that has already CLOSED is history: it had a target even if the
+  // machine carries no assignment today, so the report is fetched either way.
+  const past = new Date(dayTo).getTime() <= Date.now();
+  const { data: hourData, error } = useQuery({
+    queryKey: ['targets-report', code, dayFrom, dayTo, groupBy, limit, 1],
+    queryFn: () => productionApi.targets({ from: dayFrom, to: dayTo, machineId: code, groupBy, limit }),
+    enabled: !!current || past,
     refetchInterval: 60_000,
     retry: false,
   });
@@ -47,18 +57,34 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
     return [...by.values()].sort((a, b) => a.t - b.t);
   })();
 
-  if (!current) return null;            // unassigned machines add no target noise
+  // A CLOSED window belongs to the assignment that was actually in force then —
+  // which is exactly what the report returns, cut at every reassignment. Pricing
+  // last Tuesday at today's DIA rate put a headline on this card that disagreed
+  // with the bars printed directly underneath it. Only a window still RUNNING is
+  // held to the rate on the machine now, and lib/targets explains why that one
+  // is deliberate. Taking the dia/stage off the report too means the card still
+  // opens for a machine that has since been unassigned.
+  const rows = hourData?.data || [];
+  const snap = current?.snapshot ?? (rows.length
+    ? { diaName: rows[0].dia, dims: rows[0].dims, stageName: rows[0].stage, processingSec: rows[0].processingSec }
+    : null);
+  if (!snap) return null;               // nothing was assigned then, and nothing is now
 
   const winFrom = new Date(dayFrom).getTime();
   const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
-  // The DAY at this DIA's rate — the quota is the day's, no matter what time
-  // the assignment row was created (otherwise a machine assigned at 17:50
-  // reads "56 of 2 · 2783%": a day of pieces against ten minutes of target).
+  // A RUNNING window at this DIA's rate — the quota is the window's, no matter
+  // what time the assignment row was created (otherwise a machine assigned at
+  // 17:50 reads "56 of 2 · 2783%": a day of pieces against ten minutes of
+  // target). A closed window instead sums the report's own assignment-exact
+  // rows, so this figure and the bars below it are the same arithmetic.
   const ms = windowNetMs(winFrom, winTo, breaks);
-  const sec = current.snapshot.processingSec;
-  const target = targetUnits(sec, ms);
+  const sec = snap.processingSec;
+  const historical = past && rows.length > 0;
+  const target = historical ? rows.reduce((n, r) => n + r.target, 0) : targetUnits(sec, ms);
   const produced = actRow?.production ?? null;
-  const pct = produced != null ? achievementPct(produced, sec, ms) : null;
+  const pct = produced == null ? null
+    : historical ? (target > 0 ? Math.round((produced / target) * 1000) / 10 : null)
+    : achievementPct(produced, sec, ms);
   const borrowed = actRow?.productionFrom || null;
   const remaining = produced != null ? Math.max(0, target - produced) : null;
 
@@ -71,9 +97,9 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
     <div className="panel p-5">
       <div className="flex items-center gap-2 mb-4">
         <Target size={15} className="text-accent" />
-        <h3 className="font-semibold text-sm text-primary flex-1">Today's Target</h3>
+        <h3 className="font-semibold text-sm text-primary flex-1">Target · {label}</h3>
         <span className="text-[11px] text-steel">
-          {current.snapshot.diaName}{current.snapshot.dims ? ` · ${current.snapshot.dims}` : ''} — {current.snapshot.stageName} · {fmtProcessing(sec)}/unit → {fmtTarget(hourlyRate(sec))}/hr
+          {snap.diaName}{snap.dims ? ` · ${snap.dims}` : ''} — {snap.stageName} · {fmtProcessing(sec)}/unit → {fmtTarget(hourlyRate(sec))}/hr
         </span>
         <OperatorBadge code={code} />
       </div>
@@ -97,7 +123,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
             <span className="data text-3xl font-bold text-primary">{produced != null ? fmtNum(produced) : '—'}</span>
             <span className="text-steel text-sm">of</span>
             <span className="data text-3xl font-bold text-accent">{fmtTarget(target)}</span>
-            <span className="text-steel text-sm">pcs today</span>
+            <span className="text-steel text-sm">pcs</span>
           </div>
           <div className="text-xs text-steel mt-1.5 space-x-3">
             {remaining != null && <span>{remaining <= 0 ? 'Target met' : `${fmtTarget(remaining)} to go`}</span>}
@@ -116,17 +142,24 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
 
       {/* Hour by hour — amber = that hour missed its target, teal = made it.
           The dotted line is the full-hour target. */}
+      {/* The report refuses a span over 92 days. Printing its own words beats
+          rendering nothing, which read as "this machine made nothing". */}
+      {!!error && (
+        <div className="mt-5 pt-4 border-t border-line text-[11px] text-steel">{(error as Error).message}</div>
+      )}
       {hours.length >= 2 && (() => {
         const max = Math.max(...hours.map((h) => Math.max(h.actual, h.target)), 1);
         return (
           <div className="mt-5 pt-4 border-t border-line">
-            <div className="text-[10px] uppercase tracking-wide text-steel mb-2">Hourly production</div>
+            <div className="text-[10px] uppercase tracking-wide text-steel mb-2">{byDay ? 'Daily production' : 'Hourly production'}</div>
             <div className="flex items-end gap-1.5 h-24 overflow-x-auto pb-1">
               {hours.map((h) => {
                 const made = h.actual >= h.target * 0.999;
                 return (
                   <div key={h.t} className="flex flex-col items-center gap-1 min-w-[34px] flex-1 h-full"
-                    title={`${new Date(h.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${h.actual} of ${fmtTarget(h.target)}`}>
+                    title={`${byDay
+                      ? new Date(h.t).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })
+                      : new Date(h.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} — ${h.actual} of ${fmtTarget(h.target)}`}>
                     <span className="data text-[10px] leading-none" style={{ color: made ? '#0D9488' : '#D97706' }}>{h.actual}</span>
                     <div className="w-full flex-1 relative">
                       <div className="absolute bottom-0 left-0 right-0 rounded-t" style={{
@@ -139,8 +172,10 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo }: {
                           style={{ bottom: `${Math.min((h.target / max) * 100, 100)}%` }} />
                       )}
                     </div>
-                    <span className="text-[9px] text-steel leading-none">
-                      {new Date(h.t).toLocaleTimeString([], { hour: 'numeric' }).replace(' ', '').toLowerCase()}
+                    <span className="text-[11px] font-semibold text-steel leading-none whitespace-nowrap">
+                      {byDay
+                        ? new Date(h.t).toLocaleDateString([], { day: 'numeric', month: 'short' })
+                        : new Date(h.t).toLocaleTimeString([], { hour: 'numeric' }).replace(' ', '').toLowerCase()}
                     </span>
                   </div>
                 );
