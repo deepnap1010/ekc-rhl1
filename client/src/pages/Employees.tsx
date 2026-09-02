@@ -22,6 +22,8 @@ function useDebounced<T>(value: T, ms = 300): T {
 
 export default function Employees() {
   const qc = useQueryClient();
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
   const can = useAuthStore((s) => s.can);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<User | null | undefined>(undefined); // undefined = closed · null = create · object = edit
@@ -96,7 +98,14 @@ export default function Employees() {
                     </td>
                     <td className="px-4 py-3 text-steel">{u.plant || '—'}</td>
                     <td className="px-4 py-3 text-steel">{u.reportsTo ? (userMap[u.reportsTo] || '—') : '—'}</td>
-                    <td className="px-4 py-3 data text-steel">{u.assignedMachines?.length || 0}</td>
+                    {/* The machine's NAME, not a count: "1" cannot tell you
+                        whether SPG02's operator is actually on SPG02. */}
+                    <td className="px-4 py-3 data text-steel">
+                      {!u.assignedMachines?.length ? '—'
+                        : u.assignedMachines.length === 1
+                          ? <span title={mTitle(u.assignedMachines[0])}>{mName(u.assignedMachines[0])}</span>
+                          : <span title={u.assignedMachines.map(mName).join(', ')}>{u.assignedMachines.length} machines</span>}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`pill ${u.active ? 'bg-running/10 text-running' : 'bg-line text-steel'}`}>{u.active ? 'Active' : 'Inactive'}</span>
                     </td>
