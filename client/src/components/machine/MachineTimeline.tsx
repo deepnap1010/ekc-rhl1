@@ -74,8 +74,8 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
       .then((r) => r.data)
       .catch(() => rows)
       .finally(() => setExporting(false));
-    const header = 'Time,Production Count,Status';
-    const lines = full.map((r) => [new Date(r.ts).toISOString(), r.production ?? '', r.status ?? ''].join(','));
+    const header = 'Time,Produced (window),Made,Counter,Status';
+    const lines = full.map((r) => [new Date(r.ts).toISOString(), r.total ?? '', r.made ?? '', r.production ?? '', r.status ?? ''].join(','));
     const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -130,7 +130,12 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
             <thead className="bg-base">
               <tr className="text-steel">
                 <th className="text-left label px-4 py-3">Time</th>
-                <th className="text-right label px-4 py-3">Production Count</th>
+                {/* The window's own arithmetic leads — 0 up to the card's total.
+                    The machine's raw counter stays visible but steps aside: it
+                    is a lifetime number on its own reset schedule, and 1,102
+                    answers no question that "17 so far today" is asking. */}
+                <th className="text-right label px-4 py-3">Produced</th>
+                <th className="text-right label px-4 py-3">Counter</th>
                 <th className="text-left label px-4 py-3 pl-10">Status</th>
                 <th className="text-right label px-4 py-3">Action</th>
               </tr>
@@ -140,6 +145,10 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
                 <tr key={r.ts} className="border-t border-line hover:bg-base/60">
                   <td className="px-4 py-3 data text-xs">{fmtTime(r.ts)}</td>
                   <td className="px-4 py-3 data text-sm text-right font-semibold text-primary">
+                    {r.total != null ? fmtNum(r.total) : <span className="text-steel/50">—</span>}
+                    {r.made > 0 && <span className="text-accent text-xs font-medium ml-1.5">+{r.made}</span>}
+                  </td>
+                  <td className="px-4 py-3 data text-xs text-right text-steel/70">
                     {r.production != null ? fmtNum(r.production) : <span className="text-steel/50">—</span>}
                   </td>
                   <td className="px-4 py-3 pl-10">

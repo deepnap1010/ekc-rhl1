@@ -447,7 +447,9 @@ export interface MachineEventRow {
 // Minute-level change log row (machine History tab) — only real changes survive.
 export interface TimelineRow {
   ts: string;
-  production: number | null;
+  production: number | null;  // the machine's raw counter at that minute
+  made: number;               // pieces confirmed IN that minute
+  total: number;              // pieces confirmed in the window so far — ends on the card's number
   status: string | null;
 }
 

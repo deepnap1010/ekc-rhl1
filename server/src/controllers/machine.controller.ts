@@ -257,10 +257,8 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     let prodKey: string | null = maxKey;
     for (let i = agg.length - 1; i >= 0 && !prodKey; i -= 1) prodKey = pickProductionKey(flattenData(agg[i].data || {}));
 
-    // Keep only real changes (production or status differs from the previous minute).
-    const rows: { ts: Date; production: number | null; status: string | null }[] = [];
-    let prevProd: number | null = null;
-    let prevStatus: string | null = null;
+    // First pass: each minute's counter value and status, chronologically.
+    const minutes: { ts: Date; t: number; production: number | null; status: string | null }[] = [];
     for (const r of agg) {
       const flat = flattenData(r.data || {});
       const production = r.prodMax != null && isNumericValue(r.prodMax)
@@ -276,10 +274,36 @@ export const machineTimeline = asyncHandler(async (req, res) => {
       const rawStatus = [flat.status, flat.machine_status, r.docStatus]
         .find((v) => typeof v === 'string' && (v as string).trim());
       const status = rawStatus ? normalizeStatus(rawStatus).toLowerCase() : statusAt(new Date(r.ts).getTime());
-      if (rows.length && production === prevProd && status === prevStatus) continue;
-      rows.push({ ts: r.ts, production, status });
-      prevProd = production;
-      prevStatus = status;
+      minutes.push({ ts: r.ts, t: new Date(r.ts).getTime(), production, status });
+    }
+
+    // What the WINDOW made, minute by minute — the same confirmation rule as
+    // the card, the targets and every other surface (a rise the next reading
+    // agrees with, and no faster than the machine can physically go), over the
+    // same per-minute maxima the activity engine steps. The raw counter is a
+    // machine-lifetime number that resets on its own schedule; the reader
+    // looking at "Today" is owed today's arithmetic, ending on exactly the
+    // total the Overview card shows.
+    const madeAt = new Map<number, number>();
+    for (const e of stepEvents(minutes.filter((x) => x.production != null).map((x) => ({ t: x.t, v: x.production as number })), PROD_STEP_PER_MIN)) {
+      madeAt.set(e.t, (madeAt.get(e.t) || 0) + e.made);
+    }
+
+    // Second pass: running total, keeping only real changes (production or
+    // status differs from the previous minute). The total accumulates across
+    // skipped minutes too — a hidden row is an unchanged row, and an unchanged
+    // counter makes nothing.
+    const rows: { ts: Date; production: number | null; made: number; total: number; status: string | null }[] = [];
+    let prevProd: number | null = null;
+    let prevStatus: string | null = null;
+    let running = 0;
+    for (const x of minutes) {
+      const made = madeAt.get(x.t) || 0;
+      running += made;
+      if (rows.length && x.production === prevProd && x.status === prevStatus) continue;
+      rows.push({ ts: x.ts, production: x.production, made, total: running, status: x.status });
+      prevProd = x.production;
+      prevStatus = x.status;
     }
     rows.reverse(); // newest first
 
