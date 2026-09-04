@@ -99,7 +99,9 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
       </div>
 
       <p className="text-[11px] text-steel px-1">
-        One reading per minute · unchanged minutes are hidden, so every row is a real change.
+        One reading per minute · a row appears when the count <em>or the status</em> changes, so a
+        row with no <span className="text-accent font-medium">+n</span> is a status change, not a
+        missing piece. Unchanged minutes are hidden.
         {meta?.capped ? ' Showing the most recent 20,000 changes in this window.' : ''}
       </p>
 
@@ -114,8 +116,9 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
       {replayMinutes > 0 && (
         <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           <span className="font-semibold">{replayMinutes} minute{replayMinutes === 1 ? '' : 's'}</span> in this range hold far more
-          readings than the machine can send — its collector reconnected and replayed a buffer stamped with the current time.
-          Those pieces were made earlier, during the gap above; the counter shown is each minute's highest value, so it stays correct.
+          readings than this machine normally sends — usually a collector that reconnected and flushed a buffered batch stamped
+          with the current time, so those pieces were really made earlier. Produced still counts each confirmed step once, and
+          Counter shows the minute's highest value, so both stay correct — only the timing of those rows is approximate.
         </p>
       )}
 
@@ -145,7 +148,10 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
                 <tr key={r.ts} className="border-t border-line hover:bg-base/60">
                   <td className="px-4 py-3 data text-xs">{fmtTime(r.ts)}</td>
                   <td className="px-4 py-3 data text-sm text-right font-semibold text-primary">
-                    {r.total != null ? fmtNum(r.total) : <span className="text-steel/50">—</span>}
+                    {/* A machine that reports no counter has nothing to total. It
+                        used to print a confident "0" on every row while the note
+                        above said the log tracks status only. */}
+                    {noCounter ? <span className="text-steel/50">—</span> : fmtNum(r.total)}
                     {r.made > 0 && <span className="text-accent text-xs font-medium ml-1.5">+{r.made}</span>}
                   </td>
                   <td className="px-4 py-3 data text-xs text-right text-steel/70">

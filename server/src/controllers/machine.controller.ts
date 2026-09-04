@@ -189,7 +189,11 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   const toD = parseD(q.to) || new Date(nowMin);
   const fromD = parseD(q.from) || new Date(toD.getTime() - 7 * 24 * 3600 * 1000);
   if (fromD >= toD) return fail(res, 400, 'from must be before to');
-  const endD = new Date(Math.min(toD.getTime(), Date.now()));
+  // Clipped to the ROUNDED minute, not to Date.now(): endD goes into the cache
+  // key below, and a millisecond-precision end made that key unique per request,
+  // so a range ending later than now re-ran the whole aggregation on every poll
+  // instead of ever hitting the cache.
+  const endD = new Date(Math.min(toD.getTime(), nowMin));
 
   // The counter key comes from the machine's CURRENT snapshot, so the pipeline
   // can ask the database for the minute's HIGHEST counter value. "Latest reading
@@ -212,13 +216,19 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   const cacheKey = `timeline:${refs.join('|')}:${fromD.toISOString()}:${endD.toISOString()}`;
 
   const built = await cached(cacheKey, 30_000, async () => {
-    // Latest reading per minute — the sort rides {machineId, timestamp:-1}.
+    // Latest reading per minute. The sort is on TIMESTAMP ALONE: it used to lead
+    // with machineId, but the group is by minute across BOTH of the machine's
+    // refs (code and machineId), so every document of the alphabetically-first
+    // alias preceded every document of the other whatever its time — $first took
+    // the status and the parameters from that alias while readings and prodMax
+    // spanned both. One row, two streams. The $in still bounds the scan and the
+    // {machineId, timestamp} index still serves it as a merge.
     // Downtime spans give each row a status even when the payload carries none
     // (many machines don't send a status key) — same source as the status pills.
     const [agg, spans] = await Promise.all([
       Telemetry.aggregate([
         { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
-        { $sort: { machineId: 1, timestamp: -1 } },
+        { $sort: { timestamp: -1 } },
         { $group: {
           _id: { $dateTrunc: { date: '$timestamp', unit: 'minute' } },
           ts: { $first: '$timestamp' },
@@ -239,13 +249,18 @@ export const machineTimeline = asyncHandler(async (req, res) => {
         $or: [{ endedAt: null }, { endedAt: { $gte: fromD } }],
       }).select({ type: 1, startedAt: 1, endedAt: 1 }).sort({ startedAt: 1 }).maxTimeMS(20000).lean(),
     ]);
-    const statusAt = (t: number): string => {
+    // A span covering this minute, or null. It used to answer 'running' for any
+    // minute no span covered — but spans only exist from the day this app started
+    // sweeping, so on older ranges that was a confident invention on every row.
+    // It matters more than it looks: a machine whose payload carries no status
+    // key at all (CUTTINGMACHINE08 sends none) takes THIS path for every row.
+    const statusAt = (t: number): string | null => {
       for (const sp of spans) {
         const st = new Date(sp.startedAt).getTime();
         const en = sp.endedAt ? new Date(sp.endedAt).getTime() : Number.POSITIVE_INFINITY;
         if (t >= st && t <= en) return sp.type;
       }
-      return 'running'; // it reported this minute and no downtime span covers it
+      return null;
     };
 
     agg.sort((a, b) => new Date(a._id).getTime() - new Date(b._id).getTime());
@@ -259,6 +274,7 @@ export const machineTimeline = asyncHandler(async (req, res) => {
 
     // First pass: each minute's counter value and status, chronologically.
     const minutes: { ts: Date; t: number; production: number | null; status: string | null }[] = [];
+    let held: string | null = null;   // the last status something actually reported
     for (const r of agg) {
       const flat = flattenData(r.data || {});
       const production = r.prodMax != null && isNumericValue(r.prodMax)
@@ -273,7 +289,12 @@ export const machineTimeline = asyncHandler(async (req, res) => {
       // span covers, the exact hours this is meant to describe.
       const rawStatus = [flat.status, flat.machine_status, r.docStatus]
         .find((v) => typeof v === 'string' && (v as string).trim());
-      const status = rawStatus ? normalizeStatus(rawStatus).toLowerCase() : statusAt(new Date(r.ts).getTime());
+      // Payload first, then a downtime span, then whatever was last reported. A
+      // state persists until something says otherwise — truer than defaulting a
+      // silent minute to 'running'.
+      if (rawStatus) held = normalizeStatus(rawStatus).toLowerCase();
+      else { const sp = statusAt(new Date(r.ts).getTime()); if (sp) held = sp; }
+      const status = held;
       minutes.push({ ts: r.ts, t: new Date(r.ts).getTime(), production, status });
     }
 
@@ -307,10 +328,16 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     }
     rows.reverse(); // newest first
 
-    // A minute holding more readings than a machine can physically produce is a
+    // A minute holding far more readings than a machine can physically send is a
     // replay burst, not a busy minute — surfaced so the UI can say so instead of
     // leaving the reader to wonder why the counter moved oddly.
-    const REPLAY_PER_MIN = 60;
+    //
+    // 60 was exactly what an ordinary ~1 Hz collector hits, so healthy machines
+    // were flagged on their 61st reading of the minute: CUTTINGMACHINE08 sends a
+    // steady 68/min and EVERY one of its minutes was called a replay, which is
+    // where its "3,925 minutes" banner came from. The documented real replay ran
+    // at ~510/min, so 120 separates them with room to spare.
+    const REPLAY_PER_MIN = 120;
     return {
       rows,
       minutes: agg.length,
