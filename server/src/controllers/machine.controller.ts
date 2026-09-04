@@ -267,7 +267,14 @@ export const machineTimeline = asyncHandler(async (req, res) => {
         ? Number(r.prodMax)
         : (prodKey && isNumericValue(flat[prodKey]) ? Number(flat[prodKey]) : null);
       // Status priority: payload status → telemetry doc status → downtime spans.
-      const rawStatus = [flat.status, r.docStatus].find((v) => typeof v === 'string' && (v as string).trim());
+      // EXACT keys only, never a suffix match: this plant's payload also carries
+      // status_reason ("manual") and status_mode ("MANUAL"), and a loose match
+      // would have read the reason as the state. Cutting-04 names it
+      // machine_status, so `flat.status` alone found nothing and every row fell
+      // through to the span lookup — which reports "running" for any hour no
+      // span covers, the exact hours this is meant to describe.
+      const rawStatus = [flat.status, flat.machine_status, r.docStatus]
+        .find((v) => typeof v === 'string' && (v as string).trim());
       const status = rawStatus ? normalizeStatus(rawStatus).toLowerCase() : statusAt(new Date(r.ts).getTime());
       if (rows.length && production === prevProd && status === prevStatus) continue;
       rows.push({ ts: r.ts, production, status });
