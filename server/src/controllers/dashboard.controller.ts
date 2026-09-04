@@ -11,6 +11,7 @@ import { getFleetSnapshot } from '../services/fleet.service.js';
 import { machineScope } from '../utils/scope.js';
 import { cached } from '../utils/cache.js';
 import { computeActivity } from '../services/activity.service.js';
+import { normalizeStatus } from '../utils/status.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 
@@ -137,7 +138,10 @@ export const overview = asyncHandler(async (req, res) => {
     .sort((a, b) => b.count - a.count);
 
   const fleet: Record<string, number> = { total: 0, running: 0, idle: 0, stopped: 0, offline: 0 };
-  (statusAgg as { _id: string | null; count: number }[]).forEach((r) => { const k = r._id || 'offline'; fleet[k] = (fleet[k] || 0) + r.count; fleet.total += r.count; });
+  // Normalised on the way out, not in the pipeline: the $cond above already
+  // decides Signal-Lost, and "Stop" vs "Stopped" would otherwise be two buckets
+  // of which neither is the one the tile reads.
+  (statusAgg as { _id: string | null; count: number }[]).forEach((r) => { const k = normalizeStatus(r._id) || 'offline'; fleet[k] = (fleet[k] || 0) + r.count; fleet.total += r.count; });
 
   const health: Record<string, number> = { healthy: 0, warning: 0, critical: 0, offline: 0 };
   const byCategory: Record<string, number> = { fault: 0, range: 0, deviation: 0, stale: 0, offline: 0, other: 0 };

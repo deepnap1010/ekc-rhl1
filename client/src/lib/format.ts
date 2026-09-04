@@ -17,10 +17,32 @@ export const STATUS: Record<string, StatusStyle> = {
   network: { label: 'Signal Lost', color: '#7C3AED', bg: 'rgba(124,58,237,0.10)' },
 };
 
+// Collectors do not agree on spelling: "Stop" and "Stopped" are the same state
+// and must not render as two different pills — one red, one grey "unknown".
+// The server canonicalises what it stores (utils/status), and this repeats the
+// mapping so a row cached from before that, or read straight from a mirror
+// collection, still reads correctly.
+// A Map, not an object literal: the key is the factory's own word, and on an
+// object `STATUS_ALIASES['constructor']` walks the prototype chain to a function.
+const STATUS_ALIASES = new Map<string, string>([
+  ['run', 'running'], ['running', 'running'],
+  ['stop', 'stopped'], ['stopped', 'stopped'], ['halt', 'stopped'], ['halted', 'stopped'],
+  ['idle', 'idle'], ['standby', 'idle'],
+  ['offline', 'offline'], ['disconnected', 'offline'],
+]);
+
+/** The canonical status, or the trimmed original when it is not one we know. */
+export const normalizeStatus = (status?: string | null): string => {
+  const s = String(status ?? '').trim();
+  return s ? (STATUS_ALIASES.get(s.toLowerCase().replace(/[\s_-]+/g, '')) ?? s) : s;
+};
+
 // Any status the factory reports that we don't have a preset for still renders cleanly.
-export const statusStyle = (status?: string | null): StatusStyle =>
-  (status ? STATUS[status] : undefined) ||
-  { label: prettyKey(status || 'unknown'), color: '#64748B', bg: 'rgba(100,116,139,0.10)' };
+export const statusStyle = (status?: string | null): StatusStyle => {
+  const key = normalizeStatus(status);
+  return (key ? STATUS[key] : undefined) ||
+    { label: prettyKey(status || 'unknown'), color: '#64748B', bg: 'rgba(100,116,139,0.10)' };
+};
 
 export const fmtNum = (n: MetricValue): string =>
   new Intl.NumberFormat('en-IN').format(Math.round(Number(n) || 0));

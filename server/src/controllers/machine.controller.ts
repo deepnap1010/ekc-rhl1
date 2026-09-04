@@ -22,6 +22,7 @@ import { readingSignature, pickColumns } from '../utils/history.js';
 import { MachineLabel } from '../models/MachineLabel.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { refMatch } from '../utils/machineRef.js';
+import { normalizeStatus } from '../utils/status.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -134,7 +135,7 @@ export const machineSummary = asyncHandler(async (req, res) => {
   ]);
   const summary: Record<string, number> = { total: 0, running: 0, idle: 0, stopped: 0, offline: 0 };
   agg.forEach((r) => {
-    const key = r._id || 'offline';
+    const key = normalizeStatus(r._id) || 'offline';
     summary[key] = (summary[key] || 0) + r.count;
     summary.total += r.count;
   });
@@ -267,7 +268,7 @@ export const machineTimeline = asyncHandler(async (req, res) => {
         : (prodKey && isNumericValue(flat[prodKey]) ? Number(flat[prodKey]) : null);
       // Status priority: payload status → telemetry doc status → downtime spans.
       const rawStatus = [flat.status, r.docStatus].find((v) => typeof v === 'string' && (v as string).trim());
-      const status = rawStatus ? String(rawStatus).trim().toLowerCase() : statusAt(new Date(r.ts).getTime());
+      const status = rawStatus ? normalizeStatus(rawStatus).toLowerCase() : statusAt(new Date(r.ts).getTime());
       if (rows.length && production === prevProd && status === prevStatus) continue;
       rows.push({ ts: r.ts, production, status });
       prevProd = production;

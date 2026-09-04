@@ -22,6 +22,7 @@ import DiaAssignmentSection from './DiaAssignmentSection';
 import { useMachineName, useMachineTitle, hasCustomName } from '../../lib/machineName';
 import { useAuthStore } from '../../store/auth';
 import { machineApi } from '../../api/endpoints';
+import { normalizeStatus } from '../../lib/format';
 
 const numOrU = (v: string): number | undefined => (v === '' ? undefined : Number(v));
 
@@ -62,7 +63,7 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
   // Live preview — the real, already-mapped named metrics currently on the machine.
   const params = machine.currentParameters || machine.liveParameters || machine.latestData || {};
   const preview = cardParams(params, 4);
-  const online = (machine.status || '').toLowerCase() === 'running';
+  const online = normalizeStatus(machine.status) === 'running';
 
   const set = (patch: Partial<MachineConfig>) => { setCfg((c) => ({ ...c, ...patch })); setSaved(false); };
   const save = () => { saveConfig(id, cfg); setSaved(true); toast.success('Configuration saved'); };

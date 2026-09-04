@@ -8,6 +8,7 @@ import type { AnyBulkWriteOperation } from 'mongoose';
 import { Machine, type IMachine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
+import { normalizeStatus } from '../utils/status.js';
 import { env } from '../config/env.js';
 
 interface Reading {
@@ -52,7 +53,10 @@ export const ingest = asyncHandler(async (req, res) => {
     const set: Partial<IMachine> = { machineId: id, code: id, currentParameters: data, lastReadingAt: ts, lastSeenAt: now };
     if (name) set.name = name;
     if (type) set.type = type;
-    if (r.status) set.status = r.status;
+    // Canonicalised here because this is the ONLY place a machine's status is
+    // written, so every reader downstream — downtime engine, fleet counts,
+    // health, the client's pill — gets one spelling instead of each guessing.
+    if (r.status) set.status = normalizeStatus(r.status);
     machineOps.push({ updateOne: { filter: { $or: [{ code: id }, { machineId: id }] }, update: { $set: set }, upsert: true } });
   }
 

@@ -7,6 +7,7 @@ import { Machine } from '../models/Machine.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { normalizeData, rankNamed } from '../utils/normalize.js';
 import { machineHealth, type HealthResult } from '../utils/health.js';
+import { normalizeStatus } from '../utils/status.js';
 
 interface FleetDoc {
   _id: unknown;
@@ -29,7 +30,7 @@ interface FleetDoc {
 // the machine may be fine, but its signal is gone.
 const NETWORK_LOST_MS = 10 * 60_000;
 function derivedStatus(d: FleetDoc): string {
-  const raw = (d.status || 'offline').toLowerCase();
+  const raw = normalizeStatus(d.status || 'offline').toLowerCase();
   if (raw === 'offline') return raw;
   const seen = d.lastReadingAt || d.lastSeenAt || d._latestRow?.timestamp || null;
   if (!seen) return raw;

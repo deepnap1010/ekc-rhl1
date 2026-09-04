@@ -12,6 +12,7 @@ import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { SweepLock } from '../models/SweepLock.js';
 import { errMessage } from '../utils/http.js';
 import { ensureEventSeed, recordState, recordProduction } from './event.service.js';
+import { normalizeStatus } from '../utils/status.js';
 
 const SWEEP_MS = 30_000; // re-evaluate every 30s
 
@@ -53,11 +54,26 @@ interface MachineLike {
  *  offline|disconnected are downtime; running (or anything else reporting) is up.
  *  Freshness is intentionally NOT used — a machine reporting "running" stays up
  *  even if its last payload is old, matching the status pills shown in the UI. */
+// An unrecognised status still falls through to `up`, which is the safe read
+// for a machine that IS reporting — but it is also how this went wrong quietly
+// for hours. Saying it out loud once per spelling turns the next collector that
+// invents a word into a log line instead of a machine that is stopped on the
+// floor and running on the board. Once per value, not per sweep: this runs
+// every 30 seconds over every machine.
+const unknownSeen = new Set<string>();
+
 function machineState(m: MachineLike): State {
-  const s = String(m.status ?? '').toLowerCase();
+  // Normalised, not just lower-cased: "Stop" is not "stopped", and the miss
+  // used to land on the `up` default below — a stopped machine with no
+  // downtime span, its whole window credited as runtime.
+  const s = normalizeStatus(m.status).toLowerCase();
   if (s === 'idle') return 'idle';
   if (s === 'stopped') return 'stopped';
   if (s === 'offline' || s === 'disconnected') return 'offline';
+  if (s && s !== 'running' && !unknownSeen.has(s)) {
+    unknownSeen.add(s);
+    console.warn(`[downtime] unrecognised machine status ${JSON.stringify(m.status)} — treated as running. Add it to utils/status if it means idle/stopped/offline.`);
+  }
   return 'up';
 }
 

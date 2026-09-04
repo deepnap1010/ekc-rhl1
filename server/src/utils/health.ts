@@ -7,6 +7,7 @@
 // Then scores the machine 0–100 and assigns a status.
 import { normalizeData, isFaultValue, isNumericValue } from './normalize.js';
 import type { MachineProfile, RangeRule } from '../config/machineProfiles.js';
+import { normalizeStatus } from './status.js';
 
 const prettyKey = (k: string): string =>
   (k || '').replace(/_/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -119,7 +120,7 @@ export function machineHealth(
   const fresh = freshness(machine.lastSeenAt, offlineMs);
 
   if (fresh === 'offline') {
-    if (machine.status === 'running') {
+    if (normalizeStatus(machine.status) === 'running') {
       alerts.unshift(mk('__stale', 'warning', null, 'Marked running but no recent telemetry (stale)', 'stale'));
     } else {
       alerts.unshift(mk('__offline', 'info', null, 'Machine offline — not reporting', 'offline'));

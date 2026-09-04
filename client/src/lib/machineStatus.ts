@@ -7,6 +7,7 @@
 // status + "2h ago". A feed-reported offline stays Offline. Data freshness
 // (the last-seen time / "reporting now" KPI) stays separate via isStale().
 import type { Machine } from '../types/api';
+import { normalizeStatus } from './format';
 
 /** Live window for the data-freshness ("reporting now") signal — NOT the status pill. */
 export const STALE_MS = 120_000;
@@ -23,7 +24,12 @@ export function isStale(lastReadingAt?: string | null, now = Date.now()): boolea
 /** Displayed status: the reported field while data flows — silence 10+ min
  *  becomes 'network' (Signal Lost), whatever the last status claimed. */
 export function effectiveStatus(m: Pick<Machine, 'status' | 'lastReadingAt'>, now = Date.now()): string {
-  const s = (m.status || 'offline').toLowerCase();
+  // Normalised, not merely lower-cased. Collectors disagree on spelling — PC04
+  // posts "Stop" — and this one value decides the pill, the KPI tiles, the
+  // status filter and the sort order. Lower-casing alone left them disagreeing
+  // with each other: a card whose pill read "Stopped" that the Stopped filter
+  // hid and the Stopped tile counted as offline.
+  const s = normalizeStatus(m.status || 'offline').toLowerCase();
   if (s !== 'offline' && m.lastReadingAt) {
     const t = new Date(m.lastReadingAt).getTime();
     if (!Number.isNaN(t) && now - t > NETWORK_LOST_MS) return 'network';
