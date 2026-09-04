@@ -4,7 +4,7 @@
 // nothing is fabricated and the database is never written to. The layout adapts to
 // what the machine actually streams: machines with zone temperatures get the
 // Temperature Overview; everything else gets a Primary Readings / Digital I/O panel.
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -24,8 +24,8 @@ import { flattenParams } from '../../lib/params';
 import { computeHeadline } from '../../lib/headline';
 import { useMachineTelemetry } from '../../hooks/useLive';
 import RangeFilter, { type RangeValue } from '../RangeFilter';
-import { resolveRange, shiftApplies, presetLabel } from '../../store/filters';
-import { shiftWindowOn } from '../../lib/settings';
+import { resolveRange, shiftApplies, presetLabel, clampToNow } from '../../store/filters';
+import { currentShift, shiftWindowOn } from '../../lib/settings';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { isFurnaceRef } from '../../lib/temperature';
 import type { Machine, MachineIO, MachineRegister, MetricStat, DowntimeEvent, MachineActivityRow } from '../../types/api';
@@ -74,7 +74,15 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
   // the hourly bars, the runtime split and the piece count all read it.
   const { shifts } = useAppConfig();
   const [range, setRange] = useState<RangeValue>({ preset: 'today', customFrom: '', customTo: '' });
+  // Opens on the shift ON THE FLOOR, the same default the machine cards use, so
+  // a card and the page it opens quote the same window. It keeps following the
+  // clock across a handover until someone picks a shift by hand.
   const [shiftName, setShiftName] = useState('');
+  const [shiftPicked, setShiftPicked] = useState(false);
+  const runningShift = currentShift(shifts);
+  useEffect(() => {
+    if (!shiftPicked) setShiftName(runningShift?.name || '');
+  }, [runningShift?.name, shiftPicked]);
   // A shift only narrows a SINGLE day: Today/Yesterday (as on the dashboard),
   // or a custom range covering one WHOLE day. A custom range carrying its own
   // times is already the window that was asked for — substituting the shift's
@@ -93,15 +101,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
   );
   // resolveRange takes a custom range literally, so narrow it to the shift here.
   if (customDay && shift) win = shiftWindowOn(shift, new Date(`${customDay}T00:00:00`));
-  // A shift window runs to the shift's SCHEDULED end, so mid-shift it reaches
-  // into the future. Readings cannot, so the page would print a range it had no
-  // data for and a reading count that covered only part of it. Rounded to the
-  // minute: an unrounded now() would change the query key on every render and
-  // refetch in a loop.
-  if (win && win.to.getTime() > Date.now()) {
-    const now = Math.max(Math.floor(Date.now() / 60_000) * 60_000, win.from.getTime() + 60_000);
-    win = { from: win.from, to: new Date(now) };
-  }
+  if (win) win = clampToNow(win);
   const winFromISO = win?.from.toISOString();
   const winToISO = win?.to.toISOString();
   // What the window is CALLED. Every figure that has to name its window prints
@@ -217,7 +217,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
       <div className="panel px-4 py-3 flex items-center gap-2 flex-wrap">
         <Calendar size={15} className="text-accent shrink-0" />
         <span className="text-[11px] uppercase tracking-wide text-steel">Window</span>
-        <select value={shiftOk ? shiftName : ''} onChange={(e) => setShiftName(e.target.value)}
+        <select value={shiftOk ? shiftName : ''} onChange={(e) => { setShiftName(e.target.value); setShiftPicked(true); }}
           disabled={!shiftOk}
           title={shiftOk ? 'Narrow the day to one shift' : 'Shifts apply to a single day — Today, Yesterday, or a custom range within one day'}
           className="bg-base border border-line rounded-lg px-2.5 py-1.5 text-sm text-primary outline-none cursor-pointer focus:border-accent disabled:opacity-45 disabled:cursor-not-allowed">

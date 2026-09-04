@@ -21,7 +21,8 @@ import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
-import { todayWindow } from '../store/filters';
+import { resolveRange, todayWindow, clampToNow } from '../store/filters';
+import { currentShift } from '../lib/settings';
 import { useMachineName, useMachineTitle, hasCustomName, useAdoptLocalNames } from '../lib/machineName';
 import ParametersModal from '../components/machine/MachineParameters';
 import type { Machine, MachineTick, MachineActivityRow, MachineAssignment } from '../types/api';
@@ -103,16 +104,32 @@ export default function Machines() {
     enabled: rangeActive,
   });
 
-  // TODAY's activity per machine — one window drives the whole card:
-  // uptime/idle/stopped/downtime tiles AND the "today +N pcs" production line.
-  // The window is the PRODUCTION day (todayWindow: 07:00 -> 07:00, the boundary
-  // the PLC itself stamps into SHIFT_DATE), the same one the machine Overview
-  // and the Full-day filter use, so a card and the page it opens can never
-  // disagree. `to` is minute-rounded for stable query keys.
+  // ── The window every card answers for ────────────────────────────────────
+  // It defaults to the shift ON THE FLOOR, not the calendar day. A board read at
+  // 08:00 against a full day averages the shift in progress with two that have
+  // not run yet, and every machine looks like it is failing. The default follows
+  // the clock across a handover; picking a shift by hand pins it, and "Full day"
+  // is the old behaviour, still one click away.
+  //
+  // Whatever it resolves to, ONE window drives the whole card — the
+  // uptime/idle/stopped/downtime tiles AND the produced-vs-target line — and it
+  // is the same window the machine's own page uses, so a card and the page it
+  // opens can never disagree.
   const { shifts: cfgShifts, breaks: cfgBreaks } = useAppConfig();
-  const day = todayWindow(cfgShifts);
+  const [shiftName, setShiftName] = useState('');
+  const [shiftPicked, setShiftPicked] = useState(false);
+  const runningShift = currentShift(cfgShifts);
+  useEffect(() => {
+    if (!shiftPicked) setShiftName(runningShift?.name || '');
+  }, [runningShift?.name, shiftPicked]);
+
+  const day = clampToNow(
+    resolveRange({ preset: 'today', shiftName, customFrom: '', customTo: '' }, cfgShifts)
+    ?? todayWindow(cfgShifts),
+  );
   const dayFromISO = day.from.toISOString();
   const dayToISO = day.to.toISOString();
+  const winLabel = shiftName || 'Today';
   const { data: dayAct } = useQuery({
     queryKey: ['machine-activity-today', dayFromISO, dayToISO],
     queryFn: () => machineApi.activity({ from: dayFromISO, to: dayToISO }),
@@ -205,7 +222,9 @@ export default function Machines() {
     <div>
       <PageHeader
         title="Machines"
-        subtitle={rangeActive ? `${counts.total} machines · ${fmtTime(from)} → ${fmtTime(to)}` : `${counts.total} registered`}
+        subtitle={rangeActive
+          ? `${counts.total} machines · ${fmtTime(from)} → ${fmtTime(to)}`
+          : `${counts.total} registered · ${winLabel}${shiftName && !shiftPicked ? ' (running now)' : ''}`}
         live={Object.keys(live).length}
       />
 
@@ -257,6 +276,21 @@ export default function Machines() {
           >
             {SORT_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          {/* Which window the cards answer for. Defaults to the running shift and
+              keeps following the clock until someone picks one by hand. */}
+          <select
+            value={shiftName}
+            onChange={(e) => { setShiftName(e.target.value); setShiftPicked(true); }}
+            className={`rounded-xl border px-3 py-2.5 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 ${
+              shiftName ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'
+            }`}
+            title="The window every card counts over"
+          >
+            <option value="">Full day</option>
+            {cfgShifts.map((sh) => (
+              <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>
             ))}
           </select>
           {/* Date/time range — switches the page to a historical "who was running when" view */}
@@ -409,7 +443,7 @@ export default function Machines() {
                 <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
                   activity={actBy.get(ref)}
                   assignment={asgBy.get(String(ref).toUpperCase())}
-                  dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks}
+                  dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks} winLabel={winLabel}
                   onParams={() => setParamsFor(m)} />
               );
             })}
@@ -440,13 +474,14 @@ interface MachineCardProps {
   liveTick?: MachineTick;
   activity?: MachineActivityRow;        // rolling 24h uptime/downtime/idle
   assignment?: MachineAssignment;       // current DIA + frozen processing time
-  dayFrom?: string;                     // the production-day window `activity` covers
+  dayFrom?: string;                     // the window `activity` covers — a shift, or the production day
   dayTo?: string;
+  winLabel?: string;                    // what to call it: "Shift A", "Today" 
   breaks?: { name: string; start: string; end: string }[];   // planned pauses — off the target
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, breaks, onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -537,16 +572,16 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
     sub: 'unmapped raw signals',
   };
 
-  // What a supervisor walks up to the board for is TODAY, not the lifetime
-  // counter: "made 19 today" is the shift's answer, "the counter reads 25" is
+  // What a supervisor walks up to the board for is THIS SHIFT, not the lifetime
+  // counter: "made 19 this shift" is the answer, "the counter reads 25" is
   // trivia — and on a machine whose counter resets each shift, the big number
-  // was the reset value anyway. So today's pieces are the headline and the raw
-  // counter drops to the sub-line. Furnaces keep their live temperature: heat
-  // now is the thing you act on, and their day-average already sits below it.
+  // was the reset value anyway. So the window's pieces are the headline and the
+  // raw counter drops to the sub-line. Furnaces keep their live temperature:
+  // heat now is the thing you act on, and their average already sits below it.
   const madeToday = furnace ? null : activity?.production ?? null;
   const counterNow = furnace ? null : productionValue(params);
   const dayHero: Headline | null = madeToday == null ? null : {
-    label: 'Production · Today',
+    label: `Production · ${winLabel}`,
     value: fmtNum(madeToday),
     unit: 'pcs',
     tone: madeToday > 0 ? 'good' : 'neutral',

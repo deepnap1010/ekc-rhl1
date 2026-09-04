@@ -150,6 +150,20 @@ export function todayWindow(shifts: ShiftTiming[]): { from: Date; to: Date } {
   return { from, to: new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000)) };
 }
 
+/** Clip a window's end to NOW, rounded to the minute.
+ *
+ *  A shift window runs to the shift's SCHEDULED end, so mid-shift it reaches
+ *  into the future — and then a card prints a range it has no readings for and
+ *  a reading count that covers only part of it. Rounding matters as much as the
+ *  clipping: an unrounded now() changes every react-query key on every render
+ *  and refetches in a loop. todayWindow already does this for itself; anything
+ *  built from shiftWindowOn has to ask. */
+export function clampToNow(r: { from: Date; to: Date }): { from: Date; to: Date } {
+  if (r.to.getTime() <= Date.now()) return r;
+  const now = Math.max(nowRounded().getTime(), r.from.getTime() + 60_000);
+  return { from: r.from, to: new Date(now) };
+}
+
 /** Resolve the current filter selection to a concrete [from, to], or null while
  *  a custom range is incomplete/invalid. */
 export function resolveRange(
