@@ -94,6 +94,9 @@ export default function Dashboard() {
   // The shift default is not a filter the user set, so it does not count as dirty.
   const atDefaults = !f.machineId && !f.shiftPicked && f.preset === 'today';
   const [pickRange, setPickRange] = useState(false);
+  // True while ProductionVsTarget has ONE machine's board open — the fleet
+  // panels step aside for it (see the render below).
+  const [machineBoardOpen, setMachineBoardOpen] = useState(false);
 
   const selectedMachine = f.machineId
     ? (machineList || []).find((m) => (m.code || m.machineId) === f.machineId)
@@ -221,13 +224,17 @@ export default function Dashboard() {
             assignment engine: group cards → machines → full operator board,
             with its own window filter (per hour / per shift / today…). */}
         <ProductionVsTarget rows={rows} windowMs={windowMs} windowLabel={windowLabel}
-          from={fromISO} to={toISO} />
+          from={fromISO} to={toISO} onMachineOpen={setMachineBoardOpen} />
 
         {/* Operator notice: scheduled-dia instructions, shown until dismissed */}
         <ScheduledDiaPopup />
 
-        {/* ── Fleet totals for the same window, under the groups they sum ── */}
-        <div>
+        {/* ── Fleet totals for the same window, under the groups they sum.
+            Hidden while ONE machine's board is open above: a fleet donut
+            directly under a single machine's figures reads as that machine's —
+            39% availability under a board saying 2% is a contradiction, not
+            context. ── */}
+        {!machineBoardOpen && <div>
           {/* Output & time split — production, runtime, idle, stopped, downtime */}
           <Panel title="Output & time split" subtitle={`how the fleet spent ${windowLabel}`} icon={Factory}>
             <div className="flex items-center gap-5 flex-wrap">
@@ -259,7 +266,7 @@ export default function Dashboard() {
               </div>
             </div>
           </Panel>
-        </div>
+        </div>}
 
 
         {/* Performance rankings — fleet view only; click a row to select it */}

@@ -43,6 +43,10 @@ interface Props {
   windowLabel: string;
   from?: string;
   to?: string;
+  /** Fires with true while ONE machine's full board is on screen — the page
+   *  hides its fleet-wide panels then, so a fleet donut cannot sit under a
+   *  single machine's numbers looking like part of them. */
+  onMachineOpen?: (open: boolean) => void;
 }
 
 interface TargetRow {
@@ -68,7 +72,7 @@ const dotColor = (status: string): string =>
 type WinMode = '' | 'hour' | 'shift' | 'today' | 'yesterday';
 const hourLabel = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`;
 
-export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to }: Props): JSX.Element | null {
+export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to, onMachineOpen }: Props): JSX.Element | null {
   const { shifts, breaks } = useAppConfig();
   const mName = useMachineName();
   const mTitle = useMachineTitle();
@@ -219,6 +223,14 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
     if (openGroup && !groups.some((g) => g.key === openGroup) && !heatGroups.some((g) => g.key === openGroup)) setOpenGroup(null);
   }, [openGroup, groups, heatGroups]);
   const openFor = openForCode ? targets.find((t) => t.row.code === openForCode) ?? null : null;
+
+  // Mirrors the render condition of the single-machine branch below, exactly —
+  // the page must hide its fleet panels for the same frames this shows a board.
+  const machineBoardOpen = !(mode === 'shift' && !shiftName) && targets.length > 0 && !!(open && openFor);
+  useEffect(() => {
+    onMachineOpen?.(machineBoardOpen);
+    return () => onMachineOpen?.(false);   // unmount = no board on screen
+  }, [machineBoardOpen]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!can('production', 'view')) return null;
   const hasDia = rows.some((r) => asgBy.get(r.code.toUpperCase()));
