@@ -8,8 +8,8 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
-  Cpu, Thermometer, Activity, Database,
-  ArrowRight, Search, BarChart3, ChevronRight, ChevronDown, LineChart, Calendar,
+  Cpu, Thermometer, Database,
+  Search, BarChart3, ChevronRight, ChevronDown, LineChart, Calendar,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../../api/endpoints';
 import TargetPanel from './TargetPanel';
@@ -175,7 +175,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
 
   return (
     <div className="max-w-6xl space-y-4">
-      {/* Hero header — identity + last seen + health score */}
+      {/* Hero header — identity, and the at-a-glance numbers. */}
       <div className="rounded-card bg-slate-900 text-white px-5 py-4 flex flex-wrap items-center justify-between gap-4 shadow-panel">
         <div className="flex items-center gap-3 min-w-0">
           <span className="w-11 h-11 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
@@ -189,10 +189,18 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
             <div className="text-xs text-white/55 truncate">{String(id).toLowerCase()} · {machine.subtitle || prettyType(machine.type) || 'Machine'}</div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        {/* Alarms sat in a Machine Status card that read as empty because every
+            other row on it was already elsewhere: the pill and last-seen are in
+            this header, its Uptime is the number the Production card calls
+            Efficiency, and View Details went where the Specs tab goes. */}
+        <div className="flex items-center gap-4 flex-wrap">
           <div className="text-right">
             <div className="text-[10px] uppercase tracking-wider text-white/45">Last Seen</div>
-            <div className="text-sm font-medium">{fmtTime(lastSeenAt)}</div>
+            <div className="text-sm font-medium">{fmtClock(lastSeenAt)}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] uppercase tracking-wider text-white/45">Alarms</div>
+            <div className={`data text-sm font-bold ${m.faultCount ? 'text-red-400' : 'text-white/90'}`}>{fmtNum(m.faultCount)}</div>
           </div>
           <div className="flex items-center gap-2 bg-white/10 rounded-lg px-3 py-2">
             <div className="text-right">
@@ -228,19 +236,6 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
 
       {/* Equal-height cards (the grid stretches each card in a row to match). */}
       <div className="grid lg:grid-cols-2 gap-4">
-        <Panel icon={Activity} title="Machine Status">
-          <div className="divide-y divide-line">
-            <Row label="Status"><StatusPill status={status} /></Row>
-            <Row label="Last Seen"><span className="data text-primary">{fmtClock(lastSeenAt)}</span></Row>
-            <Row label="Uptime"><span className="data font-semibold text-running">{m.uptimePct}%</span></Row>
-            <Row label="Active Alarms"><span className={`data font-semibold ${m.faultCount ? 'text-stopped' : 'text-running'}`}>{m.faultCount}</span></Row>
-            <Row label="PLC Type"><span className="data text-primary">{m.plcType}</span></Row>
-          </div>
-          <button onClick={() => onTab?.('specs')} className="mt-auto pt-3 w-full flex items-center justify-center gap-1.5 text-sm text-accent border border-accent/20 bg-accent/5 hover:bg-accent/10 rounded-lg py-2 font-medium transition-colors">
-            View Details <ArrowRight size={14} />
-          </button>
-        </Panel>
-
         {m.hasTemp && (
           <Panel icon={Thermometer} title="Temperature Overview" right={<span className="text-xs text-steel">°C</span>}>
             <div className="grid grid-cols-2 gap-2">
@@ -272,7 +267,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
         )}
 
         <Panel icon={BarChart3} title={furnace ? 'Temperature & Runtime' : 'Production & Runtime'}
-          className={`${m.hasTemp ? 'lg:col-span-2' : ''} ${actFetching ? 'opacity-60 transition-opacity' : 'transition-opacity'}`}>
+          className={`${m.hasTemp ? '' : 'lg:col-span-2'} ${actFetching ? 'opacity-60 transition-opacity' : 'transition-opacity'}`}>
           {/* What the window produced — or, for a machine that counts nothing,
               what it measured instead. */}
           <div className="rounded-lg border border-line bg-base px-4 py-3 mb-4">
@@ -420,19 +415,9 @@ function buildModel(machine: Machine, metrics: NamedMetric[], status: string | u
     namedCount, faultCount, dataQuality,
     health, healthStatus,
     runtimeMs, idleMs, stoppedMs, downMs, uptimePct, efficiency, openDowntime,
-    plcType: plcTypeOf(machine),
   };
 }
 
-function plcTypeOf(machine: Machine): string {
-  const s = String(machine.machineId || machine.id || '').toLowerCase();
-  if (/s7\s*-?\s*1500|s71500/.test(s)) return 'S7-1500';
-  if (/s7\s*-?\s*1200|s71200/.test(s)) return 'S7-1200';
-  if (/s7\s*-?\s*400|s7400/.test(s)) return 'S7-400';
-  if (/s7\s*-?\s*300|s7300/.test(s)) return 'S7-300';
-  if (/s7\s*-?\s*200|s7200/.test(s)) return 'S7-200';
-  return '—';
-}
 
 // ── presentational building blocks ─────────────────────────────────────────────
 function Panel({ icon: Icon, title, right, className = '', children }: { icon?: LucideIcon; title: string; right?: ReactNode; className?: string; children: ReactNode }): JSX.Element {
@@ -444,15 +429,6 @@ function Panel({ icon: Icon, title, right, className = '', children }: { icon?: 
         {right}
       </div>
       {children}
-    </div>
-  );
-}
-
-function Row({ label, children }: { label: string; children: ReactNode }): JSX.Element {
-  return (
-    <div className="flex items-center justify-between py-2 text-sm">
-      <span className="text-steel">{label}</span>
-      <span className="text-right">{children}</span>
     </div>
   );
 }
