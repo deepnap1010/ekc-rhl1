@@ -177,6 +177,11 @@ export default function Machines() {
   // ONE most-specific counter via the shared picker — never a sum (cycle +
   // workpiece is not production), matching the card headline exactly.
   const productionOf = (m: Machine) => {
+    // A dark machine's parameters are frozen at whatever its register last read
+    // — its card shows a dated last-day figure, so ranking that register among
+    // machines producing NOW put SPG02's three-day-old 49 above live counts.
+    // It sinks with the no-metric machines instead.
+    if (displayStatus(m) === 'network' || displayStatus(m) === 'offline') return -1;
     const v = productionValue(paramsOf(m));
     return v != null ? v : (typeof m.totalOutput === 'number' ? m.totalOutput : -1);
   };
@@ -499,7 +504,16 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // cached hard; healthy machines take none of this path.
   const dark = status === 'network' || status === 'offline';
   const { shifts: cardShifts } = useAppConfig();
-  const lastDay = dark && lastSeen ? clampToNow(dayWindowAt(cardShifts, new Date(lastSeen))) : null;
+  // Only a FINISHED day. A machine that went quiet twenty minutes ago has
+  // "today" as its last active day — a window whose end would have to be
+  // clamped to a moving now, which walks the react-query key forward every
+  // minute: a fresh key each minute means staleTime never applies and every
+  // dark card would re-run a full-fleet day reconstruction sixty times an hour,
+  // flickering between two windows while each fetch was in flight. And the
+  // label would lie: a 15-minute collector hiccup is not a finished historical
+  // day. Dark-today machines keep the live window plus the Last-known wrapper.
+  const lastWin = dark && lastSeen ? dayWindowAt(cardShifts, new Date(lastSeen)) : null;
+  const lastDay = lastWin && lastWin.to.getTime() <= Date.now() ? lastWin : null;
   const lastFromISO = lastDay?.from.toISOString();
   const lastToISO = lastDay?.to.toISOString();
   const { data: lastDayAct } = useQuery({
@@ -604,7 +618,14 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // was the reset value anyway. So the window's pieces are the headline and the
   // raw counter drops to the sub-line. Furnaces keep their live temperature:
   // heat now is the thing you act on, and their average already sits below it.
-  const madeToday = furnace ? null : activity?.production ?? null;
+  // Dark, the hero may ONLY carry the last day's own number. The label above it
+  // is dated, and until the last-day row has actually arrived (or if its fetch
+  // failed) `activity` still holds the LIVE window's row — a machine that died
+  // mid-shift has real pieces there, and printing them under a dated
+  // "last day with signal" header pairs today's count with yesterday's name.
+  // While the row is missing, madeToday stays null and the Last-known wrapper
+  // covers the card honestly.
+  const madeToday = furnace ? null : dark ? lastRow?.production ?? null : activity?.production ?? null;
   const counterNow = furnace ? null : productionValue(params);
   const dayHero: Headline | null = madeToday == null ? null : {
     // Dark, the headline is DATED — its window is the last day with signal,
@@ -735,7 +756,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
           {/* On a furnace the day-average sits under the live reading. */}
           {furnace && activity?.avgTemp != null && (
             <div className="text-[10px] mt-1">
-              <span className="text-steel">today avg </span>
+              <span className="text-steel">{dark && lastRow && lastDay ? `${fmtDate(lastDay.from)} avg ` : 'today avg '}</span>
               <span className="data font-bold text-idle">{fmtNum(activity.avgTemp)}</span>
               <span className="text-steel"> °C</span>
             </div>

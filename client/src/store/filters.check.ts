@@ -31,4 +31,16 @@ eq('no shifts -> calendar day', dayWindowAt([], at(3, 3)).from.getHours(), 0);
 const past = shiftDayOn(SHIFTS, at(1, 0));
 eq('a finished day is not clipped', clampToNow(past).to.getTime(), past.to.getTime());
 
+// A schedule with a gap (no night shift): a 23:30 reading still belongs to its
+// own day, in a window stretched to contain it — not to a window that ends at
+// 23:00 and would exclude the machine's own last half hour.
+const DAY_SHIFTS: ShiftTiming[] = [
+  { name: 'A', start: '07:00', end: '15:00' },
+  { name: 'B', start: '15:00', end: '23:00' },
+];
+const gapRead = at(3, 23, 30);
+const gapWin = dayWindowAt(DAY_SHIFTS, gapRead);
+eq('a gap reading stays on its own day', gapWin.from.getTime(), shiftDayOn(DAY_SHIFTS, at(3, 0)).from.getTime());
+eq('and the window contains it', gapWin.to.getTime() > gapRead.getTime(), true);
+
 console.log('filters: all checks passed');

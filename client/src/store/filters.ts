@@ -137,11 +137,16 @@ export function shiftDayOn(shifts: ShiftTiming[], day: Date): { from: Date; to: 
 export function dayWindowAt(shifts: ShiftTiming[], at: Date): { from: Date; to: Date } {
   const day = new Date(at);
   day.setHours(0, 0, 0, 0);
-  const w = shiftDayOn(shifts, day);
+  let w = shiftDayOn(shifts, day);
   if (at.getTime() < w.from.getTime()) {
     day.setDate(day.getDate() - 1);
-    return shiftDayOn(shifts, day);
+    w = shiftDayOn(shifts, day);
   }
+  // A schedule whose shifts do not cover 24h leaves gaps (two shifts ending at
+  // 23:00, say). A reading taken IN the gap still happened on that day — the
+  // window stretches to include it rather than mapping the moment to a window
+  // that excludes it, mirroring todayWindow's own extend-past-schedule rule.
+  if (at.getTime() >= w.to.getTime()) w = { from: w.from, to: new Date(at.getTime() + 60_000) };
   return w;
 }
 
