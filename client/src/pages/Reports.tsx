@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,  } from 'recharts';
 import {
   Download, FileBarChart, AlertTriangle, Clock, ShieldCheck, Play, CircleSlash, Power,
-  Gauge as GaugeIcon, type LucideIcon,
+  Gauge as GaugeIcon, CalendarClock, type LucideIcon,
 } from 'lucide-react';
 import { reportsApi, machineApi } from '../api/endpoints';
 import { StatCard, Spinner } from '../components/ui';
@@ -16,6 +16,9 @@ import { fmtNum, fmtDuration, prettyType, prettyKey } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
 import { borrowedFrom } from '../lib/production';
 import TargetsReport from '../components/TargetsReport';
+import DiaScheduleReport from '../components/DiaScheduleReport';
+import { ScheduleDiaModal } from '../components/ScheduleDia';
+import { useAuthStore } from '../store/auth';
 import type { MetricValue } from '../types/api';
 import type { ReactNode } from 'react';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
@@ -31,6 +34,8 @@ export default function Reports() {
   const mName = useMachineName();
   const mTitle = useMachineTitle();
   const [tab, setTab] = useState('overview');
+  const [schedOpen, setSchedOpen] = useState(false);
+  const can = useAuthStore((st) => st.can);
   const [machineId, setMachineId] = useState('');
   const mid = machineId || undefined;
   // One window for the whole page — the same control the dashboard, history log
@@ -135,7 +140,7 @@ export default function Reports() {
           <RangeFilter value={win.value} onChange={win.setValue} range={win.range}
             title="Which period these reports cover" />
           <div className="flex gap-1 bg-base rounded-lg p-0.5 border border-line">
-            {['overview', 'production', 'targets', 'downtime', 'fleet', 'reliability'].map((t) => (
+            {['overview', 'production', 'targets', 'dia', 'downtime', 'fleet', 'reliability'].map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -145,10 +150,26 @@ export default function Reports() {
               </button>
             ))}
           </div>
+          {/* Scheduling lives behind this one button, on every page that shows
+              what the machines are making. The Dia tab beside it only READS. */}
+          {can('production', 'update') && (
+            <button
+              onClick={() => setSchedOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs font-medium text-accent hover:bg-accent/10 transition-colors"
+              title="Set a dia to switch itself on a machine at a future moment"
+            >
+              <CalendarClock size={14} /> Schedule Dia
+            </button>
+          )}
         </div>
+
+        {schedOpen && <ScheduleDiaModal onClose={() => setSchedOpen(false)} />}
 
         {/* ---- OVERVIEW ---- */}
         {tab === 'overview' && <OverviewReport machineId={mid} from={win.fromISO} to={win.toISO} />}
+
+        {/* ---- DIA: what is running, and what switches in next ---- */}
+        {tab === 'dia' && <DiaScheduleReport machineId={mid} />}
 
         {/* ---- TARGETS ---- */}
         {tab === 'targets' && <TargetsReport machineId={mid} from={win.fromISO} to={win.toISO} />}
