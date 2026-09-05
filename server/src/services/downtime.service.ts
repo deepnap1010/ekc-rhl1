@@ -48,12 +48,23 @@ type State = DownState | 'up';
 
 interface MachineLike {
   status?: string;
+  lastReadingAt?: Date | string | null;
+  lastSeenAt?: Date | string | null;
 }
 
-/** Downtime state = the reported `status` field, trusted: idle / stopped /
- *  offline|disconnected are downtime; running (or anything else reporting) is up.
- *  Freshness is intentionally NOT used — a machine reporting "running" stays up
- *  even if its last payload is old, matching the status pills shown in the UI. */
+// The same 10-minute Signal-Lost rule the pills and fleet tiles already apply
+// (fleet.service#derivedStatus, client machineStatus#NETWORK_LOST_MS).
+const NETWORK_LOST_MS = 10 * 60_000;
+
+/** Downtime state = the reported `status` field, trusted — but only while the
+ *  machine is actually HEARD. That status is a scalar the collector overwrites;
+ *  when the collector dies it freezes at its last value, and this used to keep
+ *  recording that frozen word forever: SPG02 sat dark for three days as
+ *  'stopped' and was billed a full shift of stopped time every one of them.
+ *  Past the same 10-minute silence the pills already call "Signal Lost", the
+ *  only state we can honestly record is offline. (This once ignored freshness
+ *  "matching the status pills" — the pills stopped doing that when they gained
+ *  the Signal-Lost rule; this catches the sweep up with them.) */
 // An unrecognised status still falls through to `up`, which is the safe read
 // for a machine that IS reporting — but it is also how this went wrong quietly
 // for hours. Saying it out loud once per spelling turns the next collector that
@@ -63,6 +74,8 @@ interface MachineLike {
 const unknownSeen = new Set<string>();
 
 function machineState(m: MachineLike): State {
+  const seen = m.lastReadingAt || m.lastSeenAt;
+  if (!seen || Date.now() - new Date(seen).getTime() > NETWORK_LOST_MS) return 'offline';
   // Normalised, not just lower-cased: "Stop" is not "stopped", and the miss
   // used to land on the `up` default below — a stopped machine with no
   // downtime span, its whole window credited as runtime.

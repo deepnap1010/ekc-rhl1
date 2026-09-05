@@ -487,6 +487,46 @@ export async function computeActivity(
     ], binMs).map((c) => ({ s: Math.max(c.s, fromD.getTime()), e: Math.min(c.e, endMs) }))
       .filter((c) => c.e > c.s);
     const reportedMs = Math.min(windowMs, cover.reduce((n, c) => n + (c.e - c.s), 0));
+
+    // A downtime span may only speak for time the machine was actually PRESENT.
+    // An open span outlives the last reading by however long the machine stays
+    // dark — SPG02's status froze at 'stopped' when its collector died, and the
+    // open span then booked a full shift of "stopped" every day, for three days
+    // and counting, about a machine nobody had heard from. runningMs already
+    // refuses to be built from silence (readings-gated, coverage-based);
+    // downtime was still allowed to be.
+    //
+    // The clip is the machine's PRESENCE ENVELOPE — first reading of the window
+    // to last reading plus the bridging grace — not the island cover runtime
+    // uses. Islands would also be honest, but they punish a machine that merely
+    // reports slower than the grace: a 10-minute reporter that idled all shift
+    // would have its recorded idle shredded to slivers by gaps that only mean
+    // "slow", not "gone". Between its first and last words the machine was
+    // reachable; past its last word it was not, and THAT is the line silence
+    // proves. Span time inside the envelope keeps its type (env ∩ span, the
+    // subtract identity); the remainder books as OFFLINE — but only for a
+    // machine that left SOME evidence of existing in this range (a reading or a
+    // span). Without that gate every never-seen machine — registered yesterday,
+    // decommissioned last year — reads a full window of offline, floods the
+    // range views whose existence filters used to hide it, and ties for the top
+    // of the reliability report with downtime it never had.
+    const firstMs = t?.firstSeen ? new Date(t.firstSeen).getTime() : null;
+    const lastMs = t?.lastSeen ? new Date(t.lastSeen).getTime() : null;
+    const env = firstMs != null && lastMs != null
+      ? [{ s: Math.max(firstMs, fromD.getTime()), e: Math.min(lastMs + binMs + GRACE_MS, endMs) }].filter((c) => c.e > c.s)
+      : [];
+    const envMs = env.reduce((n, c) => n + (c.e - c.s), 0);
+    const seenMs = (type: Span['type']): number =>
+      envMs - subtractMs(env, spans.filter((sp) => sp.type === type));
+    down.idle = seenMs('idle');
+    down.stopped = seenMs('stopped');
+    // Kept separate from the dark remainder: the dominant-state pick below must
+    // go on describing what the machine was SEEN doing (its comment: 52m of
+    // observed running in a fortnight is "running", never "offline").
+    const observedOffline = seenMs('offline');
+    down.offline = observedOffline
+      + (readings > 0 || spans.length > 0 ? Math.max(0, windowMs - envMs) : 0);
+
     // The machine's own run signal wins when it has one: the collector's status
     // field is a guess about the machine, this IS the machine. ISB02 read 0m of
     // runtime for a 100-piece day purely because its status never said "running".
@@ -515,6 +555,16 @@ export async function computeActivity(
     // idle first, then stopped — otherwise the four buckets would add up to more
     // than the window and every share on the dashboard would be wrong.
     let excess = runningMs + down.idle + down.stopped + down.offline - windowMs;
+    // The DARK remainder pays first. A trust machine's run counter credits
+    // production straight through a signal loss (deliberately — the books ARE
+    // the machine), so those dark hours already sit inside runningMs; letting
+    // the loop below trim idle first would delete real, observed idle to pay
+    // for time the darkness itself explains.
+    if (excess > 0) {
+      const cut = Math.min(Math.max(0, down.offline - observedOffline), excess);
+      down.offline -= cut;
+      excess -= cut;
+    }
     for (const k of ['idle', 'stopped', 'offline'] as const) {
       if (excess <= 0) break;
       const cut = Math.min(down[k], excess);
@@ -528,9 +578,15 @@ export async function computeActivity(
     // durations, and availability (runningMs ÷ window) — a dark machine can't
     // rank high because its runningMs stays tiny.
     let status = 'offline';
-    if (readings > 0 || down.idle + down.stopped + down.offline > 0) {
+    // Observed-only here too: down.offline now carries the dark remainder, and
+    // letting it open this gate handed a fully dark machine four zero buckets —
+    // which the stable sort answers with the first one, 'running'.
+    if (readings > 0 || down.idle + down.stopped + Math.min(observedOffline, down.offline) > 0) {
       const buckets: [string, number][] = [
-        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped], ['offline', down.offline],
+        ['running', runningMs], ['idle', down.idle], ['stopped', down.stopped],
+        // Clamped to what survived the trim, so a pre-trim figure cannot outvote
+        // buckets the trim already paid down.
+        ['offline', Math.min(observedOffline, down.offline)],
       ];
       buckets.sort((a, b) => b[1] - a[1]);
       status = buckets[0][0];

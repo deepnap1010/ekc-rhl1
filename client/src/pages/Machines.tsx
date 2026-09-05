@@ -593,7 +593,18 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
       ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
         : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
   };
-  const show = dayHero ?? hero;
+  // A machine that is not reporting must not pass off its last payload as the
+  // present. SPG02 sat dark for three days showing "PRODUCTION COUNT · 49 pcs"
+  // beside 0m of uptime — the 49 was a three-day-old register read as if live.
+  // WHICHEVER hero wins gets the treatment: the window headline, a furnace's
+  // temperature, a derived count — all of them quote frozen data once the
+  // machine goes quiet. The number stays (it is genuinely useful) but says what
+  // it is: the last thing the machine said, and when it said it.
+  const dark = status === 'network' || status === 'offline';
+  const base = dayHero ?? hero;
+  const show = dark
+    ? { ...base, label: `Last known · ${base.label}`, tone: 'neutral' as const, sub: `as of ${fmtTime(lastSeen)}` }
+    : base;
 
   // Per-card trends: [0] drives the hero sparkline, [1] the secondary progress bar.
   const statKey = machine.code || machine.machineId || machine._id;

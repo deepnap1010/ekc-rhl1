@@ -108,3 +108,18 @@ const down = [iv(60 * MIN, 500 * MIN)];
 if (subtractMs(dayCover, down) < subtractMs(shiftCover, down)) throw new Error('runtime shrank as the window grew');
 
 console.log('activity: interval checks passed');
+
+// ── downtime is clipped to the reporting envelope ───────────────────────────
+// The engine books span time as cover ∩ span = reportedMs − (cover − span).
+// This is what stops an open span from charging a dark machine with a full
+// shift of "stopped" every day: SPG02 went silent for three days and its
+// frozen 'stopped' status kept billing 7h50m a day until this.
+const covered = [{ s: 0, e: 100 }];
+eq('a span half outside the reporting envelope bills only the seen half',
+  100 - subtractMs(covered, [sp('stopped', 50, 500)]), 50);
+eq('a span entirely in the dark bills nothing',
+  100 - subtractMs(covered, [sp('stopped', 200, 500)]), 0);
+eq('a span inside the envelope bills in full',
+  100 - subtractMs(covered, [sp('idle', 20, 40)]), 20);
+eq('no reporting at all bills nothing, whatever the span claims',
+  0 - subtractMs([], [sp('stopped', 0, 500)]), 0);
