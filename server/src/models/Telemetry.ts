@@ -10,6 +10,11 @@ export interface ITelemetry {
   machineId?: string;
   machineName?: string;
   machineType?: string;
+  // What the machine said about ITSELF at this reading. Collectors that put a
+  // status inside `data` are read from there; the ones that send it beside the
+  // payload land here, and without it their per-reading state was thrown away
+  // at ingest and only the machine document's latest value survived.
+  status?: string;
   timestamp?: Date;
   receivedAt?: Date;
   // Schema-agnostic metric map (Mixed): keys vary per machine type.
@@ -21,6 +26,7 @@ const telemetrySchema = new mongoose.Schema<ITelemetry>(
     machineId:   { type: String, index: true },
     machineName: { type: String },
     machineType: { type: String },
+    status:      { type: String },
     timestamp:   { type: Date },
     receivedAt:  { type: Date },
     data:        { type: mongoose.Schema.Types.Mixed, default: {} },

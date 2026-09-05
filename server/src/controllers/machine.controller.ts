@@ -7,6 +7,7 @@ import { Machine }   from '../models/Machine.js';
 import type { IMachine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
+import { MachineEvent } from '../models/MachineEvent.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { flattenData } from '../utils/flatten.js';
 import { computeStats } from '../utils/metrics.js';
@@ -22,7 +23,7 @@ import { readingSignature, pickColumns } from '../utils/history.js';
 import { MachineLabel } from '../models/MachineLabel.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { refMatch } from '../utils/machineRef.js';
-import { normalizeStatus } from '../utils/status.js';
+import { normalizeStatus, sessionStateAt } from '../utils/status.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
 
@@ -223,9 +224,10 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     // the status and the parameters from that alias while readings and prodMax
     // spanned both. One row, two streams. The $in still bounds the scan and the
     // {machineId, timestamp} index still serves it as a merge.
-    // Downtime spans give each row a status even when the payload carries none
-    // (many machines don't send a status key) — same source as the status pills.
-    const [agg, spans] = await Promise.all([
+    // The sweep's state log gives each row a status even when the payload carries
+    // none (several machines here send no status key at all) — the same source,
+    // and the same transition detector, as downtime_reports and the status pills.
+    const [agg, states] = await Promise.all([
       Telemetry.aggregate([
         { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
         { $sort: { timestamp: -1 } },
@@ -243,25 +245,21 @@ export const machineTimeline = asyncHandler(async (req, res) => {
         // blocking sort, and this Atlas tier ignores allowDiskUse — a History range
         // of a few months would 500 instead of loading. Ordering happens in Node.
       ]).option({ allowDiskUse: true, maxTimeMS: 20000 }) as Promise<{ _id: Date; ts: Date; data?: Record<string, unknown>; docStatus?: string; readings: number; prodMax: number | null }[]>,
-      DowntimeEvent.find({
-        machineId: { $in: refs },
+      // The sweep's own state log. It is written in the same loop, off the same
+      // machineState(), as downtime_reports — but it records 'running' too, so
+      // nothing has to be inferred from the absence of a down-span, and an
+      // uncovered minute honestly means unwatched. Rides {machineId, startedAt}.
+      MachineEvent.find({
+        machineId: { $in: refs }, kind: 'state',
         startedAt: { $lte: endD },
         $or: [{ endedAt: null }, { endedAt: { $gte: fromD } }],
-      }).select({ type: 1, startedAt: 1, endedAt: 1 }).sort({ startedAt: 1 }).maxTimeMS(20000).lean(),
+      }).select({ state: 1, startedAt: 1, endedAt: 1 }).sort({ startedAt: 1 }).maxTimeMS(20000).lean(),
     ]);
-    // A span covering this minute, or null. It used to answer 'running' for any
-    // minute no span covered — but spans only exist from the day this app started
-    // sweeping, so on older ranges that was a confident invention on every row.
-    // It matters more than it looks: a machine whose payload carries no status
-    // key at all (CUTTINGMACHINE08 sends none) takes THIS path for every row.
-    const statusAt = (t: number): string | null => {
-      for (const sp of spans) {
-        const st = new Date(sp.startedAt).getTime();
-        const en = sp.endedAt ? new Date(sp.endedAt).getTime() : Number.POSITIVE_INFINITY;
-        if (t >= st && t <= en) return sp.type;
-      }
-      return null;
-    };
+    // utils/status#sessionStateAt. It matters more than it looks: a machine whose
+    // payload carries no status key at all (CUTTINGMACHINE06 sends three fields
+    // and none of them is a status) takes THIS path for EVERY row, so whatever
+    // this returns is its entire history.
+    const statusAt = (t: number): string | null => sessionStateAt(states, t);
 
     agg.sort((a, b) => new Date(a._id).getTime() - new Date(b._id).getTime());
 

@@ -48,15 +48,21 @@ export const ingest = asyncHandler(async (req, res) => {
     const name = r.name || r.machineName;
     const type = r.type || r.machineType;
 
-    telemetry.push({ machineId: id, machineName: name, machineType: type, timestamp: ts, receivedAt: now, data });
+    // The status belongs to the READING as much as to the machine. It used to be
+    // written only onto the machine document, where a single scalar keeps just
+    // the latest value — so for every collector that sends its status beside the
+    // payload rather than inside it, the history had no per-minute state at all
+    // and the timeline fell back to reconstructing one from downtime spans.
+    const status = r.status ? normalizeStatus(r.status) : '';
+    telemetry.push({ machineId: id, machineName: name, machineType: type, timestamp: ts, receivedAt: now, data, ...(status ? { status } : {}) });
 
     const set: Partial<IMachine> = { machineId: id, code: id, currentParameters: data, lastReadingAt: ts, lastSeenAt: now };
     if (name) set.name = name;
     if (type) set.type = type;
-    // Canonicalised here because this is the ONLY place a machine's status is
-    // written, so every reader downstream — downtime engine, fleet counts,
-    // health, the client's pill — gets one spelling instead of each guessing.
-    if (r.status) set.status = normalizeStatus(r.status);
+    // Canonicalised once, here, so every reader downstream — downtime engine,
+    // fleet counts, health, the client's pill — gets one spelling instead of
+    // each guessing.
+    if (status) set.status = status;
     machineOps.push({ updateOne: { filter: { $or: [{ code: id }, { machineId: id }] }, update: { $set: set }, upsert: true } });
   }
 
