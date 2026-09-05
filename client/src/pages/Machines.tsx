@@ -8,7 +8,7 @@ import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, isNumeric } from '../lib/format';
+import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, fmtDate, isNumeric } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
@@ -21,7 +21,7 @@ import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
-import { resolveRange, todayWindow, clampToNow } from '../store/filters';
+import { resolveRange, todayWindow, clampToNow, dayWindowAt } from '../store/filters';
 import { currentShift } from '../lib/settings';
 import { useMachineName, useMachineTitle, hasCustomName, useAdoptLocalNames } from '../lib/machineName';
 import ParametersModal from '../components/machine/MachineParameters';
@@ -481,7 +481,7 @@ interface MachineCardProps {
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity: liveActivity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -489,6 +489,32 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
   const params    = own;
   const status    = effectiveStatus({ status: liveTick?.status || machine.status, lastReadingAt: liveTick?.lastReadingAt || machine.lastReadingAt });
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
+
+  // ── A dark machine answers for its LAST ACTIVE DAY ───────────────────────
+  // Signal gone means the selected window holds nothing: today's card read
+  // "49 pcs" (a frozen register) over four tiles of zero. What a supervisor
+  // actually wants of a dead collector is the last day it was heard — that
+  // day's REAL production and its REAL runtime — clearly dated as that day.
+  // One extra activity fetch per dark machine, for a day that is finished and
+  // cached hard; healthy machines take none of this path.
+  const dark = status === 'network' || status === 'offline';
+  const { shifts: cardShifts } = useAppConfig();
+  const lastDay = dark && lastSeen ? clampToNow(dayWindowAt(cardShifts, new Date(lastSeen))) : null;
+  const lastFromISO = lastDay?.from.toISOString();
+  const lastToISO = lastDay?.to.toISOString();
+  const { data: lastDayAct } = useQuery({
+    queryKey: ['machine-activity-today', lastFromISO, lastToISO],
+    queryFn: () => machineApi.activity({ from: lastFromISO as string, to: lastToISO as string }),
+    enabled: !!lastDay,
+    staleTime: 10 * 60_000,        // a finished day does not change
+    retry: false,
+  });
+  const cardRef = String(machine.code || machine.machineId || machine._id || '');
+  const lastRow = dark
+    ? (lastDayAct?.data || []).find((r) => r.code.toUpperCase() === cardRef.toUpperCase())
+    : undefined;
+  // Every figure below — headline, target bar, the four tiles — reads THIS.
+  const activity = dark && lastRow ? lastRow : liveActivity;
   const id        = machine.code || machine._id;
   const code      = machine.code || machine.machineId || machine.name || '—';
   const nameLabel = machine.name || machine.machineName;
@@ -581,28 +607,29 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
   const madeToday = furnace ? null : activity?.production ?? null;
   const counterNow = furnace ? null : productionValue(params);
   const dayHero: Headline | null = madeToday == null ? null : {
-    label: `Production · ${winLabel}`,
+    // Dark, the headline is DATED — its window is the last day with signal,
+    // not the one everyone else on the page is answering for.
+    label: `Production · ${dark && lastDay ? fmtDate(lastDay.from) : winLabel}`,
     value: fmtNum(madeToday),
     unit: 'pcs',
-    tone: madeToday > 0 ? 'good' : 'neutral',
+    tone: dark ? 'neutral' : madeToday > 0 ? 'good' : 'neutral',
     // A borrowed count says so instead of quoting a counter this machine
     // doesn't have.
     // A derived count has no register to quote: the server counted bursts of a
     // signal (config/derivedCounters), so the sub-line says that instead.
-    sub: borrowedFrom(activity)
-      ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
-        : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
+    sub: dark
+      ? `last day with signal — lost ${fmtTime(lastSeen)}`
+      : borrowedFrom(activity)
+        ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
+          : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
   };
-  // A machine that is not reporting must not pass off its last payload as the
-  // present. SPG02 sat dark for three days showing "PRODUCTION COUNT · 49 pcs"
-  // beside 0m of uptime — the 49 was a three-day-old register read as if live.
-  // WHICHEVER hero wins gets the treatment: the window headline, a furnace's
-  // temperature, a derived count — all of them quote frozen data once the
-  // machine goes quiet. The number stays (it is genuinely useful) but says what
-  // it is: the last thing the machine said, and when it said it.
-  const dark = status === 'network' || status === 'offline';
+  // A dark machine with NO reconstructable last day (never reported, or its
+  // last-day fetch found nothing) still must not pass off a frozen register as
+  // the present: its fallback hero goes out as "Last known", with the time. A
+  // dark machine WITH a last-day row already built an honest, dated headline
+  // above and needs no wrapper.
   const base = dayHero ?? hero;
-  const show = dark
+  const show = dark && !dayHero
     ? { ...base, label: `Last known · ${base.label}`, tone: 'neutral' as const, sub: `as of ${fmtTime(lastSeen)}` }
     : base;
 
@@ -734,7 +761,7 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
           assignment modal right here. Below 60% runs amber. */}
       {/* Produced vs target when a DIA is assigned. Target = the DIA's rate over
           the card's whole day window (net of breaks). Below 60% runs amber. */}
-      {!furnace && assignment && dayFrom && dayTo && activity?.production != null && (() => {
+      {!furnace && !dark && assignment && dayFrom && dayTo && activity?.production != null && (() => {
         const winFrom = new Date(dayFrom).getTime();
         const winTo = Math.min(new Date(dayTo).getTime(), Date.now());
         const ms = windowNetMs(winFrom, winTo, breaks);
@@ -760,11 +787,18 @@ function MachineCard({ machine, liveTick, activity, assignment, dayFrom, dayTo, 
 
       {/* TODAY's breakdown: uptime, idle, stopped, and the downtime TOTAL
           (idle + stopped + signal-lost). */}
-      <div className="mt-auto grid grid-cols-4 gap-1.5">
+      <div className="mt-auto">
+      {dark && lastRow && lastDay && (
+        <div className="text-[10px] text-steel/70 mb-1 px-0.5">
+          {fmtDate(lastDay.from)} — last day with signal
+        </div>
+      )}
+      <div className="grid grid-cols-4 gap-1.5">
         <TimeStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
         <TimeStat label="Idle" ms={activity?.idleMs} color={AMBER} />
         <TimeStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
         <TimeStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs : undefined} color="#991B1B" />
+      </div>
       </div>
 
       {/* Footer — the card is a summary; deep views live behind these links */}

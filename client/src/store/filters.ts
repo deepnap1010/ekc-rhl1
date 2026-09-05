@@ -130,6 +130,21 @@ export function shiftDayOn(shifts: ShiftTiming[], day: Date): { from: Date; to: 
   };
 }
 
+/** The production day CONTAINING `at` — the window a historical moment belongs
+ *  to. A reading at 03:00 belongs to YESTERDAY's production day, by the same
+ *  rule runningDayAnchor applies to "now". Built for the machine cards' dark
+ *  fallback: a machine whose signal died on Tuesday answers for Tuesday. */
+export function dayWindowAt(shifts: ShiftTiming[], at: Date): { from: Date; to: Date } {
+  const day = new Date(at);
+  day.setHours(0, 0, 0, 0);
+  const w = shiftDayOn(shifts, day);
+  if (at.getTime() < w.from.getTime()) {
+    day.setDate(day.getDate() - 1);
+    return shiftDayOn(shifts, day);
+  }
+  return w;
+}
+
 /** The calendar date whose production day is RUNNING right now.
  *
  *  At 03:00 the plant is mid night-shift, and that shift belongs to YESTERDAY —
