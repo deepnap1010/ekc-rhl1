@@ -23,6 +23,29 @@ interface Reading {
   data?: Record<string, unknown>;
 }
 
+// ── who posts as whom ───────────────────────────────────────────────────────
+// Three machines have already been caught carrying TWO devices each: a second
+// collector posting under the same machineId, the pair overwriting each other's
+// status and counter every second — CUTTINGMACHINE08 read idle while it cut,
+// and finding the second box took a day of queries. The payload cannot say
+// which address it came from; the connection can. The first sighting of every
+// machineId↔address pair is logged once, and a machineId acquiring a SECOND
+// address is called out loudly, because that is exactly the duplicate-device
+// signature. Restart re-announces the pairs — one line each, useful, not spam.
+const SOURCES = new Map<string, Set<string>>();
+function noteSource(id: string, ip: string | undefined): void {
+  if (!ip) return;
+  let seen = SOURCES.get(id);
+  if (!seen) SOURCES.set(id, (seen = new Set()));
+  if (seen.has(ip)) return;
+  seen.add(ip);
+  if (seen.size > 1) {
+    console.warn(`[ingest] DUPLICATE SOURCE: ${id} now posts from ${[...seen].join(' AND ')} — two devices under one machineId overwrite each other's status and counter. Give one of them its own --machine.`);
+  } else {
+    console.log(`[ingest] ${id} posts from ${ip}`);
+  }
+}
+
 export const ingest = asyncHandler(async (req, res) => {
   // Fail closed: no key configured, or a wrong/absent header → reject.
   // Accept x-ingest-key OR x-api-key (the JCI-style header) so JCI integrations are drop-in.
@@ -43,6 +66,7 @@ export const ingest = asyncHandler(async (req, res) => {
   for (const r of readings) {
     const id = String(r.machineId || r.code || '').trim();
     if (!id) return fail(res, 400, 'Each reading requires a machineId (or code)');
+    noteSource(id, req.ip);
     const ts = r.timestamp ? new Date(r.timestamp) : now;
     const data = r.data && typeof r.data === 'object' ? r.data : {};
     const name = r.name || r.machineName;
