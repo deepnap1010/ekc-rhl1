@@ -97,15 +97,33 @@ export function achievementPct(actual: number, processingSec: number, ms: number
  *  Nobody makes 749.7 pieces. The tenth comes from dividing a window by a cycle
  *  time, and it is DROPPED rather than rounded: a target is the pieces you can
  *  actually finish in the window, and 749.7 means the 750th is still on the
- *  machine. Reads at a glance, which is what a board on a wall is for.
- *
- *  Rates below one an hour keep their decimals: a 4-hour furnace cycle is
- *  0.25/hr, and "0/hr" would read as a machine that makes nothing. */
+ *  machine. Reads at a glance, which is what a board on a wall is for. */
 export const fmtTarget = (n: number): string => {
   const a = Math.abs(n);
   if (a === 0 || a >= 1) return String(Math.trunc(n));
+  // A fraction of a piece is not a piece. "0.41 pcs" put arithmetic on a board
+  // that is read across a shop floor — a minute into a shift every card said
+  // "0 / 0.41 pcs" — and rounding it to "0" instead would read as no target at
+  // all. "<1" is the honest middle: there IS a target, and it is not yet a
+  // whole piece. Rates keep their decimals; they belong to fmtRate.
+  return n < 0 ? '>-1' : '<1';
+};
+
+/** A per-hour RATE, which may legitimately be fractional: a dia at 2 hours per
+ *  piece really is 0.5/hr, and "<1/hr" would hide the difference between that
+ *  and one piece a day. Pieces round; rates resolve. */
+export const fmtRate = (n: number): string => {
+  const a = Math.abs(n);
+  if (a >= 10) return String(Math.round(n));
+  if (a >= 1) return String(Math.round(n * 10) / 10);
   return String(Math.round(n * 100) / 100);
 };
+
+/** Whole pieces ahead of / behind target — the only unit anyone can act on.
+ *  Returns 0 while the gap is under a piece, so a card reads "on target"
+ *  instead of "0.62 behind", which is not a thing a shift can be. Truncates
+ *  for the same reason fmtTarget does: the piece is still on the machine. */
+export const wholeDiff = (diff: number): number => Math.trunc(diff);
 
 /** "3m" / "2m 30s" — how a processing time reads on a card. */
 export function fmtProcessing(sec: number): string {

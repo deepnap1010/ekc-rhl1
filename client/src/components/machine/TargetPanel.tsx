@@ -15,7 +15,7 @@ import { toast } from '../../store/toast';
 import { useMachineName } from '../../lib/machineName';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtNum } from '../../lib/format';
-import { windowNetMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate } from '../../lib/targets';
+import { windowNetMs, targetUnits, achievementPct, fmtTarget, fmtRate, fmtProcessing, hourlyRate } from '../../lib/targets';
 import type { MachineActivityRow, OperatorSession } from '../../types/api';
 
 export default function TargetPanel({ code, actRow, dayFrom, dayTo, label = 'Today' }: {
@@ -99,7 +99,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo, label = 'Tod
         <Target size={15} className="text-accent" />
         <h3 className="font-semibold text-sm text-primary flex-1">Target · {label}</h3>
         <span className="text-[11px] text-steel">
-          {snap.diaName}{snap.dims ? ` · ${snap.dims}` : ''} — {snap.stageName} · {fmtProcessing(sec)}/unit → {fmtTarget(hourlyRate(sec))}/hr
+          {snap.diaName}{snap.dims ? ` · ${snap.dims}` : ''} — {snap.stageName} · {fmtProcessing(sec)}/unit → {fmtRate(hourlyRate(sec))}/hr
         </span>
         <OperatorBadge code={code} />
       </div>

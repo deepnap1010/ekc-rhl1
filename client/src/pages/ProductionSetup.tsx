@@ -15,7 +15,7 @@ import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
-import { fmtTarget, fmtProcessing, hourlyRate, minPerPcToSec, secToMinPerPc } from '../lib/targets';
+import { fmtProcessing, hourlyRate, minPerPcToSec, secToMinPerPc, fmtRate } from '../lib/targets';
 import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import { fmtTime } from '../lib/format';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -107,7 +107,7 @@ export default function ProductionSetup(): JSX.Element {
                       <span className="truncate">{s.name}</span>
                       <span className="data text-steel shrink-0">
                         {fmtProcessing(s.processingSec)}/unit
-                        <span className="text-accent font-semibold"> → {fmtTarget(hourlyRate(s.processingSec))}/hr</span>
+                        <span className="text-accent font-semibold"> → {fmtRate(hourlyRate(s.processingSec))}/hr</span>
                       </span>
                     </div>
                   ))}
@@ -428,7 +428,7 @@ function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: (
                     onChange={(e) => setVals((p) => ({ ...p, [n]: e.target.value.replace(/[^\d.]/g, '') }))}
                     className="w-20 bg-base border border-line rounded-lg px-2 py-1.5 text-sm text-center outline-none focus:border-accent" />
                   <span className="text-[10px] text-steel w-10 shrink-0">min/pc</span>
-                  <span className="data text-xs text-accent w-16 text-right shrink-0">{sec != null ? `${fmtTarget(hourlyRate(sec))}/hr` : ''}</span>
+                  <span className="data text-xs text-accent w-16 text-right shrink-0">{sec != null ? `${fmtRate(hourlyRate(sec))}/hr` : ''}</span>
                 </div>
               );
             })}

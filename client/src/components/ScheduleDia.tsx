@@ -16,7 +16,7 @@ import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { toast } from '../store/toast';
 import { stageForMachine } from '../lib/diaStage';
-import { fmtTarget, hourlyRate, secToMinPerPc } from '../lib/targets';
+import { hourlyRate, secToMinPerPc, fmtRate } from '../lib/targets';
 import { fmtTime } from '../lib/format';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import type { ScheduledDia } from '../types/api';
@@ -153,7 +153,7 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
             <span className="data font-bold text-primary" title={mTitle(machine)}>{mName(machine)}</span>
             <span className="text-steel"> switches to </span>
             <span className="data font-bold text-accent">{dia.name}</span>
-            <span className="text-steel"> · {stage.name} ({secToMinPerPc(stage.processingSec)} min/pc → {fmtTarget(hourlyRate(stage.processingSec))}/hr) at </span>
+            <span className="text-steel"> · {stage.name} ({secToMinPerPc(stage.processingSec)} min/pc → {fmtRate(hourlyRate(stage.processingSec))}/hr) at </span>
             <span className="data font-semibold text-primary">{whenOk ? fmtTime(new Date(when).toISOString()) : '—'}</span>
           </div>
         )}

@@ -11,7 +11,7 @@ import { productionApi } from '../../api/endpoints';
 import Modal from '../Modal';
 import { useAuthStore } from '../../store/auth';
 import { toast } from '../../store/toast';
-import { fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../../lib/targets';
+import { fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc, fmtRate } from '../../lib/targets';
 import { stageForMachine } from '../../lib/diaStage';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtTime } from '../../lib/format';
@@ -197,7 +197,7 @@ export function AssignDiaModal({ code, current, onClose }: {
                   <span className="text-steel">1 pc every </span>
                   <span className="data font-bold text-accent">{secToMinPerPc(stage.processingSec)} min</span>
                   <span className="text-steel"> → </span>
-                  <span className="data font-bold text-accent">{fmtTarget(hourlyRate(stage.processingSec))}/hr</span>
+                  <span className="data font-bold text-accent">{fmtRate(hourlyRate(stage.processingSec))}/hr</span>
                   <span className="text-steel"> · </span>
                   <span className="data font-bold text-accent">{fmtTarget((shiftMins * 60) / stage.processingSec)}</span>
                   <span className="text-steel">/shift</span>

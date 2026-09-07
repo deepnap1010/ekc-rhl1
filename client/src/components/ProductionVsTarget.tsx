@@ -28,7 +28,7 @@ import { StatusPill, TimeStat } from './ui';
 import { machineApi, productionApi } from '../api/endpoints';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
-import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
+import { windowNetMs, targetUnits, fmtTarget, fmtRate, wholeDiff, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
 import { processCompare, groupMachines } from '../lib/machineOrder';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { resolveRange, shiftDayOn } from '../store/filters';
@@ -729,11 +729,13 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
             <Ruler size={10} className="shrink-0" /><span className="data font-medium text-primary">{t.dia}</span>
           </div>
           <div className="text-[10px] text-steel mt-0.5 truncate">
-            {t.stage} · {secToMinPerPc(t.processingSec)} min/pc · {fmtTarget(rate)}/hr
+            {t.stage} · {secToMinPerPc(t.processingSec)} min/pc · {fmtRate(rate)}/hr
           </div>
           <div className="flex items-baseline gap-1 mt-1">
             <span className="data text-base font-bold leading-none" style={{ color }}>{fmtNum(t.actual)}</span>
-            <span className="text-xs font-semibold text-primary/80">/ {fmtTarget(t.target)} pcs · {t.diff >= -0.5 && t.diff < 0.5 ? 'on target' : t.diff >= 0 ? `${fmtTarget(t.diff)} ahead` : `${fmtTarget(-t.diff)} behind`}</span>
+            {/* Whole pieces only. "0.62 behind" is not a state a shift can be
+                in, and it was on every card for the first minutes of a window. */}
+            <span className="text-xs font-semibold text-primary/80">/ {fmtTarget(t.target)} pcs · {wholeDiff(t.diff) === 0 ? 'on target' : wholeDiff(t.diff) > 0 ? `${wholeDiff(t.diff)} ahead` : `${-wholeDiff(t.diff)} behind`}</span>
           </div>
         </div>
       </div>
@@ -783,8 +785,8 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
             <Stat label="Performance" value={`${Math.round(pct * 100)}%`} color={color} sub="of target" />
             <Stat label="Availability" value={`${availPct}%`} color={availPct >= 75 ? TEAL : availPct >= 50 ? AMBER : RED} sub="runtime share" />
-            <Stat label="Actual rate" value={`${madePerHr}/hr`} color={madePerHr >= rate ? TEAL : AMBER} sub={`target ${fmtTarget(rate)}/hr`} />
-            <Stat label={t.diff >= 0 ? 'Ahead' : 'Behind'} value={fmtTarget(Math.abs(t.diff))} color={t.diff >= 0 ? TEAL : RED} sub="pcs vs target" />
+            <Stat label="Actual rate" value={`${madePerHr}/hr`} color={madePerHr >= rate ? TEAL : AMBER} sub={`target ${fmtRate(rate)}/hr`} />
+            <Stat label={wholeDiff(t.diff) >= 0 ? 'Ahead' : 'Behind'} value={String(Math.abs(wholeDiff(t.diff)))} color={wholeDiff(t.diff) >= 0 ? TEAL : RED} sub="pcs vs target" />
           </div>
           <Bar actual={t.actual} target={t.target} />
         </div>
@@ -888,7 +890,7 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
           <div
             className="absolute left-0 right-0 border-t-2 border-dashed border-stopped/60 z-10 pointer-events-none"
             style={{ top: `${(1 - perHr / max) * height}px` }}
-            title={`Target ${fmtTarget(perHr)}/hr`}
+            title={`Target ${fmtRate(perHr)}/hr`}
           />
         )}
         <div className="flex items-end gap-1.5" style={{ height }}>

@@ -8,7 +8,7 @@ import { Target } from 'lucide-react';
 import { productionApi } from '../../api/endpoints';
 import { useAuthStore } from '../../store/auth';
 import { fmtTime } from '../../lib/format';
-import { fmtTarget, fmtProcessing, hourlyRate } from '../../lib/targets';
+import { fmtProcessing, hourlyRate, fmtRate } from '../../lib/targets';
 import { AssignDiaModal, useCurrentAssignment } from './AssignDia';
 
 export default function DiaAssignmentSection({ code }: { code: string }): JSX.Element | null {
@@ -35,7 +35,7 @@ export default function DiaAssignmentSection({ code }: { code: string }): JSX.El
                 {current.snapshot.diaName}{current.snapshot.dims ? ` · ${current.snapshot.dims}` : ''} — {current.snapshot.stageName}
               </div>
               <div className="text-xs text-steel">
-                {fmtProcessing(current.snapshot.processingSec)}/unit → <span className="data text-accent font-semibold">{fmtTarget(hourlyRate(current.snapshot.processingSec))}/hr</span>
+                {fmtProcessing(current.snapshot.processingSec)}/unit → <span className="data text-accent font-semibold">{fmtRate(hourlyRate(current.snapshot.processingSec))}/hr</span>
                 {' '}· since {fmtTime(current.effectiveFrom)}{current.assignedBy?.name ? ` · by ${current.assignedBy.name}` : ''}
               </div>
             </div>

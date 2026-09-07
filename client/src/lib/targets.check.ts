@@ -1,5 +1,5 @@
 // client/src/lib/targets.check.ts — run: npx tsx client/src/lib/targets.check.ts
-import { assignedMs, netAssignedMs, windowNetMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtProcessing, hourlyRate, minPerPcToSec, secToMinPerPc, fmtMinPerPc } from './targets.js';
+import { assignedMs, netAssignedMs, windowNetMs, breakOverlapMs, targetUnits, achievementPct, fmtTarget, fmtRate, wholeDiff, fmtProcessing, hourlyRate, minPerPcToSec, secToMinPerPc, fmtMinPerPc } from './targets.js';
 
 const eq = (a: unknown, b: unknown, m: string): void => {
   if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} != ${JSON.stringify(b)}`);
@@ -24,7 +24,27 @@ close(targetUnits(7 * 60, HOUR), 60 / 7, '60/7 exact');
 eq(fmtTarget(60 / 7), '8', '60/7 shows 8 — a part-made piece is not a piece');
 eq(fmtTarget(749.7), '749', 'a board target reads whole');
 eq(fmtTarget(115.3), '115', 'and so does a per-machine target');
-eq(fmtTarget(0.25), '0.25', 'a sub-hourly rate keeps its decimals, never "0"');
+// A fraction of a piece is not a piece, and it is not zero either. One minute
+// into a shift every card read "0 / 0.41 pcs · 0.41 behind"; both halves of
+// that were noise.
+eq(fmtTarget(0.25), '<1', 'a part-made piece reads as under one, not as 0.25');
+eq(fmtTarget(0.62), '<1', 'and not as 0.62');
+eq(fmtTarget(0.999), '<1', 'right up to the piece landing');
+eq(fmtTarget(1), '1', 'a whole piece is a whole piece');
+
+// Rates keep their resolution — 0.5/hr is a real rate (one piece every two
+// hours) and must not collapse into the same "<1" as everything else slow.
+eq(fmtRate(0.5), '0.5', 'a slow rate keeps its decimals');
+eq(fmtRate(0.08), '0.08', 'and a very slow one keeps two');
+eq(fmtRate(20), '20', 'a normal rate is whole');
+eq(fmtRate(8.57), '8.6', 'a middling rate keeps one decimal');
+eq(fmtRate(60 / 7), '8.6', '60/7 per hour reads 8.6, not 8.571428…');
+
+// Ahead/behind counts WHOLE pieces: under one, a shift is on target.
+eq(wholeDiff(-0.62), 0, '0.62 short is not being behind');
+eq(wholeDiff(0.9), 0, 'nor is 0.9 ahead being ahead');
+eq(wholeDiff(-2.7), -2, 'two and a bit behind is two behind — the third is on the machine');
+eq(wholeDiff(3), 3, 'and whole numbers pass through');
 eq(fmtTarget(0), '0', 'zero stays zero');
 close(targetUnits(7 * 60, 8 * HOUR), 480 / 7, '8h at 60/7 = 68.57…, not 64 or 72');
 
