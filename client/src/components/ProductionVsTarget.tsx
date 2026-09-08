@@ -257,10 +257,12 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   // the same drill-down an admin sees. A family holding only ONE of their
   // machines has nothing to summarise, so it stays the full board it already
   // was. Both rules are per family, so a mixed assignment gets both shapes.
-  // Counted on the WHOLE family. A family holding one scored machine and one
-  // unmeasured one is still two machines to an operator, and reading it as a
-  // lone board would drop the second from their screen entirely.
-  const grouped = useMemo(() => groups.filter((g) => g.targets.length + g.unmeasured.length > 1), [groups]);
+  // Counted on the WHOLE family, and grouped is the EXACT complement of lone —
+  // a family holding one scored machine and one unmeasured one is still two
+  // machines to an operator, and a family that is one unmeasured machine and
+  // nothing else must still land somewhere: a ">1" test dropped it from both
+  // lists and left the operator a blank panel.
+  const grouped = useMemo(() => groups.filter((g) => !(g.targets.length === 1 && g.unmeasured.length === 0)), [groups]);
   const lone = useMemo(
     () => groups.filter((g) => g.targets.length === 1 && g.unmeasured.length === 0).map((g) => g.targets[0]),
     [groups],
@@ -641,7 +643,7 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
           <div className="flex items-center gap-1 mt-0.5 text-[10px] text-steel truncate">
             <Ruler size={10} className="shrink-0" />
             <span className="data font-medium text-primary truncate" title={dias.join(', ')}>
-              {dias.length === 1 ? dias[0] : `${dias.length} products`}
+              {dias.length === 0 ? '—' : dias.length === 1 ? dias[0] : `${dias.length} products`}
             </span>
             <span className="shrink-0">· {allRows.length} machine{allRows.length === 1 ? '' : 's'}</span>
           </div>
@@ -693,7 +695,13 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
   const run = g.targets.reduce((n, t) => n + t.row.runningMs, 0);
   const idle = g.targets.reduce((n, t) => n + t.row.idleMs, 0);
   const stop = g.targets.reduce((n, t) => n + t.row.stoppedMs, 0);
-  const avail = windowMs > 0 ? Math.round((run / (windowMs * g.targets.length)) * 100) : 0;
+  // Same rules as the card it was opened from: the percentage and availability
+  // take only what can be scored (0/0 is a dash, not NaN, and not a red 0%),
+  // while the health strip takes the whole family — the card just promised
+  // "SPG-06 needs attention"; the summary must not answer "all fine".
+  const scorable = g.targets.length > 0;
+  const allRows = [...g.targets.map((t) => t.row), ...g.unmeasured.map((u) => u.row)];
+  const avail = windowMs > 0 && scorable ? Math.round((run / (windowMs * g.targets.length)) * 100) : 0;
   return (
     // Deliberately NOT the machine-card look: accent left rail + tinted ground
     // so the eye reads "this is the group's summary", not a sixth machine.
@@ -704,8 +712,9 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <div className="font-semibold text-sm text-primary truncate">{g.label}</div>
       </div>
       <div className="data text-3xl font-bold leading-tight tabular-nums whitespace-nowrap"
-        style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}%</div>
-      <div className="label mt-0.5 mb-3">of target · {avail}% availability</div>
+        style={{ color: scorable ? attainColor(pct) : 'var(--c-steel, #64748B)' }}>
+        {scorable ? `${Math.round(pct * 100)}%` : '—'}</div>
+      <div className="label mt-0.5 mb-3">{scorable ? `of target · ${avail}% availability` : 'nothing scorable in this window'}</div>
       <div className="flex items-end justify-between gap-2">
         <div><div className="data text-lg font-bold leading-none text-primary">{fmtNum(actual)}</div><div className="label mt-0.5">Produced</div></div>
         <div className="text-right"><div className="data text-lg font-bold leading-none text-steel">{fmtTarget(target)}</div><div className="label mt-0.5">Target</div></div>
@@ -717,10 +726,12 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <TimeStat label="Stopped" ms={stop} color={RED} />
       </div>
       <div className="space-y-1.5">
-        <AttentionLine rows={g.targets.map((t) => t.row)} />
-        <StatusDots rows={g.targets.map((t) => t.row)} />
+        <AttentionLine rows={allRows} />
+        <StatusDots rows={allRows} unmeasured={new Set(g.unmeasured.map((u) => u.row.code))} />
       </div>
-      <GroupWeekChart g={g} />
+      {/* Seven day-queries for a group with nothing to score would draw a
+          chart stuck on "Reading the week's history…" forever. */}
+      {scorable && <GroupWeekChart g={g} />}
     </div>
   );
 }
