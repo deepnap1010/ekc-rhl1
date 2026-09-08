@@ -22,7 +22,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
-import { Target, Ruler, ArrowUpRight, ArrowLeft, CheckCircle2, AlertTriangle, Boxes, Flame } from 'lucide-react';
+import { Target, Ruler, ArrowUpRight, ArrowLeft, CheckCircle2, AlertTriangle, CircleSlash, Boxes, Flame } from 'lucide-react';
 import { Donut } from './charts';
 import { StatusPill, TimeStat } from './ui';
 import { machineApi, productionApi } from '../api/endpoints';
@@ -30,6 +30,7 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
 import { windowNetMs, targetUnits, fmtTarget, fmtRate, wholeDiff, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
 import { processCompare, groupMachines } from '../lib/machineOrder';
+import { isFurnaceRef } from '../lib/temperature';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { resolveRange, shiftDayOn } from '../store/filters';
 import { fmtNum, fmtDuration } from '../lib/format';
@@ -59,7 +60,17 @@ interface TargetRow {
   diff: number;          // actual - target: negative = behind
 }
 
-interface GroupTargets { key: string; label: string; targets: TargetRow[] }
+interface GroupTargets {
+  key: string;
+  label: string;
+  targets: TargetRow[];
+  // Machines of this family the board cannot measure — no counter, or no dia.
+  // They are NOT failing; they are unmeasurable, and the two must never be
+  // rendered as the same thing. They stay out of the attainment arithmetic and
+  // in everything that counts machines.
+  unmeasured: UnmeasuredRow[];
+}
+interface UnmeasuredRow { row: MachineActivityRow; reason: string }
 
 // Attainment (actual/target) drives every color on the board:
 // below 50% red · 50–90% orange · above 90% green.
@@ -182,39 +193,78 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
     return out;
   }, [effRows, asgBy, netMs]);
 
-  // A dia-assigned machine that is NOT on the board must say WHY — silent
-  // exclusion reads as a bug.
-  const excluded = useMemo(() => {
-    const included = new Set(targets.map((t) => t.row.code));
-    const out: { code: string; reason: string }[] = [];
-    for (const row of effRows) {
-      if (!asgBy.get(row.code.toUpperCase()) || included.has(row.code)) continue;
-      if (row.production == null && row.avgTemp == null) out.push({ code: row.code, reason: 'no production counter' });
-    }
-    return out;
-  }, [effRows, targets, asgBy]);
 
   // Furnaces: no counter — heat IS their output, so the board still owes them a
-  // card. Any machine reporting a measured temperature and no pieces gets a
-  // heat card in the same grid, dia or not.
-  const heatGroups = useMemo(() => {
-    const rows = effRows.filter((r) => r.production == null && r.avgTemp != null);
-    return groupMachines(rows).map((g) => ({ key: `heat:${g.key}`, label: g.label, rows: g.machines }));
-  }, [effRows]);
+  // card. A furnace qualifies by WHAT IT IS, not by whether a temperature
+  // happens to be arriving: gating on avgTemp meant a furnace whose probe went
+  // quiet vanished from the board altogether, which is the exact moment someone
+  // needs to see it. Its card then reads "—°C", which is the useful answer.
+  // Any other machine reporting a measured temperature and no pieces joins them.
+  const heatRows = useMemo(
+    () => effRows.filter((r) => r.production == null && (isFurnaceRef(r.code) || r.avgTemp != null)),
+    [effRows],
+  );
+  const heatGroups = useMemo(
+    () => groupMachines(heatRows).map((g) => ({ key: `heat:${g.key}`, label: g.label, rows: g.machines })),
+    [heatRows],
+  );
+
+  // Whatever is left. A plant has twenty machines and a board that showed
+  // eighteen of them was not a board of the plant — the two it dropped were the
+  // ones a supervisor would most want to ask about, and they appeared only as a
+  // sentence under the grid. Each one lands on its own family's card now,
+  // carrying the reason it cannot be scored.
+  const unmeasured = useMemo<UnmeasuredRow[]>(() => {
+    const scored = new Set(targets.map((t) => t.row.code));
+    const heat = new Set(heatRows.map((r) => r.code));
+    return effRows
+      .filter((r) => !scored.has(r.code) && !heat.has(r.code))
+      .map((row) => ({
+        row,
+        reason: row.production == null ? 'no production counter'
+          : !asgBy.get(row.code.toUpperCase()) ? 'no dia assigned'
+            : 'no target in this window',
+      }));
+  }, [effRows, targets, heatRows, asgBy]);
 
   // Machines bucketed into their production groups — the admin board's cards.
+  // A family appears if it has ANY machine, scored or not.
   const groups = useMemo<GroupTargets[]>(() => {
     const byRow = new Map(targets.map((t) => [t.row, t]));
-    return groupMachines(targets.map((t) => t.row))
-      .map((g) => ({ key: g.key, label: g.label, targets: g.machines.map((m) => byRow.get(m) as TargetRow) }));
-  }, [targets]);
+    const byUn = new Map(unmeasured.map((u) => [u.row, u]));
+    return groupMachines([...targets.map((t) => t.row), ...unmeasured.map((u) => u.row)])
+      .map((g) => ({
+        key: g.key,
+        label: g.label,
+        targets: g.machines.map((m) => byRow.get(m)).filter(Boolean) as TargetRow[],
+        unmeasured: g.machines.map((m) => byUn.get(m)).filter(Boolean) as UnmeasuredRow[],
+      }));
+  }, [targets, unmeasured]);
+
+  // Nothing should reach this any more — every machine now lands on a group
+  // card, a heat card, or its family's unmeasured list. It stays as the tripwire
+  // that would show a machine falling through all three.
+  const excluded = useMemo(() => {
+    const placed = new Set([
+      ...targets.map((t) => t.row.code),
+      ...heatRows.map((r) => r.code),
+      ...unmeasured.map((u) => u.row.code),
+    ]);
+    return effRows.filter((r) => !placed.has(r.code)).map((r) => ({ code: r.code, reason: 'not shown anywhere' }));
+  }, [effRows, targets, heatRows, unmeasured]);
   // An operator with several machines in ONE family reads them as a line, not
   // as a row of unrelated boards — so that family gets a group card, opening to
   // the same drill-down an admin sees. A family holding only ONE of their
   // machines has nothing to summarise, so it stays the full board it already
   // was. Both rules are per family, so a mixed assignment gets both shapes.
-  const grouped = useMemo(() => groups.filter((g) => g.targets.length > 1), [groups]);
-  const lone = useMemo(() => groups.filter((g) => g.targets.length === 1).map((g) => g.targets[0]), [groups]);
+  // Counted on the WHOLE family. A family holding one scored machine and one
+  // unmeasured one is still two machines to an operator, and reading it as a
+  // lone board would drop the second from their screen entirely.
+  const grouped = useMemo(() => groups.filter((g) => g.targets.length + g.unmeasured.length > 1), [groups]);
+  const lone = useMemo(
+    () => groups.filter((g) => g.targets.length === 1 && g.unmeasured.length === 0).map((g) => g.targets[0]),
+    [groups],
+  );
 
   const open = openGroup ? groups.find((g) => g.key === openGroup) ?? null : null;
   // A group that vanished from the data (window change, refetch) must not
@@ -312,8 +362,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
           under a shift label — ask for the shift instead. */}
       {mode === 'shift' && !shiftName ? (
         <div className="text-sm text-steel py-6 text-center">Pick a shift to measure against.</div>
-      ) : targets.length === 0 ? (
-        <div className="text-sm text-steel py-6 text-center">No production counted for {effLabel}.</div>
+      ) : targets.length === 0 && heatGroups.length === 0 && unmeasured.length === 0 ? (
+        <div className="text-sm text-steel py-6 text-center">No machines to show for {effLabel}.</div>
       ) : open && openFor ? (
         /* ── One MACHINE opened — the full board. Same for either role. ── */
         <div>
@@ -351,6 +401,10 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
             <div className="grid sm:grid-cols-2 2xl:grid-cols-3 gap-3 content-start">
               {open.targets.map((t) => (
                 <MachineTargetCard key={t.row.code} t={t} onOpen={() => setOpenForCode(t.row.code)} />
+              ))}
+              {/* The rest of the family, after the ones that can be scored. */}
+              {open.unmeasured.map((u) => (
+                <UnmeasuredMachineCard key={u.row.code} r={u.row} reason={u.reason} windowLabel={effLabel} />
               ))}
             </div>
           </div>
@@ -414,16 +468,23 @@ function Bar({ actual, target }: { actual: number; target: number }): JSX.Elemen
   );
 }
 
-// One dot per machine — the group's health at a glance.
-function StatusDots({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
+// One dot per machine — the group's health at a glance. A machine the board
+// cannot score still has a state worth seeing, so it keeps its dot and wears a
+// ring instead of a fill: present and running, just not counted.
+function StatusDots({ rows, unmeasured }: { rows: MachineActivityRow[]; unmeasured?: Set<string> }): JSX.Element {
   const mName = useMachineName();
   return (
     <div className="flex items-center gap-1.5 flex-wrap">
-      {rows.map((r) => (
-        <span key={r.code} className="w-2.5 h-2.5 rounded-full shrink-0"
-          style={{ background: dotColor(r.status) }}
-          title={`${mName(r.code)} · ${r.status}`} />
-      ))}
+      {rows.map((r) => {
+        const off = unmeasured?.has(r.code);
+        return (
+          <span key={r.code} className="w-2.5 h-2.5 rounded-full shrink-0"
+            style={off
+              ? { border: `2px solid ${dotColor(r.status)}` }
+              : { background: dotColor(r.status) }}
+            title={`${mName(r.code)} · ${r.status}${off ? ' · not counted' : ''}`} />
+        );
+      })}
     </div>
   );
 }
@@ -508,6 +569,39 @@ function FurnaceMachineCard({ r, windowLabel }: { r: MachineActivityRow; windowL
   );
 }
 
+// A machine the board cannot score is not a machine with nothing to say. It has
+// a state, it has a runtime split, and it has a reason it is not being counted —
+// which is usually the actionable part: "no production counter" is a job for
+// whoever owns the collector, and it stays invisible if the machine does.
+function UnmeasuredMachineCard({ r, reason, windowLabel }: {
+  r: MachineActivityRow; reason: string; windowLabel: string;
+}): JSX.Element {
+  const mName = useMachineName();
+  const mTitle = useMachineTitle();
+  return (
+    <Link to={`/machines/${encodeURIComponent(r.code)}`}
+      className="card p-4 block transition-all hover:shadow-md hover:border-accent/30 group">
+      <div className="flex items-center gap-2">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ border: `2px solid ${dotColor(r.status)}` }} />
+        <span className="data font-bold text-sm text-primary truncate group-hover:text-accent transition-colors" title={mTitle(r.code)}>{mName(r.code)}</span>
+        <span className="ml-auto shrink-0"><StatusPill status={r.status} /></span>
+      </div>
+
+      <div className="mt-3">
+        <div className="label inline-flex items-center gap-1"><CircleSlash size={10} className="text-steel" /> Not counted · {windowLabel}</div>
+        <div className="mt-1 text-xs text-steel">{reason}</div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-1.5">
+        <TimeStat label="Uptime" ms={r.runningMs} color={TEAL} />
+        <TimeStat label="Idle" ms={r.idleMs} color={AMBER} />
+        <TimeStat label="Stopped" ms={r.stoppedMs} color={RED} />
+        <TimeStat label="Offline" ms={r.offlineMs} color={SLATE} />
+      </div>
+    </Link>
+  );
+}
+
 // "All machines are working fine" — or exactly which ones aren't.
 function AttentionLine({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
   const mName = useMachineName();
@@ -535,6 +629,10 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
   const target = g.targets.reduce((n, t) => n + t.target, 0);
   const pct = target ? actual / target : 0;
   const dias = [...new Set(g.targets.map((t) => t.dia))];
+  // The dots and the machine count take the whole family; the percentage takes
+  // only what can be scored. An unmeasurable machine rendered as 0% would read
+  // as the worst performer on the floor when it is simply not being counted.
+  const allRows = [...g.targets.map((t) => t.row), ...g.unmeasured.map((u) => u.row)];
   return (
     <button onClick={onOpen} className="card p-4 flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 hover:-translate-y-0.5 group">
       <div className="flex items-start justify-between gap-2">
@@ -545,11 +643,15 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
             <span className="data font-medium text-primary truncate" title={dias.join(', ')}>
               {dias.length === 1 ? dias[0] : `${dias.length} products`}
             </span>
+            <span className="shrink-0">· {allRows.length} machine{allRows.length === 1 ? '' : 's'}</span>
           </div>
         </div>
         <div className="text-right shrink-0">
+          {/* A family with nothing scorable shows a dash, not "0%" — zero is a
+              performance, a dash is the absence of a measurement. */}
           <div className="data text-2xl font-bold leading-tight tabular-nums whitespace-nowrap"
-            style={{ color: attainColor(pct) }}>{Math.round(pct * 100)}%</div>
+            style={{ color: g.targets.length ? attainColor(pct) : 'var(--c-steel, #64748B)' }}>
+            {g.targets.length ? `${Math.round(pct * 100)}%` : '—'}</div>
           <div className="label mt-0.5">of target</div>
         </div>
       </div>
@@ -567,8 +669,17 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
       <div className="mt-2"><Bar actual={actual} target={target} /></div>
 
       <div className="mt-3 space-y-1.5">
-        <AttentionLine rows={g.targets.map((t) => t.row)} />
-        <StatusDots rows={g.targets.map((t) => t.row)} />
+        <AttentionLine rows={allRows} />
+        {g.unmeasured.length > 0 && (
+          <span className="flex items-start gap-1 text-[10px] text-steel min-w-0"
+            title={g.unmeasured.map((u) => `${u.row.code} — ${u.reason}`).join(', ')}>
+            <CircleSlash size={11} className="shrink-0 mt-px" />
+            <span className="min-w-0 break-words">
+              {g.unmeasured.length} not counted — {[...new Set(g.unmeasured.map((u) => u.reason))].join(', ')}
+            </span>
+          </span>
+        )}
+        <StatusDots rows={allRows} unmeasured={new Set(g.unmeasured.map((u) => u.row.code))} />
       </div>
     </button>
   );
