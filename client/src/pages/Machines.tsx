@@ -651,8 +651,12 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     sub: dark && lastDay
       ? `last day with signal — lost ${fmtTime(lastSeen)}`
       : dark
-        // Still the live window's own count — say when it stopped growing.
-        ? `signal lost ${fmtTime(lastSeen)}`
+        // Still the live window's own count — say when it stopped growing, and
+        // keep the register beside it. The window's pieces are the comparable
+        // number and belong in the headline; the lifetime counter answers a
+        // different question and belongs here, where its scale cannot be
+        // mistaken for this shift's output.
+        ? `${counterNow != null ? `counter reads ${fmtNum(counterNow)} · ` : ''}signal lost ${fmtTime(lastSeen)}`
         : borrowedFrom(activity)
         ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
           : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
