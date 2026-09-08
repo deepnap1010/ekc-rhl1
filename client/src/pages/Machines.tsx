@@ -625,7 +625,17 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // "last day with signal" header pairs today's count with yesterday's name.
   // While the row is missing, madeToday stays null and the Last-known wrapper
   // covers the card honestly.
-  const madeToday = furnace ? null : dark ? lastRow?.production ?? null : activity?.production ?? null;
+  //
+  // The gate is lastDAY, not lastRow. A machine that went quiet ten minutes ago
+  // has no FINISHED last day to fall back to, so it keeps the live window —
+  // which still holds the pieces it made this morning before it went quiet, the
+  // most useful number on the card. Gating on lastRow instead threw that away
+  // for every short outage and dropped the headline to the machine's lifetime
+  // register: SPG02, eleven minutes dark, read "1,977 pcs" where every card
+  // beside it read this shift's twenty-odd.
+  const madeToday = furnace ? null
+    : dark && lastDay ? lastRow?.production ?? null
+      : activity?.production ?? null;
   const counterNow = furnace ? null : productionValue(params);
   const dayHero: Headline | null = madeToday == null ? null : {
     // Dark, the headline is DATED — its window is the last day with signal,
@@ -638,9 +648,12 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     // doesn't have.
     // A derived count has no register to quote: the server counted bursts of a
     // signal (config/derivedCounters), so the sub-line says that instead.
-    sub: dark
+    sub: dark && lastDay
       ? `last day with signal — lost ${fmtTime(lastSeen)}`
-      : borrowedFrom(activity)
+      : dark
+        // Still the live window's own count — say when it stopped growing.
+        ? `signal lost ${fmtTime(lastSeen)}`
+        : borrowedFrom(activity)
         ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
           : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
   };
