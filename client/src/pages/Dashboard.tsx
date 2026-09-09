@@ -6,7 +6,7 @@
 // activity engine (/machines/activity) — one dataset, so a group's totals and the
 // fleet roll-up can never disagree. OEE stays absent: its inputs don't exist in
 // the data and are never fabricated.
-import { useState, useMemo, type ReactNode } from 'react';
+import { useState, useMemo, useEffect, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
@@ -27,6 +27,7 @@ import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
 import { sumActivity } from '../lib/metrics';
 import { useDashboardLive } from '../hooks/useLive';
+import { liveStatus } from '../lib/machineStatus';
 import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS, useCurrentShiftDefault } from '../store/filters';
 import { useAppConfig } from '../hooks/useAppConfig';
 import type { MachineActivityRow } from '../types/api';
@@ -78,7 +79,32 @@ export default function Dashboard() {
     queryKey: ['machines', 'selector'],
     queryFn: () => machineApi.list({ limit: 200, sort: 'name' }).then((r) => r.data),
     staleTime: 60_000,
+    // Not just the selector any more: the board reads current statuses off this
+    // list, and a machine that has gone dark stops ticking — only a refetch can
+    // keep its lastReadingAt honest.
+    refetchInterval: 60_000,
   });
+
+  // What every machine says RIGHT NOW — ticks first, list as fallback. The
+  // board shows this word on live windows instead of the window's dominant
+  // state. minuteStamp is the clock input: the 10-minute silence rule is
+  // wall-clock, and a memo frozen on [list, ticks] would never re-judge it.
+  // It must be interval-driven state (same pattern as the Machines page):
+  // when the server or every collector goes quiet, no query and no tick
+  // re-renders this page, and a render-time stamp would freeze green
+  // "Running" pills at the exact moment they most need to turn Signal Lost.
+  const [minuteStamp, setMinuteStamp] = useState(() => Math.floor(Date.now() / 60_000));
+  useEffect(() => {
+    const t = setInterval(() => setMinuteStamp(Math.floor(Date.now() / 60_000)), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const statusNow = useMemo(() => {
+    void minuteStamp;
+    return new Map((machineList ?? []).map((m) => [
+      String(m.code || m.machineId || m._id).toUpperCase(),
+      liveStatus(m, live[m.code || m._id]),
+    ]));
+  }, [machineList, live, minuteStamp]);
 
   const allRows = useMemo<MachineActivityRow[]>(() => actData?.data || [], [actData]);
   // A machine selection scopes the whole page (header, chart, groups) to it.
@@ -224,7 +250,7 @@ export default function Dashboard() {
             assignment engine: group cards → machines → full operator board,
             with its own window filter (per hour / per shift / today…). */}
         <ProductionVsTarget rows={rows} windowMs={windowMs} windowLabel={windowLabel}
-          from={fromISO} to={toISO} onMachineOpen={setMachineBoardOpen} />
+          from={fromISO} to={toISO} statusNow={statusNow} onMachineOpen={setMachineBoardOpen} />
 
         {/* Operator notice: scheduled-dia instructions, shown until dismissed */}
         <ScheduledDiaPopup />

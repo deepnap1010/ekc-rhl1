@@ -32,14 +32,25 @@ import { windowNetMs, targetUnits, fmtTarget, fmtRate, wholeDiff, fmtProcessing,
 import { processCompare, groupMachines } from '../lib/machineOrder';
 import { isFurnaceRef } from '../lib/temperature';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
-import { resolveRange, shiftDayOn } from '../store/filters';
-import { fmtNum, fmtDuration } from '../lib/format';
+import { resolveRange, shiftDayOn, windowIsLive } from '../store/filters';
+import { fmtNum, fmtDuration, statusStyle } from '../lib/format';
 import type { MachineActivityRow, MachineAssignment } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', SLATE = '#94A3B8', TRACK = '#E2E8F0';
 
+/** An activity row whose pill may have been swapped to the machine's current
+ *  state on a live window; windowStatus keeps the window's dominant word for
+ *  the pill's hover. Local — it is not on the wire. */
+type BoardRow = MachineActivityRow & { windowStatus?: string };
+
+const pillTitle = (r: BoardRow): string | undefined =>
+  r.windowStatus ? `right now — most of this window: ${r.windowStatus}` : undefined;
+
 interface Props {
   rows: MachineActivityRow[];
+  /** CURRENT status per machine code (upper-cased), tick-aware, from the page.
+   *  On a window that includes now, the board's pills show these words. */
+  statusNow?: Map<string, string>;
   windowMs: number;      // elapsed window (server clips `to` to now)
   windowLabel: string;
   from?: string;
@@ -83,7 +94,7 @@ const dotColor = (status: string): string =>
 type WinMode = '' | 'hour' | 'shift' | 'today' | 'yesterday';
 const hourLabel = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`;
 
-export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to, onMachineOpen }: Props): JSX.Element | null {
+export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to, statusNow, onMachineOpen }: Props): JSX.Element | null {
   const { shifts, breaks } = useAppConfig();
   const mName = useMachineName();
   const mTitle = useMachineTitle();
@@ -167,6 +178,24 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
     : mode === 'yesterday' ? 'Yesterday'
     : windowLabel;
 
+  // On a LIVE window the pill answers "what is this machine doing NOW" — the
+  // same word, from the same helper, as the Machines page — because a pill
+  // beside a running machine reads as its current state, and "Offline" there
+  // is a false sentence however honestly the window arithmetic voted for it
+  // (BOTTOMMILLING03: dark 07:14→11:30, running since, dominant = offline).
+  // The dominant word survives on the pill's hover; every duration, target and
+  // availability figure still reads the untouched row. Historical windows keep
+  // the dominant word everywhere — "Yesterday" answers for yesterday — and the
+  // gate is the BOARD's own window (effFrom/effTo), not the page filter's.
+  const boardRows = useMemo<BoardRow[]>(() => {
+    if (!statusNow || !effFrom || !effTo) return effRows;
+    if (!windowIsLive(new Date(effFrom), new Date(effTo))) return effRows;
+    return effRows.map((r) => {
+      const cur = statusNow.get(r.code.toUpperCase());
+      return cur && cur !== r.status ? { ...r, status: cur, windowStatus: r.status } : r;
+    });
+  }, [effRows, statusNow, effFrom, effTo]);
+
   // The measured stretch of the window, net of planned breaks — targets divide
   // this by each assignment's frozen processing time.
   const netMs = useMemo(() => {
@@ -176,7 +205,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
 
   const targets = useMemo<TargetRow[]>(() => {
     const out: TargetRow[] = [];
-    for (const row of [...effRows].sort(processCompare)) {
+    for (const row of [...boardRows].sort(processCompare)) {
       if (row.production == null) continue;                       // no counter, nothing to compare
       // Dia FIRST: the dia is the product, so a machine has no rate or target
       // until it's set up with one. Assigning a dia is what activates it here.
@@ -191,7 +220,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
       });
     }
     return out;
-  }, [effRows, asgBy, netMs]);
+  }, [boardRows, asgBy, netMs]);
 
 
   // Furnaces: no counter — heat IS their output, so the board still owes them a
@@ -201,8 +230,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   // needs to see it. Its card then reads "—°C", which is the useful answer.
   // Any other machine reporting a measured temperature and no pieces joins them.
   const heatRows = useMemo(
-    () => effRows.filter((r) => r.production == null && (isFurnaceRef(r.code) || r.avgTemp != null)),
-    [effRows],
+    () => boardRows.filter((r) => r.production == null && (isFurnaceRef(r.code) || r.avgTemp != null)),
+    [boardRows],
   );
   const heatGroups = useMemo(
     () => groupMachines(heatRows).map((g) => ({ key: `heat:${g.key}`, label: g.label, rows: g.machines })),
@@ -217,7 +246,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   const unmeasured = useMemo<UnmeasuredRow[]>(() => {
     const scored = new Set(targets.map((t) => t.row.code));
     const heat = new Set(heatRows.map((r) => r.code));
-    return effRows
+    return boardRows
       .filter((r) => !scored.has(r.code) && !heat.has(r.code))
       .map((row) => ({
         row,
@@ -225,7 +254,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
           : !asgBy.get(row.code.toUpperCase()) ? 'no dia assigned'
             : 'no target in this window',
       }));
-  }, [effRows, targets, heatRows, asgBy]);
+  }, [boardRows, targets, heatRows, asgBy]);
 
   // Machines bucketed into their production groups — the admin board's cards.
   // A family appears if it has ANY machine, scored or not.
@@ -250,8 +279,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
       ...heatRows.map((r) => r.code),
       ...unmeasured.map((u) => u.row.code),
     ]);
-    return effRows.filter((r) => !placed.has(r.code)).map((r) => ({ code: r.code, reason: 'not shown anywhere' }));
-  }, [effRows, targets, heatRows, unmeasured]);
+    return boardRows.filter((r) => !placed.has(r.code)).map((r) => ({ code: r.code, reason: 'not shown anywhere' }));
+  }, [boardRows, targets, heatRows, unmeasured]);
   // An operator with several machines in ONE family reads them as a line, not
   // as a row of unrelated boards — so that family gets a group card, opening to
   // the same drill-down an admin sees. A family holding only ONE of their
@@ -484,7 +513,7 @@ function StatusDots({ rows, unmeasured }: { rows: MachineActivityRow[]; unmeasur
             style={off
               ? { border: `2px solid ${dotColor(r.status)}` }
               : { background: dotColor(r.status) }}
-            title={`${mName(r.code)} · ${r.status}${off ? ' · not counted' : ''}`} />
+            title={`${mName(r.code)} · ${statusStyle(r.status).label}${off ? ' · not counted' : ''}`} />
         );
       })}
     </div>
@@ -548,7 +577,7 @@ function FurnaceMachineCard({ r, windowLabel }: { r: MachineActivityRow; windowL
       <div className="flex items-center gap-2">
         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: dotColor(r.status) }} />
         <span className="data font-bold text-sm text-primary truncate group-hover:text-accent transition-colors" title={mTitle(r.code)}>{mName(r.code)}</span>
-        <span className="ml-auto shrink-0"><StatusPill status={r.status} /></span>
+        <span className="ml-auto shrink-0"><StatusPill status={r.status} title={pillTitle(r)} /></span>
       </div>
 
       <div className="mt-3">
@@ -586,7 +615,7 @@ function UnmeasuredMachineCard({ r, reason, windowLabel }: {
       <div className="flex items-center gap-2">
         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ border: `2px solid ${dotColor(r.status)}` }} />
         <span className="data font-bold text-sm text-primary truncate group-hover:text-accent transition-colors" title={mTitle(r.code)}>{mName(r.code)}</span>
-        <span className="ml-auto shrink-0"><StatusPill status={r.status} /></span>
+        <span className="ml-auto shrink-0"><StatusPill status={r.status} title={pillTitle(r)} /></span>
       </div>
 
       <div className="mt-3">
@@ -607,7 +636,7 @@ function UnmeasuredMachineCard({ r, reason, windowLabel }: {
 // "All machines are working fine" — or exactly which ones aren't.
 function AttentionLine({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
   const mName = useMachineName();
-  const bad = rows.filter((r) => r.status === 'stopped' || r.status === 'offline');
+  const bad = rows.filter((r) => r.status === 'stopped' || r.status === 'offline' || r.status === 'network');
   if (!bad.length) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] text-running font-medium">
@@ -845,7 +874,7 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="data font-bold text-xs text-primary truncate group-hover:text-accent transition-colors" title={mTitle(t.row.code)}>{mName(t.row.code)}</span>
-            <StatusPill status={t.row.status} />
+            <StatusPill status={t.row.status} title={pillTitle(t.row)} />
           </div>
           <div className="flex items-center gap-1 mt-1 text-[10px] text-steel truncate">
             <Ruler size={10} className="shrink-0" /><span className="data font-medium text-primary">{t.dia}</span>
@@ -887,7 +916,7 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow
       {/* Header strip — machine · dia · stage · rate, like the operator screen's part strip */}
       <div className="flex items-center gap-2.5 flex-wrap pb-3 border-b border-line">
         <span className="data font-bold text-sm text-primary" title={mTitle(t.row.code)}>{mName(t.row.code)}</span>
-        <StatusPill status={t.row.status} />
+        <StatusPill status={t.row.status} title={pillTitle(t.row)} />
         <span className="inline-flex items-center gap-1 pill bg-accent/10 text-accent data !text-[10px]"><Ruler size={10} /> {t.dia}</span>
         <span className="text-[11px] text-steel ml-auto">{t.stage} · {fmtProcessing(t.processingSec)}/pc · target {fmtTarget(rate)}/hr</span>
       </div>

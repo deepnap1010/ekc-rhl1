@@ -7,12 +7,14 @@ import { freshness } from '../lib/metrics';
 
 interface StatusPillProps {
   status?: string | null;
+  /** Optional hover text — the target board keeps the window's dominant state here. */
+  title?: string;
 }
 
-export function StatusPill({ status }: StatusPillProps) {
+export function StatusPill({ status, title }: StatusPillProps) {
   const s = statusStyle(status);
   return (
-    <span className="pill" style={{ background: s.bg, color: s.color }}>
+    <span className="pill" style={{ background: s.bg, color: s.color }} title={title}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: s.color }} />
       {s.label}
     </span>

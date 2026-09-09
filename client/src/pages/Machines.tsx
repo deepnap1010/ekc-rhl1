@@ -17,7 +17,7 @@ import { AssignDiaModal } from '../components/machine/AssignDia';
 import DiaTraceModal from '../components/machine/DiaTraceModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
-import { statusCounts, effectiveStatus, isStale } from '../lib/machineStatus';
+import { statusCounts, liveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -162,8 +162,7 @@ export default function Machines() {
   }, []);
 
   // Filter, sort, and the card's pill all read the same tick-aware status.
-  const displayStatus = (m: Machine) =>
-    effectiveStatus({ status: live[m.code || m._id]?.status || m.status, lastReadingAt: m.lastReadingAt });
+  const displayStatus = (m: Machine) => liveStatus(m, live[m.code || m._id]);
   const machineRank = (m: Machine) =>
     rank(displayStatus(m), !isStale(live[m.code || m._id]?.lastReadingAt || m.lastReadingAt));
 
@@ -492,7 +491,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
   const own       = flattenParams(Object.keys(cp).length ? cp : (machine.latestData || {}));
   const params    = own;
-  const status    = effectiveStatus({ status: liveTick?.status || machine.status, lastReadingAt: liveTick?.lastReadingAt || machine.lastReadingAt });
+  const status    = liveStatus(machine, liveTick);
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
 
   // ── A dark machine answers for its LAST ACTIVE DAY ───────────────────────

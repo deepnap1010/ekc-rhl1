@@ -37,6 +37,26 @@ export function effectiveStatus(m: Pick<Machine, 'status' | 'lastReadingAt'>, no
   return s;
 }
 
+/** The tick-aware CURRENT status: the socket's word when one has arrived,
+ *  else the machine document's, both through the same 10-minute silence rule.
+ *  One helper, used by the Machines page and the Dashboard board alike, so the
+ *  two surfaces cannot drift into answering "now" differently. */
+export function liveStatus(
+  m: Pick<Machine, 'status' | 'lastReadingAt'>,
+  tick?: { status?: string | null; lastReadingAt?: string | null } | null,
+  now = Date.now(),
+): string {
+  // The NEWER of the two timestamps, not tick-first: a socket that dropped ten
+  // minutes ago holds a frozen tick, and letting it out-vote a fresh list doc
+  // would flip a healthy, polling fleet to Signal Lost.
+  const tickAt = Date.parse(tick?.lastReadingAt ?? '') || 0;
+  const docAt = Date.parse(String(m.lastReadingAt ?? '')) || 0;
+  return effectiveStatus(
+    { status: tick?.status || m.status, lastReadingAt: tickAt >= docAt ? tick?.lastReadingAt : m.lastReadingAt },
+    now,
+  );
+}
+
 export interface StatusTally {
   total: number;
   running: number;

@@ -184,6 +184,15 @@ export function clampToNow(r: { from: Date; to: Date }): { from: Date; to: Date 
   return { from: r.from, to: new Date(now) };
 }
 
+/** Whether a window includes the present moment — i.e. whether a status pill
+ *  over it should answer "what is the machine doing NOW" rather than "what did
+ *  it mostly do back then". Both ends matter: a tonight-only hour slice picked
+ *  at 14:49 is not live. And `to` tolerates nowRounded()'s minute floor — a
+ *  live Today window ends up to 59s in the past, and must not flicker
+ *  historical for those seconds of every minute. */
+export const windowIsLive = (from: Date, to: Date, now = Date.now()): boolean =>
+  from.getTime() <= now && to.getTime() >= now - 60_000;
+
 /** Resolve the current filter selection to a concrete [from, to], or null while
  *  a custom range is incomplete/invalid. */
 export function resolveRange(

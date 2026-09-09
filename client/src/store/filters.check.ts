@@ -1,5 +1,5 @@
 // Self-check for the window resolvers. Run: npx tsx client/src/store/filters.check.ts
-import { dayWindowAt, shiftDayOn, clampToNow } from './filters.js';
+import { dayWindowAt, shiftDayOn, clampToNow, windowIsLive } from './filters.js';
 import type { ShiftTiming } from '../lib/settings.js';
 
 const eq = (what: string, got: unknown, want: unknown): void => {
@@ -42,5 +42,13 @@ const gapRead = at(3, 23, 30);
 const gapWin = dayWindowAt(DAY_SHIFTS, gapRead);
 eq('a gap reading stays on its own day', gapWin.from.getTime(), shiftDayOn(DAY_SHIFTS, at(3, 0)).from.getTime());
 eq('and the window contains it', gapWin.to.getTime() > gapRead.getTime(), true);
+
+// A pill over a live window answers "now"; a finished window answers for
+// itself. Both ends gate it, and `to` tolerates nowRounded()'s minute floor.
+const NOW = at(3, 14, 49).getTime();
+eq('a window around now is live', windowIsLive(at(3, 7), at(3, 15), NOW), true);
+eq('a minute-floored end is still live', windowIsLive(at(3, 7), at(3, 14, 48), NOW), true);
+eq('a finished shift is not', windowIsLive(at(3, 7), at(3, 14, 47), NOW), false);
+eq('a tonight-only slice is not live yet', windowIsLive(at(3, 20), at(3, 23), NOW), false);
 
 console.log('filters: all checks passed');
