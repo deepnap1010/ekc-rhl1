@@ -23,6 +23,9 @@ export interface IAppConfig {
   stageTemplates: IStageTemplate[];
   products: string[];
   processStages: string[];
+  // Production-event classification rules (popup, options, timeout, default).
+  // Shape owned + validated by utils/prodclass.ts; stored as-is here.
+  prodClass?: Record<string, unknown>;
   updatedBy?: string;
 }
 
@@ -42,6 +45,7 @@ const appConfigSchema = new mongoose.Schema<IAppConfig>(
     )], default: [] },
     products:      { type: [String], default: [] },
     processStages: { type: [String], default: [] },
+    prodClass:     { type: mongoose.Schema.Types.Mixed },   // validated at the boundary
     updatedBy:     { type: String },
   },
   { collection: 'app_config', versionKey: false, timestamps: true }

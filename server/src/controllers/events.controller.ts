@@ -1,11 +1,15 @@
 // server/src/controllers/events.controller.ts
-// Read API over the operational event log (machine_events). This is what the
-// event-based History surfaces consume: state sessions + production events,
-// filterable by machine / kind / state / time range. Read-only; events are
-// written solely by the sweep (services/event.service).
+// Read API over the operational event log (machine_events), plus the ONE kind
+// of write this collection accepts: classifying a production event (operator
+// popup or a later history correction). The counter path stays untouchable —
+// events are still created solely by the sweep (services/event.service); the
+// classification endpoints only ever relabel a row that already exists.
 import { MachineEvent } from '../models/MachineEvent.js';
+import { AuditLog } from '../models/AuditLog.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
+import { refMatch, refIn } from '../utils/machineRef.js';
+import { getProdClassConfig, CLASS_VALUES, type ClassValue } from '../utils/prodclass.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 type RangeFilter = { $gte?: Date; $lte?: Date };
@@ -119,4 +123,118 @@ export const eventsSummary = asyncHandler(async (req, res) => {
     production: { events: prod?.events || 0, pieces: prod?.pieces || 0 },
     totalEvents: sessions.length + (prod?.events || 0),
   });
+});
+
+
+// ── production-event classification ─────────────────────────────────────────
+
+// How far back the popup reaches. Old rows keep their default classification —
+// they are already classified; the queue is only "recent enough to still ask".
+const QUEUE_WINDOW_MS = 2 * 3600_000;
+
+const audit = (
+  user: { _id?: unknown; name?: string } | undefined,
+  action: string, entity: { type: string; id?: string; label?: string },
+  before?: unknown, after?: unknown,
+): void => {
+  // Fire-and-forget — an audit row must never be the reason a change fails.
+  AuditLog.create({ at: new Date(), user: { id: String(user?._id || ''), name: user?.name || '' }, action, entity, before, after })
+    .catch(() => {});
+};
+
+// GET /production/class-queue — recent production events on MY machines whose
+// classification is still the untouched default. Operators only: an admin
+// browsing the dashboard must not be popped for the whole fleet.
+export const classQueue = asyncHandler(async (req, res) => {
+  const cfg = await getProdClassConfig();
+  if (!cfg.enabled) return ok(res, []);
+  const user = req.user as ScopedUser | undefined;
+  const mine = user?.assignedMachines || [];
+  if (!mine.length) return ok(res, []);
+  const rows = await MachineEvent.find({
+    kind: 'production', classSource: 'default', delta: { $gt: 0 },
+    machineId: { $in: mine.map(refMatch) },
+    startedAt: { $gte: new Date(Date.now() - QUEUE_WINDOW_MS) },
+  }).sort({ startedAt: 1 }).limit(25).lean();
+  return ok(res, rows);
+});
+
+// POST /production/events/:id/classify — the popup's answer, or its timeout.
+// Body: { value } for a button press, { timeout: true } when the countdown ran
+// out. Both are atomic filtered updates, so two devices can never both win:
+//   · a button press lands only while the row is 'default' or 'timeout' —
+//     it can refine an unanswered row, never overwrite another person's answer;
+//   · a timeout lands only while the row is still 'default' (the value stays
+//     the default — the write just marks "asked, no answer" so it leaves the queue).
+export const classifyEvent = asyncHandler(async (req, res) => {
+  const user = req.user as (ScopedUser & { _id?: unknown; name?: string }) | undefined;
+  const body = req.body as { value?: unknown; timeout?: unknown };
+  const ev = await MachineEvent.findById(req.params.id).lean();
+  if (!ev || ev.kind !== 'production') return fail(res, 404, 'Production event not found');
+  // Popup answers come only from the machine's OWN operator (superadmin
+  // excepted). "Unscoped sees everything" is a READ rule — letting every
+  // view-level account classify fleet-wide would let a dashboard viewer
+  // pre-empt the real operator, unaudited. Everyone else corrects through
+  // the audited PATCH /events/:id/classification. Uniform 404, not 403 —
+  // an out-of-scope caller learns nothing about other machines' events.
+  if (!user?.isSuperAdmin && !refIn(user?.assignedMachines, ev.machineId)) {
+    return fail(res, 404, 'Production event not found');
+  }
+
+  if (body.timeout) {
+    const r = await MachineEvent.updateOne(
+      { _id: ev._id, classSource: 'default' },
+      { $set: { classSource: 'timeout', classifiedAt: new Date() } },
+    );
+    return ok(res, { handled: r.modifiedCount > 0 });
+  }
+
+  const cfg = await getProdClassConfig();
+  const value = body.value as ClassValue;
+  const opt = cfg.options.find((o) => o.value === value);
+  if (!opt || !opt.enabled) return fail(res, 400, 'Not an enabled classification option');
+  const r = await MachineEvent.updateOne(
+    { _id: ev._id, classSource: { $in: ['default', 'timeout'] } },
+    { $set: {
+      classification: value, classSource: 'operator',
+      classifiedBy: { id: String(user?._id || ''), name: user?.name || '' },
+      classifiedAt: new Date(),
+    } },
+  );
+  // modifiedCount 0 = someone else already answered — their word stands.
+  return ok(res, { handled: r.modifiedCount > 0 });
+});
+
+// PATCH /events/:id/classification — correct a classification from History.
+// Permissioned (history.update), audited, and allowed to use a currently
+// DISABLED option: disabling only removes a button from future popups, it does
+// not make old truths unsayable.
+export const editClassification = asyncHandler(async (req, res) => {
+  const user = req.user as (ScopedUser & { _id?: unknown; name?: string }) | undefined;
+  const value = (req.body as { value?: unknown }).value as ClassValue;
+  if (!CLASS_VALUES.includes(value)) return fail(res, 400, 'Unknown classification');
+  const ev = await MachineEvent.findById(req.params.id).lean();
+  if (!ev || ev.kind !== 'production') return fail(res, 404, 'Production event not found');
+  const scope = machineScope(user);
+  if (scope && !refIn(scope, ev.machineId)) return fail(res, 404, 'Production event not found');
+  if ((ev.meta as { reset?: boolean } | undefined)?.reset) return fail(res, 400, 'Counter resets are not classifiable');
+
+  // findOneAndUpdate (default new:false) returns the pre-image atomically —
+  // the audit's "before" cannot be staled by a popup answer landing between a
+  // separate read and write, and a row deleted in between is a 404, not a
+  // fabricated success.
+  const prev = await MachineEvent.findOneAndUpdate(
+    { _id: ev._id, kind: 'production' },
+    { $set: {
+      classification: value, classSource: 'edit',
+      classifiedBy: { id: String(user?._id || ''), name: user?.name || '' },
+      classifiedAt: new Date(),
+    } },
+  ).lean();
+  if (!prev) return fail(res, 404, 'Production event not found');
+  // The total is untouched by design — only the label on this event changes.
+  audit(user, 'production.classify',
+    { type: 'machine_event', id: String(ev._id), label: `${ev.machineId} · ${ev.prevValue} → ${ev.newValue}` },
+    { classification: prev.classification ?? null, classSource: prev.classSource ?? null }, { classification: value });
+  return ok(res, { handled: true });
 });

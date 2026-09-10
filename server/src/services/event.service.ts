@@ -9,9 +9,12 @@
 // Forward-looking: on boot the current state/counter is taken as the baseline
 // (no event), so restarts never fabricate transitions or production deltas.
 import { MachineEvent, type EventState } from '../models/MachineEvent.js';
+import { OperatorSession } from '../models/OperatorSession.js';
 import { errMessage } from '../utils/http.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
+import { refMatch } from '../utils/machineRef.js';
+import { getProdClassConfig } from '../utils/prodclass.js';
 
 // In-memory last-known values per machine ref. lastState is re-seeded from open
 // sessions on boot; lastCounter starts empty so the first sweep only records a
@@ -81,10 +84,22 @@ export async function recordProduction(ref: string, params: Record<string, unkno
     if (value === prev.value) return;                            // unchanged → no event
 
     if (value > prev.value) {
+      // Born classified with the admin-configured default: the popup can only
+      // ever REFINE the record, never gate it — if no operator answers, or no
+      // popup is enabled at all, the event already has its honest answer.
+      // Both lookups fail soft: classification must never be the reason a
+      // production event goes unrecorded.
+      const cfg = await getProdClassConfig();
+      const op = await OperatorSession.findOne({
+        machineRef: refMatch(ref), startedAt: { $lte: now },
+        $or: [{ endedAt: null }, { endedAt: { $gte: now } }],
+      }).sort({ startedAt: -1 }).select({ userName: 1 }).lean().catch(() => null);
       await MachineEvent.create({
         machineId: ref, kind: 'production', paramKey: key,
         prevValue: prev.value, newValue: value, delta: value - prev.value,
         startedAt: now, endedAt: now, durationMs: 0,
+        classification: cfg.defaultValue, classSource: 'default',
+        operatorName: op?.userName || null,
       });
     } else {
       await MachineEvent.create({

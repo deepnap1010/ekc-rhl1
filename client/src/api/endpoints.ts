@@ -78,11 +78,14 @@ export const dashboardApi = {
 export const eventsApi = {
   list: (params?: Params) => get<MachineEventRow[]>('/events', params),
   summary: (params?: Params) => get<EventsSummary>('/events/summary', params),
+  // History correction: relabels the event, never the counter.
+  editClassification: (id: string, value: string) =>
+    patch<{ handled: boolean }>(`/events/${id}/classification`, { value }),
 };
 
 export const configApi = {
   get: () => get<AppConfigShape>('/config'),
-  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates'>>) =>
+  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass'>>) =>
     api.put('/config', body) as unknown as Promise<ApiResponse<AppConfigShape>>,
 };
 
@@ -153,6 +156,10 @@ export const productionApi = {
     post<ScheduledDia>('/production/schedule', b),
   cancelSchedule: (id: string) => del<ScheduledDia>(`/production/schedule/${id}`),
   ackSchedule: (id: string) => post<{ acked: boolean }>(`/production/schedule/${id}/ack`, {}),
+  // Operator classification popup: pending production events + the answer.
+  classQueue: () => get<MachineEventRow[]>('/production/class-queue'),
+  classifyEvent: (id: string, body: { value?: string; timeout?: boolean }) =>
+    post<{ handled: boolean }>(`/production/events/${id}/classify`, body),
   setBreaks: (breaks: BreakWindow[]) => api.put('/production/breaks', { breaks }) as unknown as Promise<ApiResponse<{ breaks: BreakWindow[] }>>,
   orders: () => get<ProductionOrder[]>('/production/orders'),
   createOrder: (b: { orderNo: string; diaId: string; quantity: number; notes?: string }) => post<ProductionOrder>('/production/orders', b),

@@ -16,6 +16,7 @@ import {
 import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
 import DiaStagesSettings from '../components/DiaStagesSettings';
+import ProdClassSettings from '../components/ProdClassSettings';
 import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
@@ -608,6 +609,8 @@ function SecuritySection({ s }: { s: Settings }) {
 function ProductionSection({ s }: { s: Settings }) {
   return (
     <>
+      <ProdClassSettings />
+
       <Section title="Product catalog" desc="Cylinder products manufactured across EKC plants." icon={Factory}>
         <TagEditor tags={s.production.products} onChange={(next) => { patchSettings((d) => { d.production.products = next; }); syncSharedConfig('products'); }} placeholder="e.g. Type-3 Composite" />
       </Section>

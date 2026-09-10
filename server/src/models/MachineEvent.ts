@@ -32,6 +32,16 @@ export interface IMachineEvent {
   endedAt?: Date | null;                // null = session still active (state kind only)
   durationMs?: number;
   meta?: Record<string, unknown>;
+  // kind=production only: what this counter advance WAS (OK / DRY_CYCLE /
+  // DEFECTIVE / SAMPLE). Stamped with the admin-configured default at birth —
+  // so no event is ever unclassified, a popup timeout needs no write to
+  // "apply" anything, and a later change to the default cannot rewrite
+  // history. classSource says who had the last word.
+  classification?: string;
+  classSource?: 'default' | 'operator' | 'timeout' | 'edit';
+  classifiedBy?: { id?: string; name?: string };
+  classifiedAt?: Date | null;
+  operatorName?: string | null;         // who was on the machine when the counter moved
 }
 
 const machineEventSchema = new mongoose.Schema<IMachineEvent>(
@@ -48,6 +58,11 @@ const machineEventSchema = new mongoose.Schema<IMachineEvent>(
     endedAt:   { type: Date, default: null },
     durationMs:{ type: Number, default: 0 },
     meta:      { type: mongoose.Schema.Types.Mixed },
+    classification: { type: String },
+    classSource:    { type: String, enum: ['default', 'operator', 'timeout', 'edit'] },
+    classifiedBy:   { type: new mongoose.Schema({ id: String, name: String }, { _id: false }) },
+    classifiedAt:   { type: Date, default: null },
+    operatorName:   { type: String, default: null },
   },
   { collection: 'machine_events', versionKey: false }
 );

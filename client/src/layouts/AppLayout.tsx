@@ -1,6 +1,7 @@
 // client/src/layouts/AppLayout.tsx
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { ProductionClassPopup } from '../components/ProductionClassPopup';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
   Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target,
@@ -179,6 +180,10 @@ export default function AppLayout() {
         <main className="flex-1 overflow-y-auto overflow-x-hidden min-w-0">
           <ReviewCopyBanner />
           <Outlet />
+          {/* Operator classification popup — a counter advance asks on ANY
+              page, not just the dashboard. Self-gating: renders null unless
+              the popup is enabled and this user operates machines. */}
+          <ProductionClassPopup />
         </main>
       </div>
     </div>

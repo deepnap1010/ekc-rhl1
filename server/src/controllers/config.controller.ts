@@ -3,8 +3,17 @@
 // defaults until an admin saves one — so behavior is identical before/after
 // the first write. PUT upserts (settings.update permission, enforced in routes).
 import { AppConfig, type IShift, type IStageTemplate } from '../models/AppConfig.js';
+import { AuditLog } from '../models/AuditLog.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
+import { normalizeProdClass, invalidateProdClassCache, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
+
+// A stored prodClass that fails today's rules (or was never saved) reads as
+// the defaults — same before/after-first-write contract as every other field.
+const prodClassOf = (raw: unknown): ProdClassConfig => {
+  const norm = normalizeProdClass(raw);
+  return typeof norm === 'string' ? DEFAULT_PROD_CLASS : norm;
+};
 
 // Canonical seeds (mirror the client's previous hard-coded lists).
 const DEFAULTS: Record<string, unknown> & { shifts: IShift[]; products: string[]; processStages: string[]; stageTemplates: IStageTemplate[] } = {
@@ -35,6 +44,7 @@ const DEFAULTS: Record<string, unknown> & { shifts: IShift[]; products: string[]
     { name: 'Bottom Milling', defaultSec: 0 },
     { name: 'Furnace', defaultSec: 0 },
   ] as IStageTemplate[],
+  prodClass: DEFAULT_PROD_CLASS,
 };
 
 const TIME_RE = /^\d{2}:\d{2}$/;
@@ -48,6 +58,7 @@ export const getConfig = asyncHandler(async (_req, res) => {
     stageTemplates: doc?.stageTemplates?.length ? doc.stageTemplates : DEFAULTS.stageTemplates,
     products: doc?.products?.length ? doc.products : DEFAULTS.products,
     processStages: doc?.processStages?.length ? doc.processStages : DEFAULTS.processStages,
+    prodClass: prodClassOf(doc?.prodClass),
     stored: !!doc,
     // The client shows a banner and hides its edit controls on a review copy.
     readOnly: env.readOnly,
@@ -58,9 +69,14 @@ export const getConfig = asyncHandler(async (_req, res) => {
 export const updateConfig = asyncHandler(async (req, res) => {
   const body = req.body as {
     shifts?: IShift[]; products?: string[]; processStages?: string[];
-    stageTemplates?: IStageTemplate[];
+    stageTemplates?: IStageTemplate[]; prodClass?: unknown;
   };
   const set: Record<string, unknown> = {};
+  if (body.prodClass !== undefined) {
+    const norm = normalizeProdClass(body.prodClass);
+    if (typeof norm === 'string') return fail(res, 400, norm);
+    set.prodClass = norm;
+  }
 
   if (body.shifts !== undefined) {
     if (!Array.isArray(body.shifts) || body.shifts.length < 1 || body.shifts.length > 12) {
@@ -105,13 +121,31 @@ export const updateConfig = asyncHandler(async (req, res) => {
   if (!Object.keys(set).length) return fail(res, 400, 'Nothing to update');
   set.updatedBy = (req.user as { name?: string } | undefined)?.name || '';
 
+  // Popup-rule changes are audited (who changed the timeout / options / default
+  // matters when a classification is questioned later). Fire-and-forget — an
+  // audit row must never be the reason a save fails.
+  const before = set.prodClass !== undefined
+    ? await AppConfig.findOne({ key: 'global' }).select({ prodClass: 1 }).lean()
+        .then((d) => prodClassOf(d?.prodClass), () => null)
+    : null;
+
   const doc = await AppConfig.findOneAndUpdate(
     { key: 'global' }, { $set: set }, { new: true, upsert: true }
   ).lean();
+  if (set.prodClass !== undefined) {
+    invalidateProdClassCache();
+    const u = req.user as { _id?: unknown; name?: string } | undefined;
+    AuditLog.create({
+      at: new Date(), user: { id: String(u?._id || ''), name: u?.name || '' },
+      action: 'settings.prodclass', entity: { type: 'config', label: 'Production classification rules' },
+      before, after: set.prodClass,
+    }).catch(() => {});
+  }
   return ok(res, {
     shifts: doc.shifts, products: doc.products, processStages: doc.processStages,
     breaks: doc.breaks || [],
     stageTemplates: doc.stageTemplates?.length ? doc.stageTemplates : DEFAULTS.stageTemplates,
+    prodClass: prodClassOf(doc.prodClass),
     stored: true,
   });
 });

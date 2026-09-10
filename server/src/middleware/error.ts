@@ -33,6 +33,11 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (e.code === 11000) {
     return fail(res, 409, 'Duplicate entry', e.keyValue);
   }
+  // A malformed ObjectId in a path/query is the CALLER's mistake — without
+  // this it surfaced as a 500 leaking Mongoose internals.
+  if (e.name === 'CastError') {
+    return fail(res, 400, 'Invalid id');
+  }
 
   const status = e.status || 500;
   return fail(res, status, e.message || 'Internal server error',

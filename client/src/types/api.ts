@@ -395,6 +395,17 @@ export interface OvMachine {
   health: OvMachineHealth;
 }
 export interface OvCapabilityBlocked { name: string; needs: string }
+// Production-event classification rules (admin-configured, operator-facing).
+// `value` is the stable internal key history/reports hang off; only the label,
+// order, enabled flags and popup behavior are editable.
+export interface ProdClassOption { value: string; label: string; enabled: boolean; order: number }
+export interface ProdClassConfig {
+  enabled: boolean;
+  timeoutSec: number;
+  defaultValue: string;
+  options: ProdClassOption[];
+}
+
 // Shared (server-side) config — same shifts/products/stages on every desktop.
 export interface AppConfigShape {
   shifts: { name: string; start: string; end: string }[];
@@ -402,6 +413,7 @@ export interface AppConfigShape {
   stageTemplates?: StageTemplate[];   // plant-wide stage flow (names + default times)
   products: string[];
   processStages: string[];
+  prodClass?: ProdClassConfig;   // production classification popup rules
   stored: boolean;
   // True when this deployment only MIRRORS the plant: it is refreshed from the
   // factory server, so changes made here would be overwritten.
@@ -442,6 +454,13 @@ export interface MachineEventRow {
   endedAt?: string | null;
   durationMs?: number;
   meta?: Record<string, unknown>;
+  // kind=production: what this counter advance was (stable internal value),
+  // born as the admin default and refined by the popup or a history edit.
+  classification?: string | null;
+  classSource?: 'default' | 'operator' | 'timeout' | 'edit';
+  classifiedBy?: { id?: string; name?: string };
+  classifiedAt?: string | null;
+  operatorName?: string | null;
 }
 
 // Minute-level change log row (machine History tab) — only real changes survive.

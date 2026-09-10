@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { configApi } from '../api/endpoints';
 import { useSettings, patchSettings, type ShiftTiming } from '../lib/settings';
+import type { ProdClassConfig } from '../types/api';
 
 export interface AppConfigLists {
   shifts: ShiftTiming[];
@@ -13,6 +14,8 @@ export interface AppConfigLists {
   stageTemplates: { name: string; defaultSec: number }[];
   products: string[];
   processStages: string[];
+  /** Production classification popup rules — null until the server answers. */
+  prodClass: ProdClassConfig | null;
   fromServer: boolean;
   /** This deployment mirrors the plant — it takes no changes. */
   readOnly: boolean;
@@ -47,6 +50,7 @@ export function useAppConfig(): AppConfigLists {
     stageTemplates: data?.stageTemplates || [],
     products: data?.products?.length ? data.products : s.production.products,
     processStages: data?.processStages?.length ? data.processStages : s.production.processStages,
+    prodClass: data?.prodClass || null,
     fromServer: !!data,
     readOnly: !!data?.readOnly,
   };

@@ -681,7 +681,7 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
           {/* A family with nothing scorable shows a dash, not "0%" — zero is a
               performance, a dash is the absence of a measurement. */}
           <div className="data text-2xl font-bold leading-tight tabular-nums whitespace-nowrap"
-            style={{ color: g.targets.length ? attainColor(pct) : 'var(--c-steel, #64748B)' }}>
+            style={{ color: g.targets.length ? attainColor(pct) : 'rgb(var(--c-steel, 100 116 139))' }}>
             {g.targets.length ? `${Math.round(pct * 100)}%` : '—'}</div>
           <div className="label mt-0.5">of target</div>
         </div>
@@ -741,7 +741,7 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <div className="font-semibold text-sm text-primary truncate">{g.label}</div>
       </div>
       <div className="data text-3xl font-bold leading-tight tabular-nums whitespace-nowrap"
-        style={{ color: scorable ? attainColor(pct) : 'var(--c-steel, #64748B)' }}>
+        style={{ color: scorable ? attainColor(pct) : 'rgb(var(--c-steel, 100 116 139))' }}>
         {scorable ? `${Math.round(pct * 100)}%` : '—'}</div>
       <div className="label mt-0.5 mb-3">{scorable ? `of target · ${avail}% availability` : 'nothing scorable in this window'}</div>
       <div className="flex items-end justify-between gap-2">
