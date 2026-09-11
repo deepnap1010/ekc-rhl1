@@ -258,7 +258,7 @@ function DiametersPanel({ dias, templates, usageOf, machines, canCreate, canEdit
 // may even have no default — machine-specific only — in which case a machine
 // without its own time cannot be assigned this dia. Saving re-times every
 // machine currently running the dia, from now.
-function EditCycles({ dia, templates, machines, onSaved }: {
+export function EditCycles({ dia, templates, machines, onSaved }: {
   dia: DiaConfig; templates: StageTemplate[]; machines: Machine[]; onSaved: () => void;
 }): JSX.Element {
   const mName = useMachineName();

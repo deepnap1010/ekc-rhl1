@@ -9,7 +9,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Target, X, ClipboardList, Coffee, Waypoints, ChevronRight, CalendarClock } from 'lucide-react';
 import { ScheduleDiaModal } from '../components/ScheduleDia';
 import { useNavigate } from 'react-router-dom';
-import { productionApi } from '../api/endpoints';
+import { productionApi, machineApi } from '../api/endpoints';
+import { EditCycles } from '../components/DiaStagesSettings';
 import { Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
@@ -139,9 +140,16 @@ export default function ProductionSetup(): JSX.Element {
       {can('production', 'admin') && <AuditTrail />}
 
       {schedOpen && <ScheduleDiaModal onClose={() => setSchedOpen(false)} />}
-      {editing && (
+      {editing === 'new' && (
         <DiaModal
-          dia={editing === 'new' ? null : editing}
+          dia={null}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
+        />
+      )}
+      {editing && editing !== 'new' && (
+        <EditDiaModal
+          dia={editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
         />
@@ -373,6 +381,30 @@ function AuditTrail(): JSX.Element | null {
 // field, then one min/pc input per stage of the plant's flow, stacked in
 // sequence. Blank = this dia doesn't run that stage. Editing prefills the
 // dia's own times (its extra stages included, so nothing saved is hidden).
+// Editing an existing dia is the SAME editor Settings → Dia & Stages uses —
+// stage defaults plus each stage's per-machine times — so there is one place
+// a cycle time can be changed, and it cannot be edited here in a way that
+// loses what was set there.
+function EditDiaModal({ dia, onClose, onSaved }: { dia: DiaConfig; onClose: () => void; onSaved: () => void }): JSX.Element {
+  const { stageTemplates } = useAppConfig();
+  const { data: machines } = useQuery({
+    queryKey: ['machines', 'diastages'],
+    queryFn: () => machineApi.list({ limit: 200 }).then((r) => r.data),
+    staleTime: 60_000,
+  });
+  return (
+    <Modal title={`Edit ${dia.name}`} subtitle="Cycle time per stage — and per machine, where the same dia runs at a different speed" icon={Target} onClose={onClose} maxW="max-w-2xl">
+      {dia.usedOn ? (
+        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+          {dia.usedOn} machine{dia.usedOn === 1 ? '' : 's'} currently run{dia.usedOn === 1 ? 's' : ''} this DIA — a changed
+          cycle time moves them to the new time from now; past reports keep the rate they ran at.
+        </p>
+      ) : null}
+      <EditCycles dia={dia} templates={stageTemplates} machines={machines || []} onSaved={onSaved} />
+    </Modal>
+  );
+}
+
 function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: () => void; onSaved: () => void }): JSX.Element {
   const { stageTemplates } = useAppConfig();
   const [name, setName] = useState(dia?.name || '');
