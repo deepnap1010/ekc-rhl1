@@ -4,7 +4,7 @@
 // sticky page headers use backdrop-blur — a modal opened from inside one (the
 // machine header's DIA chip) was trapped and clipped inside that header instead
 // of covering the screen.
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X, type LucideIcon } from 'lucide-react';
 
@@ -17,13 +17,26 @@ interface ModalProps {
   maxW?: string;
 }
 
+// Modals can nest (production history → correction form). Only the TOPMOST
+// answers Escape, and the page's scroll lock lifts when the last one closes —
+// a single-modal assumption closed both on one keypress and unlocked the page
+// under a still-open list.
+const open: object[] = [];
+
 export default function Modal({ title, subtitle, icon: Icon, onClose, children, maxW = 'max-w-3xl' }: ModalProps): JSX.Element {
+  const [id] = useState(() => ({}));
+  // Two effects on purpose: the stack must not re-push when onClose identity
+  // changes on a parent re-render, or the outer would jump back on top.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
+    open.push(id);
     document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
-  }, [onClose]);
+    return () => { open.splice(open.indexOf(id), 1); if (!open.length) document.body.style.overflow = ''; };
+  }, [id]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && open[open.length - 1] === id) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, id]);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-4 bg-slate-900/50 backdrop-blur-sm overflow-y-auto" onClick={onClose}>

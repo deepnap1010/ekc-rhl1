@@ -42,6 +42,7 @@ export interface IMachineEvent {
   classifiedBy?: { id?: string; name?: string };
   classifiedAt?: Date | null;
   operatorName?: string | null;         // who was on the machine when the counter moved
+  editReason?: string | null;           // why a past classification was changed (classSource 'edit')
 }
 
 const machineEventSchema = new mongoose.Schema<IMachineEvent>(
@@ -63,6 +64,7 @@ const machineEventSchema = new mongoose.Schema<IMachineEvent>(
     classifiedBy:   { type: new mongoose.Schema({ id: String, name: String }, { _id: false }) },
     classifiedAt:   { type: Date, default: null },
     operatorName:   { type: String, default: null },
+    editReason:     { type: String, default: null },
   },
   { collection: 'machine_events', versionKey: false }
 );

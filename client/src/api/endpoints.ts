@@ -78,9 +78,9 @@ export const dashboardApi = {
 export const eventsApi = {
   list: (params?: Params) => get<MachineEventRow[]>('/events', params),
   summary: (params?: Params) => get<EventsSummary>('/events/summary', params),
-  // History correction: relabels the event, never the counter.
-  editClassification: (id: string, value: string) =>
-    patch<{ handled: boolean }>(`/events/${id}/classification`, { value }),
+  // Correction of a past classification — with the reason the server requires.
+  editClassification: (id: string, value: string, reason: string) =>
+    patch<{ handled: boolean }>(`/events/${id}/classification`, { value, reason }),
 };
 
 export const configApi = {
@@ -158,6 +158,8 @@ export const productionApi = {
   ackSchedule: (id: string) => post<{ acked: boolean }>(`/production/schedule/${id}/ack`, {}),
   // Operator classification popup: pending production events + the answer.
   classQueue: () => get<MachineEventRow[]>('/production/class-queue'),
+  // Production-count history (operators: their machines) — same shape as /events.
+  events: (params?: Params) => get<MachineEventRow[]>('/production/events', params),
   classifyEvent: (id: string, body: { value?: string; timeout?: boolean }) =>
     post<{ handled: boolean }>(`/production/events/${id}/classify`, body),
   setBreaks: (breaks: BreakWindow[]) => api.put('/production/breaks', { breaks }) as unknown as Promise<ApiResponse<{ breaks: BreakWindow[] }>>,

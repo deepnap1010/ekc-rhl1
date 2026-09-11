@@ -56,7 +56,7 @@ r.put('/config', authorize('settings', 'update'), config.updateConfig);
 // Operational events — state sessions + production events (read-only feed)
 r.get('/events', authorize('history'), events.listEvents);
 r.get('/events/summary', authorize('history'), events.eventsSummary);
-r.patch('/events/:id/classification', authorize('history', 'update'), events.editClassification); // correct a production event from History (audited)
+r.patch('/events/:id/classification', events.editClassification); // correct a production event, with a reason — history editors or the machine's own operator (checked inside; audited)
 
 // Downtime
 r.get('/downtime', authorize('downtime'), downtime.listDowntime);
@@ -81,6 +81,7 @@ r.post('/production/schedule', authorize('production', 'update'), prod.createSch
 r.delete('/production/schedule/:id', authorize('production', 'update'), prod.cancelSchedule);
 r.post('/production/schedule/:id/ack', authorize('production'), prod.ackSchedule);     // operator read-receipt
 r.get('/production/class-queue', authorize('production'), events.classQueue);          // operator popup: unanswered production events
+r.get('/production/events', authorize('production'), events.listEvents);               // production-count history (operators: their machines)
 r.post('/production/events/:id/classify', authorize('production'), events.classifyEvent); // operator popup answer / timeout
 r.put('/production/breaks', authorize('production', 'update'), prod.setBreaks);
 r.get('/production/orders', authorize('production'), prod.listOrders);

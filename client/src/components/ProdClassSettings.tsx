@@ -8,7 +8,7 @@
 // edits labels, order, enabled and the timeout/default, never the values.
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ListChecks, ArrowUp, ArrowDown, Check } from 'lucide-react';
+import { ListChecks, ArrowUp, ArrowDown, Check, X, Plus } from 'lucide-react';
 import { configApi } from '../api/endpoints';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
@@ -16,7 +16,9 @@ import { toast } from '../store/toast';
 import { CLASS_COLORS } from './ProductionClassPopup';
 import type { ProdClassConfig } from '../types/api';
 
-const clone = (c: ProdClassConfig): ProdClassConfig => ({ ...c, options: c.options.map((o) => ({ ...o })) });
+// Deep enough that a draft edit can never reach the react-query cache — a
+// shared `reasons` array made "Add reason" mutate the cache and never dirty.
+const clone = (c: ProdClassConfig): ProdClassConfig => ({ ...c, options: c.options.map((o) => ({ ...o })), reasons: [...(c.reasons || [])] });
 
 export default function ProdClassSettings(): JSX.Element {
   const qc = useQueryClient();
@@ -26,6 +28,7 @@ export default function ProdClassSettings(): JSX.Element {
 
   const [draft, setDraft] = useState<ProdClassConfig | null>(null);
   const [saving, setSaving] = useState(false);
+  const [newReason, setNewReason] = useState('');
   useEffect(() => { if (!draft && prodClass) setDraft(clone(prodClass)); }, [draft, prodClass]);
   if (!draft) return <div className="card p-4 text-sm text-steel">Loading classification settings…</div>;
 
@@ -123,6 +126,7 @@ export default function ProdClassSettings(): JSX.Element {
               <th className="text-left label px-3 py-2">Shown</th>
               <th className="text-left label px-3 py-2">Button label</th>
               <th className="text-left label px-3 py-2">Records as</th>
+              <th className="text-left label px-3 py-2" title="Pieces of this kind are production. Unticked = subtracted from every count.">Counts</th>
               <th className="text-right label px-3 py-2">Order</th>
             </tr>
           </thead>
@@ -143,6 +147,13 @@ export default function ProdClassSettings(): JSX.Element {
                   {/* The stable internal value — history and reports key on this. */}
                   <span className="pill font-semibold" style={{ background: `${CLASS_COLORS[o.value]}1A`, color: CLASS_COLORS[o.value] }}>{o.value}</span>
                 </td>
+                <td className="px-3 py-2">
+                  {/* OK is production by definition; the rest are the admin's call. */}
+                  <input type="checkbox" checked={o.counts} disabled={dis || o.value === 'OK'}
+                    onChange={() => patch((d) => { const t = d.options.find((x) => x.value === o.value); if (t) t.counts = !t.counts; })}
+                    className="w-4 h-4" style={{ accentColor: 'rgb(var(--c-accent, 13 148 136))' }}
+                    title={o.value === 'OK' ? 'OK always counts' : o.counts ? 'Counted as production' : 'Subtracted from production'} />
+                </td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   <button disabled={dis || i === 0} onClick={() => move(o.value, -1)} className="p-1 text-steel hover:text-accent disabled:opacity-30" aria-label="Move up"><ArrowUp size={14} /></button>
                   <button disabled={dis || i === sorted.length - 1} onClick={() => move(o.value, 1)} className="p-1 text-steel hover:text-accent disabled:opacity-30" aria-label="Move down"><ArrowDown size={14} /></button>
@@ -153,9 +164,31 @@ export default function ProdClassSettings(): JSX.Element {
         </table>
       </div>
 
-      <p className="text-[11px] text-steel mt-2">
-        Changes apply to future production events only — history keeps its recorded classifications.
+      <div className="mt-4">
+        <div className="text-xs font-medium text-primary">Reasons for correcting a past classification</div>
+        <div className="text-[11px] text-steel mb-2">The operator picks one when editing history — or writes their own.</div>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {draft.reasons.length === 0 && <span className="text-xs text-steel">None — operators will write their own.</span>}
+          {draft.reasons.map((r) => (
+            <span key={r} className="inline-flex items-center gap-1 pill bg-line text-primary">
+              {r}
+              {!dis && <button onClick={() => patch((d) => { d.reasons = d.reasons.filter((x) => x !== r); })} className="text-steel hover:text-stopped" aria-label={`Remove ${r}`}><X size={12} /></button>}
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input value={newReason} disabled={dis} maxLength={60} onChange={(e) => setNewReason(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = newReason.trim(); if (v) { patch((d) => { if (!d.reasons.some((x) => x.toLowerCase() === v.toLowerCase())) d.reasons.push(v); }); setNewReason(''); } } }}
+            placeholder="e.g. Missed the popup" className={`${inputCls} flex-1`} />
+          <button disabled={dis || !newReason.trim()} onClick={() => { const v = newReason.trim(); patch((d) => { if (!d.reasons.some((x) => x.toLowerCase() === v.toLowerCase())) d.reasons.push(v); }); setNewReason(''); }}
+            className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border border-accent/30 text-accent bg-accent/5 hover:bg-accent/10 disabled:opacity-50"><Plus size={14} /> Add</button>
+        </div>
+      </div>
+
+      <p className="text-[11px] text-steel mt-3">
+        Popup changes apply to future production events only — history keeps its recorded classifications.
         Disabled options leave the popup but old records still show their label.
+        Unticking <b>Counts</b> takes pieces of that kind out of every production figure, past and future, the moment it is saved.
         {!draft.enabled && ' With the popup off, every event is recorded as the default automatically.'}
       </p>
     </div>

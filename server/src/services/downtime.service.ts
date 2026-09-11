@@ -149,7 +149,8 @@ export async function sweepDowntime(): Promise<void> {
       // Same sweep, same state source → the operational event log can never
       // disagree with downtime_reports. Event errors are swallowed inside.
       await recordState(ref, state === 'up' ? 'running' : state, now);
-      await recordProduction(ref, (m as { currentParameters?: Record<string, unknown> }).currentParameters, now);
+      const mm = m as { currentParameters?: Record<string, unknown>; lastReadingAt?: Date };
+      await recordProduction(ref, mm.currentParameters, now, mm.lastReadingAt ? new Date(mm.lastReadingAt) : null);
     }
   } catch (err) {
     console.error('[downtime] sweep error:', errMessage(err));

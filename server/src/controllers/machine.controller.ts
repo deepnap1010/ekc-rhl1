@@ -23,6 +23,7 @@ import { readingSignature, pickColumns } from '../utils/history.js';
 import { MachineLabel } from '../models/MachineLabel.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { refMatch } from '../utils/machineRef.js';
+import { excludedPiecesBy } from '../utils/prodclass.js';
 import { normalizeStatus, sessionStateAt } from '../utils/status.js';
 
 const PLANT_POP = { path: 'plant', select: 'name code location' };
@@ -306,6 +307,23 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     const madeAt = new Map<number, number>();
     for (const e of stepEvents(minutes.filter((x) => x.production != null).map((x) => ({ t: x.t, v: x.production as number })), PROD_STEP_PER_MIN)) {
       madeAt.set(e.t, (madeAt.get(e.t) || 0) + e.made);
+    }
+    // Classified-away pieces come off the minute that made them; anything a
+    // minute cannot absorb (the event stamped a bin later than the climb)
+    // carries to the next minute that made something.
+    const exclAt = new Map<number, number>();
+    for (const x of (await excludedPiecesBy(refs, fromD, toD)).get(refs[0].toUpperCase()) || []) {
+      const b = Math.floor(x.t / 60_000) * 60_000;
+      exclAt.set(b, (exclAt.get(b) || 0) + x.n);
+    }
+    let pending = 0;
+    for (const x of minutes) {
+      // minutes[].t is the bin's LAST reading (seconds and all); exclAt is
+      // keyed on the bin start — look up on the same floor it was built on.
+      pending += exclAt.get(Math.floor(x.t / 60_000) * 60_000) || 0;
+      const made = madeAt.get(x.t) || 0;
+      const take = Math.min(pending, made);
+      if (take) { madeAt.set(x.t, made - take); pending -= take; }
     }
 
     // Second pass: running total, keeping only real changes (production or
@@ -765,6 +783,23 @@ export const machineHourly = asyncHandler(async (req, res) => {
     for (const ev of stepEvents(series, PROD_STEP_PER_MIN)) {
       const b = Math.floor((ev.t - offset) / HOUR) * HOUR + offset;
       byHour.set(b, (byHour.get(b) || 0) + ev.made);
+    }
+    // Classified-away pieces leave the hour they were made in. The event is
+    // stamped by the sweep's LAST reading — up to ~90s after the climb the
+    // bars saw — so a piece stamped just past the hour was made in the hour
+    // before: take from the stamped hour, carry the rest BACK, never forward.
+    // Iterate the map, not refs: ingest sets code === machineId, so refs can
+    // name the same machine twice and would subtract twice.
+    const excl = await excludedPiecesBy(refs, fromD, endD);
+    for (const list of excl.values()) {
+      for (const x of list) {
+        let n = x.n;
+        for (let b = Math.floor((x.t - offset) / HOUR) * HOUR + offset; n > 0 && b >= offset; b -= HOUR) {
+          const have = byHour.get(b) || 0;
+          const take = Math.min(n, have);
+          if (take) { byHour.set(b, have - take); n -= take; }
+        }
+      }
     }
     return [...byHour.entries()].sort((a, b) => a[0] - b[0])
       .map(([t, made]) => ({ t: new Date(t).toISOString(), made }));

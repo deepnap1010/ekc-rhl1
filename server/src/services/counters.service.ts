@@ -8,6 +8,7 @@ import { Telemetry } from '../models/Telemetry.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { cached } from '../utils/cache.js';
+import { excludedPiecesBy } from '../utils/prodclass.js';
 import { stepEvents, PROD_STEP_PER_MIN } from './activity.service.js';
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEventsBy } from './derivedCounter.service.js';
@@ -75,11 +76,30 @@ export async function productionEventsBy(
     return { ref: k.ref, rows };
   }));
 
+  // Classified-away pieces come OFF the step that made them, so every consumer
+  // that sums `made` over a window — the targets report, the dia trace — drops
+  // them from exactly that window. The event is stamped at the sweep that saw
+  // the advance (up to a bin + 30s AFTER the step's bin start), so each one is
+  // taken from the latest step at or before its stamp, walking back if that
+  // step cannot absorb it — a bin boundary or an hour/operator edge between the
+  // two can then never credit one row and debit another. A piece the bins never
+  // credited (first bin, a physics-capped preload) has nothing to come off and
+  // is dropped, so no row can go below zero.
+  const excl = await excludedPiecesBy(keyed.map((k) => k.ref), from ?? new Date(0), to ?? new Date());
   for (const s of series) {
     const pts = s.rows.map((p) => ({ t: +new Date(p._id), v: Number(p.pv) }))
       .filter((p) => Number.isFinite(p.v))
       .sort((a, b) => a.t - b.t);
-    out.set(s.ref, stepEvents(pts, PROD_STEP_PER_MIN));
+    const evs = stepEvents(pts, PROD_STEP_PER_MIN);
+    for (const x of excl.get(s.ref.toUpperCase()) || []) {
+      let n = x.n;
+      for (let i = evs.length - 1; i >= 0 && n > 0; i -= 1) {
+        if (evs[i].t > x.t) continue;
+        const take = Math.min(n, evs[i].made);
+        evs[i].made -= take; n -= take;
+      }
+    }
+    out.set(s.ref, evs.filter((e) => e.made > 0));
   }
   return out;
 }

@@ -8,6 +8,9 @@
 // singleton under `prodClass`; this module owns its shape, validation and a
 // small cache so the 30s sweep doesn't read config once per production event.
 import { AppConfig } from '../models/AppConfig.js';
+import { MachineEvent } from '../models/MachineEvent.js';
+import { refCandidates } from './machineRef.js';
+import { invalidate } from './cache.js';
 
 export const CLASS_VALUES = ['OK', 'DRY_CYCLE', 'DEFECTIVE', 'SAMPLE'] as const;
 export type ClassValue = (typeof CLASS_VALUES)[number];
@@ -17,6 +20,10 @@ export interface ProdClassOption {
   label: string;       // what the operator's button says
   enabled: boolean;    // disabled options never reach the popup
   order: number;       // button order, 1-based after normalization
+  // Whether a piece so classified is PRODUCTION. A dry cycle made nothing; a
+  // sample is not for sale. Pieces whose class does not count are subtracted
+  // from every production figure the app shows. OK always counts.
+  counts: boolean;
 }
 
 export interface ProdClassConfig {
@@ -24,6 +31,9 @@ export interface ProdClassConfig {
   timeoutSec: number;      // how long the popup waits for the operator
   defaultValue: ClassValue;// what a production event is born as (and stays on timeout)
   options: ProdClassOption[];
+  // Why a past event's classification was changed — the operator picks one
+  // of these (or writes their own). Admin-editable.
+  reasons: string[];
 }
 
 export const DEFAULT_PROD_CLASS: ProdClassConfig = {
@@ -31,12 +41,17 @@ export const DEFAULT_PROD_CLASS: ProdClassConfig = {
   timeoutSec: 20,
   defaultValue: 'OK',
   options: [
-    { value: 'OK', label: 'OK', enabled: true, order: 1 },
-    { value: 'DRY_CYCLE', label: 'Dry Cycle', enabled: true, order: 2 },
-    { value: 'DEFECTIVE', label: 'Defective Piece', enabled: true, order: 3 },
-    { value: 'SAMPLE', label: 'Sample', enabled: true, order: 4 },
+    { value: 'OK', label: 'OK', enabled: true, order: 1, counts: true },
+    { value: 'DRY_CYCLE', label: 'Dry Cycle', enabled: true, order: 2, counts: false },
+    { value: 'DEFECTIVE', label: 'Defective Piece', enabled: true, order: 3, counts: false },
+    { value: 'SAMPLE', label: 'Sample', enabled: true, order: 4, counts: false },
   ],
+  reasons: ['Missed the popup', 'Pressed the wrong button', 'Checked the piece afterwards'],
 };
+
+/** What a stored option's `counts` means when the field is absent (configs
+ *  saved before it existed): OK counts, nothing else does. */
+const countsDefault = (v: ClassValue): boolean => v === 'OK';
 
 const isClassValue = (v: unknown): v is ClassValue => CLASS_VALUES.includes(v as ClassValue);
 
@@ -44,7 +59,7 @@ const isClassValue = (v: unknown): v is ClassValue => CLASS_VALUES.includes(v as
  *  Returns the clean config, or a human-readable error string.
  *  null/undefined (nothing stored yet) normalizes to the defaults. */
 export function normalizeProdClass(raw: unknown): ProdClassConfig | string {
-  if (raw == null) return { ...DEFAULT_PROD_CLASS, options: DEFAULT_PROD_CLASS.options.map((o) => ({ ...o })) };
+  if (raw == null) return { ...DEFAULT_PROD_CLASS, options: DEFAULT_PROD_CLASS.options.map((o) => ({ ...o })), reasons: [...DEFAULT_PROD_CLASS.reasons] };
   if (typeof raw !== 'object') return 'classification settings must be an object';
   const r = raw as Record<string, unknown>;
 
@@ -63,7 +78,9 @@ export function normalizeProdClass(raw: unknown): ProdClassConfig | string {
     if (!label || label.length > 40) return 'option labels must be 1–40 characters';
     const order = Number(o.order);
     if (!Number.isFinite(order)) return 'option order must be a number';
-    byValue.set(o.value, { value: o.value, label, enabled: !!o.enabled, order });
+    // OK is production by definition — an admin cannot make it not count.
+    const counts = o.value === 'OK' ? true : (o.counts == null ? countsDefault(o.value) : !!o.counts);
+    byValue.set(o.value, { value: o.value, label, enabled: !!o.enabled, order, counts });
   }
   // Every canonical value must be present exactly once — an option can be
   // disabled, never dropped (history keeps resolving its label).
@@ -83,8 +100,58 @@ export function normalizeProdClass(raw: unknown): ProdClassConfig | string {
     return 'default classification must be an enabled option';
   }
 
-  return { enabled: !!r.enabled, timeoutSec, defaultValue, options };
+  // Reasons: a short, trimmed, de-duplicated list; absent = the defaults.
+  let reasons: string[];
+  if (r.reasons == null) reasons = [...DEFAULT_PROD_CLASS.reasons];
+  else {
+    if (!Array.isArray(r.reasons)) return 'edit reasons must be a list';
+    reasons = [];
+    for (const x of r.reasons) {
+      const s = String(x ?? '').trim();
+      if (!s) continue;
+      if (s.length > 60) return 'an edit reason must be 60 characters or fewer';
+      if (!reasons.some((y) => y.toLowerCase() === s.toLowerCase())) reasons.push(s);
+    }
+    if (reasons.length > 30) return 'at most 30 edit reasons';
+  }
+
+  return { enabled: !!r.enabled, timeoutSec, defaultValue, options, reasons };
 }
+
+// ── pieces that are not production ───────────────────────────────────────────
+/** Per machine (upper-cased ref), the classified-away pieces inside [from, to]:
+ *  each as {t, n} — when the counter moved and how many pieces that advance
+ *  was. Every production figure subtracts these. Empty when every option
+ *  counts (the admin's "count everything" switch), or on any error — a
+ *  broken lookup must not turn every card blank. */
+export async function excludedPiecesBy(
+  refs: string[], from: Date, to: Date,
+): Promise<Map<string, { t: number; n: number }[]>> {
+  const out = new Map<string, { t: number; n: number }[]>();
+  try {
+    const cfg = await getProdClassConfig();
+    const skip = cfg.options.filter((o) => !o.counts).map((o) => o.value);
+    if (!skip.length || !refs.length) return out;
+    const ids = [...new Set(refs.flatMap(refCandidates))];
+    // A climb the counting engine never credited (a garbage sample, a
+    // commissioning preload — meta.implausible) must never be subtracted
+    // either: classifying a "+887" away would otherwise zero the real day.
+    const rows = await MachineEvent.find({
+      kind: 'production', delta: { $gt: 0 }, classification: { $in: skip },
+      machineId: { $in: ids }, startedAt: { $gte: from, $lte: to },
+      'meta.reset': { $ne: true }, 'meta.implausible': { $ne: true },
+    }).select({ machineId: 1, startedAt: 1, delta: 1 }).sort({ startedAt: 1 }).lean();
+    for (const r of rows) {
+      const k = String(r.machineId).toUpperCase();
+      const list = out.get(k) || [];
+      list.push({ t: new Date(r.startedAt).getTime(), n: Number(r.delta) || 0 });
+      out.set(k, list);
+    }
+  } catch { /* fail open: the count is the raw count */ }
+  return out;
+}
+export const excludedTotal = (list: { t: number; n: number }[] | undefined): number =>
+  (list || []).reduce((n, x) => n + x.n, 0);
 
 // ── cached read for the sweep ────────────────────────────────────────────────
 // One config lookup per TTL instead of one per production event. Never throws:
@@ -106,3 +173,11 @@ export async function getProdClassConfig(): Promise<ProdClassConfig> {
 
 /** Call after the admin saves — the next sweep/read sees the new rules. */
 export function invalidateProdClassCache(): void { cache = null; }
+
+/** Every server-side cached read that subtracts classified-away pieces. Call
+ *  after any write that moves a classification or changes which classes
+ *  count — otherwise the list updates and the cards hold the old figure for
+ *  the rest of a TTL, which reads as "the edit did not work". */
+export function invalidateProductionReads(): void {
+  for (const p of ['activity', 'hourly:', 'timeline:', 'targets:', 'diatrace:', 'orderprog:', 'snap:']) invalidate(p);
+}

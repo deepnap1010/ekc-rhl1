@@ -9,7 +9,9 @@ import { AuditLog } from '../models/AuditLog.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
 import { refMatch, refIn } from '../utils/machineRef.js';
-import { getProdClassConfig, CLASS_VALUES, type ClassValue } from '../utils/prodclass.js';
+import { userCan } from '../middleware/auth.js';
+import type { AuthUser } from '../types/auth.js';
+import { getProdClassConfig, invalidateProductionReads, CLASS_VALUES, type ClassValue } from '../utils/prodclass.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 type RangeFilter = { $gte?: Date; $lte?: Date };
@@ -202,19 +204,31 @@ export const classifyEvent = asyncHandler(async (req, res) => {
     } },
   );
   // modifiedCount 0 = someone else already answered — their word stands.
+  // A popup answer of dry-cycle / sample takes the piece out of the count.
+  if (r.modifiedCount > 0) invalidateProductionReads();
   return ok(res, { handled: r.modifiedCount > 0 });
 });
 
-// PATCH /events/:id/classification — correct a classification from History.
-// Permissioned (history.update), audited, and allowed to use a currently
-// DISABLED option: disabling only removes a button from future popups, it does
-// not make old truths unsayable.
+// PATCH /events/:id/classification — correct a past classification, with a
+// REASON. Who may: anyone holding history.update (supervisors, admins), or the
+// machine's own operator (a production viewer whose assignedMachines holds
+// it) — the same person the popup trusted. Audited with the reason, and
+// allowed to use a currently DISABLED option: disabling only removes a button
+// from future popups, it does not make old truths unsayable.
 export const editClassification = asyncHandler(async (req, res) => {
   const user = req.user as (ScopedUser & { _id?: unknown; name?: string }) | undefined;
-  const value = (req.body as { value?: unknown }).value as ClassValue;
+  const body = req.body as { value?: unknown; reason?: unknown };
+  const value = body.value as ClassValue;
   if (!CLASS_VALUES.includes(value)) return fail(res, 400, 'Unknown classification');
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) return fail(res, 400, 'A reason is required to change a past classification');
+  if (reason.length > 200) return fail(res, 400, 'Reason must be 200 characters or fewer');
   const ev = await MachineEvent.findById(req.params.id).lean();
   if (!ev || ev.kind !== 'production') return fail(res, 404, 'Production event not found');
+  const own = refIn(user?.assignedMachines, ev.machineId);
+  const editor = userCan(user as AuthUser | undefined, 'history', 'update');
+  const operator = own && userCan(user as AuthUser | undefined, 'production', 'view');
+  if (!editor && !operator) return fail(res, 404, 'Production event not found');
   const scope = machineScope(user);
   if (scope && !refIn(scope, ev.machineId)) return fail(res, 404, 'Production event not found');
   if ((ev.meta as { reset?: boolean } | undefined)?.reset) return fail(res, 400, 'Counter resets are not classifiable');
@@ -226,15 +240,20 @@ export const editClassification = asyncHandler(async (req, res) => {
   const prev = await MachineEvent.findOneAndUpdate(
     { _id: ev._id, kind: 'production' },
     { $set: {
-      classification: value, classSource: 'edit',
+      classification: value, classSource: 'edit', editReason: reason,
       classifiedBy: { id: String(user?._id || ''), name: user?.name || '' },
       classifiedAt: new Date(),
     } },
   ).lean();
   if (!prev) return fail(res, 404, 'Production event not found');
-  // The total is untouched by design — only the label on this event changes.
+  // Every cached figure that summed this piece is stale the moment its class
+  // moves — the list must not update while the cards hold the old number.
+  invalidateProductionReads();
+  // The counter change on the row is untouched by design — only its label
+  // moves (and with it, whether the piece counts as production).
   audit(user, 'production.classify',
     { type: 'machine_event', id: String(ev._id), label: `${ev.machineId} · ${ev.prevValue} → ${ev.newValue}` },
-    { classification: prev.classification ?? null, classSource: prev.classSource ?? null }, { classification: value });
+    { classification: prev.classification ?? null, classSource: prev.classSource ?? null },
+    { classification: value, reason });
   return ok(res, { handled: true });
 });

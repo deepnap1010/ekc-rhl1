@@ -11,6 +11,7 @@ import { Telemetry } from '../models/Telemetry.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey, pickRunKeys, type MachineBooks } from '../utils/production.js';
+import { excludedPiecesBy, excludedTotal } from '../utils/prodclass.js';
 import { pickTemperatureKeys, TEMP_MIN, TEMP_MAX } from '../utils/temperature.js';
 import { isNumericValue } from '../utils/normalize.js';
 import { cached } from '../utils/cache.js';
@@ -633,6 +634,16 @@ export async function computeActivity(
   // minutes of one machine's output; shift both edges if that ever matters.
   const rowBy = new Map(rows.map((r) => [normRef(r.code), r]));
   const seriesNorm = new Map([...seriesBy].map(([id, pts]) => [normRef(id), pts]));
+  // Pieces the operator classified as not-production (dry cycle, sample…)
+  // leave every production figure — this one is the source of the cards, the
+  // board, the rankings and the dashboard total. Same window, same machines.
+  const excl = await excludedPiecesBy(rows.map((r) => r.code), fromD, endD);
+  for (const row of rows) {
+    if (row.production == null) continue;
+    const off = excludedTotal(excl.get(row.code.toUpperCase()));
+    if (off) row.production = Math.max(0, row.production - off);
+  }
+
   for (const row of rows) {
     const link = lineLinkFor(row.code);
     if (!link) continue;
@@ -643,7 +654,12 @@ export async function computeActivity(
           .map((x) => ({ t: x.t, v: x.v as number })))
       : src?.production ?? null;
     if (arrived == null) continue;
-    row.production = arrived;
+    // A linked row counts what its SOURCE made — minus what the source's
+    // operator classified away (those events live under the source's code).
+    // Only when recomputed from the raw series: the src-row fallback is
+    // already net of its exclusions.
+    const srcOff = pts ? excludedTotal(excl.get(String(src?.code ?? link.source).toUpperCase())) : 0;
+    row.production = Math.max(0, arrived - srcOff);
     row.productionKey = src?.productionKey ?? null;
     row.productionFrom = src?.code ?? link.source;
     row.productionLagMs = link.delayMs;

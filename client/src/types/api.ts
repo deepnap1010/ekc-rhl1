@@ -398,12 +398,16 @@ export interface OvCapabilityBlocked { name: string; needs: string }
 // Production-event classification rules (admin-configured, operator-facing).
 // `value` is the stable internal key history/reports hang off; only the label,
 // order, enabled flags and popup behavior are editable.
-export interface ProdClassOption { value: string; label: string; enabled: boolean; order: number }
+export interface ProdClassOption {
+  value: string; label: string; enabled: boolean; order: number;
+  counts: boolean;   // a piece so classified IS production (false = subtracted everywhere)
+}
 export interface ProdClassConfig {
   enabled: boolean;
   timeoutSec: number;
   defaultValue: string;
   options: ProdClassOption[];
+  reasons: string[]; // admin's list of reasons for correcting a past classification
 }
 
 // Shared (server-side) config — same shifts/products/stages on every desktop.
@@ -462,6 +466,7 @@ export interface MachineEventRow {
   classifiedBy?: { id?: string; name?: string };
   classifiedAt?: string | null;
   operatorName?: string | null;
+  editReason?: string | null;   // why a past classification was corrected
 }
 
 // Minute-level change log row (machine History tab) — only real changes survive.

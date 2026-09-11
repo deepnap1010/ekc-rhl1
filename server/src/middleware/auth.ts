@@ -38,16 +38,22 @@ export async function authenticate(
 }
 
 // Guards a route by module + action. Super admin bypasses everything.
+/** The same rule authorize() enforces, as a plain predicate — for handlers
+ *  whose access is a COMBINATION (e.g. "history editors, or the machine's own
+ *  operator") that a single route-level module/action cannot express. */
+export function userCan(user: AuthUser | undefined, module: string, action = 'view'): boolean {
+  if (!user) return false;
+  if (user.isSuperAdmin) return true;
+  const perms: AuthRole['permissions'] = user.role?.permissions || {};
+  const allowed = perms instanceof Map ? (perms.get(module) || []) : (perms[module] || []);
+  return allowed.includes(action) || allowed.includes('admin');
+}
+
 export function authorize(module: string, action = 'view'): RequestHandler {
   return (req, res, next) => {
     const user = req.user;
     if (!user) return fail(res, 401, 'Authentication required');
-    if (user.isSuperAdmin) return next();
-
-    const perms: AuthRole['permissions'] = user.role?.permissions || {};
-    const allowed = perms instanceof Map ? (perms.get(module) || []) : (perms[module] || []);
-    if (allowed.includes(action) || allowed.includes('admin')) return next();
-
+    if (userCan(user, module, action)) return next();
     return fail(res, 403, `Not allowed to ${action} ${module}`);
   };
 }

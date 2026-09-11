@@ -6,7 +6,7 @@ import { AppConfig, type IShift, type IStageTemplate } from '../models/AppConfig
 import { AuditLog } from '../models/AuditLog.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
-import { normalizeProdClass, invalidateProdClassCache, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
+import { normalizeProdClass, invalidateProdClassCache, invalidateProductionReads, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
 
 // A stored prodClass that fails today's rules (or was never saved) reads as
 // the defaults — same before/after-first-write contract as every other field.
@@ -139,6 +139,7 @@ export const updateConfig = asyncHandler(async (req, res) => {
   ).lean();
   if (set.prodClass !== undefined) {
     invalidateProdClassCache();
+    invalidateProductionReads();   // a "Counts" flip changes every figure at once
     const u = req.user as { _id?: unknown; name?: string } | undefined;
     AuditLog.create({
       at: new Date(), user: { id: String(u?._id || ''), name: u?.name || '' },

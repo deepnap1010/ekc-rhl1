@@ -15,8 +15,9 @@ import {
   Gauge, Clock, ArrowUpRight, CalendarRange,
   Boxes,
   Sparkles, Wrench, TrendingUp, Zap,
-  Factory, Trophy, TrendingDown, RotateCcw,
+  Factory, Trophy, TrendingDown, RotateCcw, ListOrdered,
 } from 'lucide-react';
+import { ProductionHistoryModal } from '../components/ProductionHistory';
 import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
 import { CustomRangeModal } from '../components/RangeFilter';
@@ -27,6 +28,7 @@ import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
 import { prettyType } from '../lib/format';
 import { sumActivity } from '../lib/metrics';
 import { useDashboardLive } from '../hooks/useLive';
+import { useAuthStore } from '../store/auth';
 import { liveStatus } from '../lib/machineStatus';
 import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS, useCurrentShiftDefault } from '../store/filters';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -38,6 +40,7 @@ const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', S
 export default function Dashboard() {
   const mName = useMachineName();
   const live = useDashboardLive();
+  const can = useAuthStore((s) => s.can);
   const { shifts, defaultWindow } = useAppConfig();   // shared server-side shift config
   const f = useFilters();
 
@@ -120,6 +123,7 @@ export default function Dashboard() {
   // The shift default is not a filter the user set, so it does not count as dirty.
   const atDefaults = !f.machineId && !f.shiftPicked && f.preset === 'today';
   const [pickRange, setPickRange] = useState(false);
+  const [prodHistory, setProdHistory] = useState(false);
   // True while ProductionVsTarget has ONE machine's board open — the fleet
   // panels step aside for it (see the render below).
   const [machineBoardOpen, setMachineBoardOpen] = useState(false);
@@ -240,8 +244,19 @@ export default function Dashboard() {
             >
               <RotateCcw size={13} /> Reset
             </button>
+            {/* Every counter advance in this window, with its classification —
+                and the place to correct one that was really a dry run. */}
+            {can('production', 'view') && <button onClick={() => setProdHistory(true)}
+              title="Every production count change in this window — and where to correct one"
+              className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/10 transition-colors shrink-0">
+              <ListOrdered size={13} /> Production history
+            </button>}
           </div>
         </div>
+        {prodHistory && (
+          <ProductionHistoryModal from={fromISO} to={toISO} machineId={f.machineId || undefined}
+            windowLabel={windowLabel} onClose={() => setProdHistory(false)} />
+        )}
 
         {/* ── By group ────────────────────────────────────────────────────── */}
         <SectionHead icon={Boxes} title={f.machineId ? scopeLabel : 'Machine groups'}

@@ -42,7 +42,7 @@ eq('missing canonical option rejected', errOf(missing), 'missing classification 
 const blank = base(); (blank.options as { label: string }[])[1].label = '  ';
 eq('blank label rejected', errOf(blank), 'option labels must be 1–40 characters');
 const renamed = base(); (renamed.options as { label: string }[])[2].label = ' Reject ';
-eq('labels trim, values stay stable', okOf(renamed).options[2], { value: 'DEFECTIVE', label: 'Reject', enabled: true, order: 3 });
+eq('labels trim, values stay stable', okOf(renamed).options[2], { value: 'DEFECTIVE', label: 'Reject', enabled: true, order: 3, counts: false });
 
 // Order normalizes to unique 1..N — admin numbers are a preference, not a contract.
 const shuffled = base();
@@ -62,6 +62,22 @@ eq('all-disabled rejected', errOf(allOff), 'enable at least one classification o
 
 // Disabling an option is allowed — it just leaves the popup, not the system.
 const noSample = base(); (noSample.options as { value: string; enabled: boolean }[])[3].enabled = false;
-eq('a disabled option survives normalization', okOf(noSample).options[3], { value: 'SAMPLE', label: 'Sample', enabled: false, order: 4 });
+eq('a disabled option survives normalization', okOf(noSample).options[3], { value: 'SAMPLE', label: 'Sample', enabled: false, order: 4, counts: false });
+
+// "Counts" — whether a piece so classified is production. OK cannot be turned
+// off; the others default to NOT counting when a stored config predates the
+// field (a config saved before "counts" existed must not start counting dry
+// cycles as production), and follow the admin when set.
+const okOff = base(); (okOff.options as { value: string; counts?: boolean }[])[0].counts = false;
+eq('OK always counts', okOf(okOff).options[0].counts, true);
+const legacy = base(); (legacy.options as Record<string, unknown>[]).forEach((o) => { delete o.counts; });
+eq('legacy config: only OK counts', okOf(legacy).options.map((o) => o.counts), [true, false, false, false]);
+const defCounts = base(); (defCounts.options as { value: string; counts?: boolean }[])[2].counts = true;
+eq('admin can make defective count', okOf(defCounts).options[2].counts, true);
+
+// Edit reasons: trimmed, de-duplicated case-insensitively, bounded; absent = defaults.
+eq('reasons default when absent', okOf({ ...base(), reasons: undefined }).reasons, DEFAULT_PROD_CLASS.reasons);
+eq('reasons trim + dedupe', okOf({ ...base(), reasons: [' Wrong button ', 'wrong BUTTON', '', 'Late'] }).reasons, ['Wrong button', 'Late']);
+eq('a 61-char reason is refused', errOf({ ...base(), reasons: ['x'.repeat(61)] }), 'an edit reason must be 60 characters or fewer');
 
 console.log('prodclass: all checks passed');

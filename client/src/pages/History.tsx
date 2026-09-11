@@ -6,7 +6,7 @@
 // "Raw readings" mode keeps the full per-reading telemetry browser (complete
 // telemetry stays available; it just no longer masquerades as history).
 import { useState, useEffect, Fragment, type ReactNode } from 'react';
-import { useQuery, useMutation, keepPreviousData, useQueryClient } from '@tanstack/react-query';
+import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
   Download, History as HistoryIcon, BarChart3, ListTree, Database,
@@ -26,8 +26,8 @@ import type { ApiMeta, MetricStat, MetricValue, MachineEventRow } from '../types
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
-import { toast } from '../store/toast';
 import { CLASS_COLORS } from '../components/ProductionClassPopup';
+import { ReclassifyModal } from '../components/ProductionHistory';
 
 
 export default function History() {
@@ -266,37 +266,32 @@ function EventsArchive(): JSX.Element {
   );
 }
 
-// The classification chip + (permissioned) inline correction. Correcting a
-// classification relabels the event only — the counter change never moves.
+// The classification chip + (permissioned) correction, which asks for a
+// reason. Correcting relabels the event; the counter change on the row never
+// moves — only whether that piece counts as production.
 function ClassCell({ e }: { e: MachineEventRow }): JSX.Element {
   const can = useAuthStore((s) => s.can);
+  const user = useAuthStore((s) => s.user);
   const { prodClass } = useAppConfig();
-  const qc = useQueryClient();
-  const canEdit = can('history', 'update');
+  const [editing, setEditing] = useState(false);
   const opts = prodClass?.options || [];
-  const label = opts.find((o) => o.value === e.classification)?.label || e.classification || '—';
-  const mut = useMutation({
-    mutationFn: (value: string) => eventsApi.editClassification(e._id, value),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['events'] }); toast.success('Classification updated'); },
-    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : 'Could not update'),
-  });
+  const opt = opts.find((o) => o.value === e.classification);
+  const label = opt?.label || e.classification || '—';
+  const own = (user?.assignedMachines || []).some((m) => m.toUpperCase() === e.machineId.toUpperCase());
+  const canEdit = can('history', 'update') || (own && can('production', 'view'));
   const c = CLASS_COLORS[e.classification || ''] || '#64748B';
   const who = e.classSource === 'operator' || e.classSource === 'edit' ? e.classifiedBy?.name : null;
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="pill font-semibold" style={{ background: `${c}1A`, color: c }}
-        title={`${e.classSource === 'edit' ? 'corrected' : e.classSource || 'before classification existed'}${who ? ` · by ${who}` : ''}${e.operatorName ? ` · operator: ${e.operatorName}` : ''}${e.paramKey ? ` · ${prettyKey(e.paramKey)}` : ''}`}>
+        title={`${e.classSource === 'edit' ? 'corrected' : e.classSource || 'before classification existed'}${who ? ` · by ${who}` : ''}${e.editReason ? ` · "${e.editReason}"` : ''}${e.operatorName ? ` · operator: ${e.operatorName}` : ''}${opt && !opt.counts ? ' · not counted as production' : ''}${e.paramKey ? ` · ${prettyKey(e.paramKey)}` : ''}`}>
         {label}
       </span>
       {canEdit && (
-        <select value="" disabled={mut.isPending}
-          onChange={(ev) => { if (ev.target.value) mut.mutate(ev.target.value); }}
-          className="text-[11px] border border-line rounded-md bg-base text-steel px-1 py-0.5 w-[26px] cursor-pointer"
-          title="Correct this classification" aria-label="Correct classification">
-          <option value="">✎</option>
-          {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
+        <button onClick={() => setEditing(true)} title="Correct this classification" aria-label="Correct classification"
+          className="text-[11px] border border-line rounded-md bg-base text-steel px-1.5 py-0.5 hover:text-accent">✎</button>
       )}
+      {editing && <ReclassifyModal e={e} onClose={() => setEditing(false)} />}
     </span>
   );
 }

@@ -15,12 +15,15 @@ import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { refMatch } from '../utils/machineRef.js';
 import { getProdClassConfig } from '../utils/prodclass.js';
+import { PROD_STEP_PER_MIN } from './activity.service.js';
 
 // In-memory last-known values per machine ref. lastState is re-seeded from open
 // sessions on boot; lastCounter starts empty so the first sweep only records a
 // baseline (a restart must not emit a giant false production delta).
 const lastState = new Map<string, EventState>();
-const lastCounter = new Map<string, { key: string; value: number }>();
+// `at` = reading time of the last sample holding that value, so a climb can
+// be judged against the gap that produced it (same physics rule as stepEvents).
+const lastCounter = new Map<string, { key: string; value: number; at: number }>();
 let seeded = false;
 
 /** Load open state sessions once so a restart continues sessions instead of duplicating them. */
@@ -67,7 +70,7 @@ export async function recordState(ref: string, state: EventState, now: Date): Pr
 /** Record the machine's production counter. Advance → one event with the delta
  *  (a 3-piece jump within one sweep is one "+3" event). Reset → meta.reset, no
  *  fabricated delta. Unchanged → nothing. */
-export async function recordProduction(ref: string, params: Record<string, unknown> | undefined, now: Date): Promise<void> {
+export async function recordProduction(ref: string, params: Record<string, unknown> | undefined, now: Date, at?: Date | null): Promise<void> {
   try {
     if (!params || !Object.keys(params).length) return;
     const flat = flattenData(params);
@@ -76,12 +79,18 @@ export async function recordProduction(ref: string, params: Record<string, unkno
     const value = Number(flat[key]);
     if (!Number.isFinite(value)) return;
 
+    // Stamped with the READING that carried the advance, not the sweep tick
+    // up to 30s later: a piece made at 14:59:40 belongs to the shift that
+    // made it, and the pieces subtracted from a window must be the pieces
+    // counted in it. ±5 min tolerance — a collector clock a few seconds ahead
+    // of the server is normal, and its telemetry bins already run on it.
+    const stamp = at && Math.abs(now.getTime() - at.getTime()) < 5 * 60_000 ? at : now;
     const prev = lastCounter.get(ref);
     if (!prev || prev.key !== key) {                             // baseline (boot / counter renamed)
-      lastCounter.set(ref, { key, value });
+      lastCounter.set(ref, { key, value, at: stamp.getTime() });
       return;
     }
-    if (value === prev.value) return;                            // unchanged → no event
+    if (value === prev.value) { prev.at = stamp.getTime(); return; }   // unchanged → no event
 
     if (value > prev.value) {
       // Born classified with the admin-configured default: the popup can only
@@ -94,21 +103,27 @@ export async function recordProduction(ref: string, params: Record<string, unkno
         machineRef: refMatch(ref), startedAt: { $lte: now },
         $or: [{ endedAt: null }, { endedAt: { $gte: now } }],
       }).sort({ startedAt: -1 }).select({ userName: 1 }).lean().catch(() => null);
+      // The same physics rule stepEvents applies: a climb the reading gap
+      // cannot hold (garbage sample, commissioning preload) is one the counts
+      // never credited — recorded raw, but marked so no figure ever subtracts it.
+      const gapMin = Math.max((stamp.getTime() - prev.at) / 60_000, 1);
+      const implausible = value - prev.value > gapMin * PROD_STEP_PER_MIN;
       await MachineEvent.create({
         machineId: ref, kind: 'production', paramKey: key,
         prevValue: prev.value, newValue: value, delta: value - prev.value,
-        startedAt: now, endedAt: now, durationMs: 0,
+        startedAt: stamp, endedAt: stamp, durationMs: 0,
         classification: cfg.defaultValue, classSource: 'default',
         operatorName: op?.userName || null,
+        ...(implausible ? { meta: { implausible: true } } : {}),
       });
     } else {
       await MachineEvent.create({
         machineId: ref, kind: 'production', paramKey: key,
         prevValue: prev.value, newValue: value, delta: 0,
-        startedAt: now, endedAt: now, durationMs: 0, meta: { reset: true },
+        startedAt: stamp, endedAt: stamp, durationMs: 0, meta: { reset: true },
       });
     }
-    lastCounter.set(ref, { key, value });
+    lastCounter.set(ref, { key, value, at: stamp.getTime() });
   } catch (err) {
     console.error('[events] production error:', errMessage(err));
   }
