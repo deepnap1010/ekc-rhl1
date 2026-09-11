@@ -741,9 +741,14 @@ export const machineHourly = asyncHandler(async (req, res) => {
   if (toD.getTime() - fromD.getTime() > 7 * 24 * 3600_000) return fail(res, 400, 'window too large (max 7 days)');
   const endD = new Date(Math.min(toD.getTime(), Date.now()));
 
-  // A derived-counter machine's hours come from edge events in its raw signal
-  // (config/derivedCounters) — same engine as its card and the targets board.
-  const dc = derivedCounterFor(m.code || m.machineId || '');
+  // Counter key from the machine's current snapshot — the timeline's choice too.
+  const snapKey = pickProductionKey(flattenData((m.currentParameters as Record<string, unknown>) || {}));
+  const key = snapKey && !snapKey.includes('.') ? snapKey : null;
+
+  // Only a machine with NO register falls back to its derived rule: hours from
+  // edge events in its raw signal (config/derivedCounters) — same engine as
+  // its card and the targets board.
+  const dc = key ? null : derivedCounterFor(m.code || m.machineId || '');
   if (dc) {
     const HOUR_MS = 3600_000;
     const hours = await cached(`hourly:${refs.join('|')}:edge:${fromD.toISOString()}:${endD.toISOString()}`, 30_000, async () => {
@@ -761,9 +766,6 @@ export const machineHourly = asyncHandler(async (req, res) => {
     return ok(res, { key: dc.key, hours }, { from: fromD.toISOString(), to: endD.toISOString() });
   }
 
-  // Counter key from the machine's current snapshot — the timeline's choice too.
-  const snapKey = pickProductionKey(flattenData((m.currentParameters as Record<string, unknown>) || {}));
-  const key = snapKey && !snapKey.includes('.') ? snapKey : null;
   if (!key) return ok(res, { key: null, hours: [] });
 
   const HOUR = 3600_000;

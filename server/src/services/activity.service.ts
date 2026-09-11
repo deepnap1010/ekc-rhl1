@@ -613,11 +613,13 @@ export async function computeActivity(
   // ── Derived counters ──────────────────────────────────────────────────────
   // A machine with no counter register but a signal that bursts once per piece
   // (config/derivedCounters) counts its own work: rising edges in the window.
+  // A FALLBACK: a row whose payload carried a register already has its count
+  // and is left alone — the plant's number beats our reading of a speed.
   // Runs before line links so a machine that counts — either way — never
   // borrows. Raw series, not bins: edges live in the dips between bursts.
   await Promise.all(rows.map(async (row) => {
     const dc = derivedCounterFor(row.code);
-    if (!dc) return;
+    if (!dc || row.production != null) return;
     const evs = await derivedEvents([row.code], dc, fromD, new Date(endMs));
     row.production = evs.reduce((n, e) => n + e.made, 0);
     row.productionKey = dc.key;

@@ -25,7 +25,8 @@ export function counterKeys(machines: string[]): Promise<{ ref: string; key: str
     const found = await Promise.all(machines.map(async (ref) => {
       const last = await Telemetry.findOne({ machineId: ref }).sort({ timestamp: -1 })
         .select({ data: 1 }).lean();
-      if (derivedCounterFor(ref)) return null;   // edge-counted, never a register
+      // A derived-counter machine is looked up like any other: if its PLC has
+      // started sending a register, that register is what we count.
       const k = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
       return k && !k.includes('.') ? { ref, key: k } : null;
     }));
@@ -42,15 +43,14 @@ export async function productionEventsBy(
   const out = new Map<string, { t: number; made: number }[]>();
   if (!machines.length) return out;
 
-  // Machines with a DERIVED counter (config/derivedCounters) count edges in a
-  // raw signal, not steps of a register. Edges live in the dips between bursts,
-  // and per-bin $max erases dips — so these few machines read their raw series.
-  // The volume is bounded by telemetry retention, and the derived rule wins
-  // even if the machine one day also grows a register.
-  for (const [ref, evs] of await derivedEventsBy(machines, from, to)) out.set(ref, evs);
-
-  const rest = machines.filter((m) => !derivedCounterFor(m));
-  const keyed = await counterKeys(rest);
+  // The register is the plant's own number and always wins. Only a machine
+  // whose payload carries NO register falls back to its derived rule
+  // (config/derivedCounters) — edges in a raw signal, read from the raw series
+  // because per-bin $max erases the dips the edges live in.
+  const keyed = await counterKeys(machines);
+  const registered = new Set(keyed.map((k) => k.ref));
+  const fallback = machines.filter((m) => !registered.has(m) && derivedCounterFor(m));
+  for (const [ref, evs] of await derivedEventsBy(fallback, from, to)) out.set(ref, evs);
   if (!keyed.length) return out;
 
   // Bin width scales with the span — 5-minute bins keep a month's pipeline
