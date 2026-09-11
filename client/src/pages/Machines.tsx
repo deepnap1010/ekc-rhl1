@@ -8,7 +8,7 @@ import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, fmtDate, isNumeric } from '../lib/format';
+import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, fmtDate } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
@@ -576,13 +576,8 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     prettyT,
   ].filter(Boolean).join(' · ');
 
-  // Signal-mapping awareness — honest "what's live vs what still needs mapping".
-  const sigEntries = Object.entries(params).filter(([k]) => k.toLowerCase() !== 'status');
-  const sigTotal   = sigEntries.length;
-  const rawCount   = sigEntries.filter(([k]) => isRawAddress(k)).length;
-  const namedCount = sigTotal - rawCount;
-  const liveCount  = sigEntries.filter(([, v]) => (isNumeric(v) && Number(v) !== 0) || (typeof v === 'string' && v.trim() !== '')).length;
-  const rawOnly    = sigTotal > 0 && namedCount === 0;
+  // How many signals the collector posts — only the fallback hero reads it.
+  const sigTotal = Object.keys(params).filter((k) => k.toLowerCase() !== 'status').length;
 
   // A furnace makes heat, not pieces: its live work-zone temperature IS the
   // headline, and it must win over computeHeadline's generic rules — those skip
@@ -725,18 +720,11 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
         </div>
       </div>
 
-      {/* Mapping strip + dia — the dia the machine is set up for; the Ruler
-          button assigns/changes it right here (teammate-built card layout). */}
+      {/* Dia row — the dia the machine is set up for; the Ruler button
+          assigns/changes it right here. (The "N/N mapped · N live" signal
+          strip that used to sit on the left was collector bookkeeping, not
+          production — nobody on the floor could act on it.) */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {sigTotal > 0 && (
-          <>
-            <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${rawOnly ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-accent/10 text-accent'}`}>
-              <span className={`w-1 h-1 rounded-full ${rawOnly ? 'bg-amber-500' : 'bg-accent'}`} />
-              {rawOnly ? 'Raw only · needs mapping' : `${namedCount}/${sigTotal} mapped`}
-            </span>
-            <span className="text-[10px] text-steel/70">{liveCount} live</span>
-          </>
-        )}
         <span className="ml-auto inline-flex items-center gap-1.5">
           {assignment
             ? <span className="pill bg-accent/10 text-accent data !text-[10px] max-w-[110px] truncate" title={`${assignment.snapshot.diaName} · ${assignment.snapshot.stageName}`}>{assignment.snapshot.diaName}</span>
