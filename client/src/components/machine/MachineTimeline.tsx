@@ -36,7 +36,7 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
     queryKey: ['machine-timeline', code, from, to, size, p],
     queryFn: () => machineApi.timeline(code, { from, to, page: p, limit: size }),
   });
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     ...timelinePage(page),
     refetchInterval: 30000,
     placeholderData: keepPreviousData,
@@ -126,6 +126,10 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
       <div className="panel overflow-x-auto">
         {isLoading ? (
           <div className="p-10"><Spinner label="Loading history" /></div>
+        ) : error ? (
+          // A 403 (no history permission / not your machine) or a 500 must
+          // not masquerade as an empty range — say what the server said.
+          <div className="p-10 text-center text-stopped text-sm">{error instanceof Error ? error.message : 'Could not load history'}</div>
         ) : rows.length === 0 ? (
           <div className="p-10 text-center text-steel text-sm">No readings in this range.</div>
         ) : (

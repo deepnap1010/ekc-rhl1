@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
-  ArrowLeft, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal, Cpu, Ruler,
+  ArrowLeft, FileText, Clock, History as HistoryIcon, Activity, SlidersHorizontal, Cpu, Ruler, type LucideIcon,
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../api/endpoints';
 import { StatusPill, Spinner, FreshnessPill } from '../components/ui';
@@ -20,10 +20,16 @@ import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine } from '../types/api';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 
-const TABS = [
+// `module` is the permission the tab's data needs — the same module its
+// endpoint checks (routes/index.ts). A tab whose endpoint would answer 403
+// must not be offered: an operator without history rights saw a History tab
+// that opened onto "No readings in this range" for a machine with hours of
+// readings, and read it as a data bug. Untagged tabs need only the machine
+// itself, which the page already has.
+const TABS: { key: string; label: string; icon: LucideIcon; module?: string }[] = [
   { key: 'overview',  label: 'Overview',  icon: Activity },
-  { key: 'history',   label: 'History',   icon: HistoryIcon }, // minute-level change log (production + status)
-  { key: 'downtime',  label: 'Downtime',  icon: Clock },
+  { key: 'history',   label: 'History',   icon: HistoryIcon, module: 'history' }, // minute-level change log (production + status)
+  { key: 'downtime',  label: 'Downtime',  icon: Clock, module: 'downtime' },
   { key: 'specs',     label: 'Specs',     icon: FileText },
   { key: 'configure', label: 'Configure', icon: SlidersHorizontal },
 ];
@@ -35,13 +41,15 @@ export default function MachineDetail() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialTab = searchParams.get('tab');
+  const can = useAuthStore((s) => s.can);
+  const tabs = TABS.filter((t) => !t.module || can(t.module));
   // Parameters is a MODAL, not a tab — ?tab=parameters deep links (machine
   // cards) open it over the Overview; the retired raw-log tab maps to History.
-  const [tab, setTab] = useState(
-    TABS.some((t) => t.key === initialTab) ? (initialTab as string)
-      : initialTab === 'telemetry' ? 'history'
-      : 'overview'
-  );
+  // A deep link to a tab this user cannot open lands on the Overview.
+  const [tab, setTab] = useState(() => {
+    const want = initialTab === 'telemetry' ? 'history' : initialTab;
+    return tabs.some((t) => t.key === want) ? (want as string) : 'overview';
+  });
   const [paramsOpen, setParamsOpen] = useState(initialTab === 'parameters');
   const [diaOpen, setDiaOpen] = useState(false);
   const canSetDia = useAuthStore((s) => s.can)('production', 'update');
@@ -102,7 +110,7 @@ export default function MachineDetail() {
       {/* Tabs + the Parameters module trigger */}
       <div className="border-b border-line bg-surface px-4 sm:px-6">
         <div className="flex gap-0 overflow-x-auto items-center">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`flex items-center gap-1.5 px-4 py-3 text-sm transition-colors whitespace-nowrap ${tab === t.key ? 'tab-active' : 'tab-inactive'}`}>
               <t.icon size={15} />{t.label}
