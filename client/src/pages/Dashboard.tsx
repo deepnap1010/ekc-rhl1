@@ -127,6 +127,11 @@ export default function Dashboard() {
   // True while ProductionVsTarget has ONE machine's board open — the fleet
   // panels step aside for it (see the render below).
   const [machineBoardOpen, setMachineBoardOpen] = useState(false);
+  // The machine whose board is open on the target panel — the history follows
+  // it: a list of every machine's pieces under one machine's board is noise.
+  const [openMachineCode, setOpenMachineCode] = useState<string | null>(null);
+  const onMachineOpen = (open: boolean, code?: string | null): void => { setMachineBoardOpen(open); setOpenMachineCode(open ? code ?? null : null); };
+  const historyMachine = f.machineId || openMachineCode || undefined;
 
   const selectedMachine = f.machineId
     ? (machineList || []).find((m) => (m.code || m.machineId) === f.machineId)
@@ -249,12 +254,12 @@ export default function Dashboard() {
             {can('production', 'view') && <button onClick={() => setProdHistory(true)}
               title="Every production count change in this window — and where to correct one"
               className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/10 transition-colors shrink-0">
-              <ListOrdered size={13} /> Production history
+              <ListOrdered size={13} /> Production history{historyMachine ? ` · ${mName(historyMachine)}` : ''}
             </button>}
           </div>
         </div>
         {prodHistory && (
-          <ProductionHistoryModal from={fromISO} to={toISO} machineId={f.machineId || undefined}
+          <ProductionHistoryModal from={fromISO} to={toISO} machineId={historyMachine}
             windowLabel={windowLabel} onClose={() => setProdHistory(false)} />
         )}
 
@@ -265,7 +270,7 @@ export default function Dashboard() {
             assignment engine: group cards → machines → full operator board,
             with its own window filter (per hour / per shift / today…). */}
         <ProductionVsTarget rows={rows} windowMs={windowMs} windowLabel={windowLabel}
-          from={fromISO} to={toISO} statusNow={statusNow} onMachineOpen={setMachineBoardOpen} />
+          from={fromISO} to={toISO} statusNow={statusNow} onMachineOpen={onMachineOpen} />
 
         {/* Operator notice: scheduled-dia instructions, shown until dismissed */}
         <ScheduledDiaPopup />

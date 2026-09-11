@@ -9,8 +9,10 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import {
   Cpu, Thermometer, Database,
-  Search, BarChart3, ChevronRight, ChevronDown, LineChart, Calendar,
+  Search, BarChart3, ChevronRight, ChevronDown, LineChart, Calendar, ListOrdered,
 } from 'lucide-react';
+import { ProductionHistoryModal } from '../ProductionHistory';
+import { useAuthStore } from '../../store/auth';
 import { machineApi, downtimeApi } from '../../api/endpoints';
 import TargetPanel from './TargetPanel';
 import { StatusPill } from '../ui';
@@ -50,6 +52,8 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
   const mName = useMachineName();
   const mTitle = useMachineTitle();
   const id = machine.machineId || machine.id || machine._id;
+  const canProd = useAuthStore((st) => st.can)('production', 'view');
+  const [prodHistory, setProdHistory] = useState(false);
   const liveTel = useMachineTelemetry(id);
 
   const { data: stats } = useQuery({
@@ -229,7 +233,19 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           {win ? `${fmtTime(win.from)} → ${fmtTime(win.to)}` : 'Pick a start date and an end date'}
           {actFetching && <span className="text-accent"> · updating…</span>}
         </span>
+        {/* This machine's counter advances in this window — and where to
+            correct one. Scoped to THIS machine; the dashboard's copy is the fleet's. */}
+        {canProd && win && (
+          <button onClick={() => setProdHistory(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/10 transition-colors shrink-0">
+            <ListOrdered size={13} /> Production history
+          </button>
+        )}
       </div>
+      {prodHistory && win && (
+        <ProductionHistoryModal from={winFromISO} to={winToISO} machineId={String(id)}
+          windowLabel={`${mName(String(id))} · ${winLabel}`} onClose={() => setProdHistory(false)} />
+      )}
 
       {/* Operator target — what am I making, what's the target, how far am I */}
       {win && <TargetPanel code={String(id)} actRow={actRow} dayFrom={winFromISO as string} dayTo={winToISO as string} label={winLabel} />}

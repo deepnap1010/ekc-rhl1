@@ -58,7 +58,7 @@ interface Props {
   /** Fires with true while ONE machine's full board is on screen — the page
    *  hides its fleet-wide panels then, so a fleet donut cannot sit under a
    *  single machine's numbers looking like part of them. */
-  onMachineOpen?: (open: boolean) => void;
+  onMachineOpen?: (open: boolean, code?: string | null) => void;
 }
 
 interface TargetRow {
@@ -309,9 +309,9 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   // the page must hide its fleet panels for the same frames this shows a board.
   const machineBoardOpen = !(mode === 'shift' && !shiftName) && targets.length > 0 && !!(open && openFor);
   useEffect(() => {
-    onMachineOpen?.(machineBoardOpen);
-    return () => onMachineOpen?.(false);   // unmount = no board on screen
-  }, [machineBoardOpen]);   // eslint-disable-line react-hooks/exhaustive-deps
+    onMachineOpen?.(machineBoardOpen, machineBoardOpen ? openFor?.row.code ?? null : null);
+    return () => onMachineOpen?.(false, null);   // unmount = no board on screen
+  }, [machineBoardOpen, openFor?.row.code]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!can('production', 'view')) return null;
   const hasDia = rows.some((r) => asgBy.get(r.code.toUpperCase()));
