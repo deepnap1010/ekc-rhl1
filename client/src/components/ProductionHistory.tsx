@@ -123,42 +123,75 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
   const [page, setPage] = useState(1);
   const SIZE = 100;
 
+  // The whole window, not a page of it: the number an operator reads is
+  // "piece 12 of this shift", and that runs from the shift's FIRST piece —
+  // which the newest hundred rows do not contain. Capped at 2,000 rows (ten
+  // server pages); a window that large is a report, not a history.
+  const CAP = 2000;
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['events', 'production-history', from, to, machineId || '', page],
-    queryFn: () => productionApi.events({ kind: 'production', from, to, machineId: machineId || undefined, page, limit: SIZE }),
+    queryKey: ['events', 'production-history', from, to, machineId || ''],
+    queryFn: async () => {
+      const all: MachineEventRow[] = [];
+      let total = 0;
+      for (let p = 1; p <= CAP / 200; p += 1) {
+        const r = await productionApi.events({ kind: 'production', from, to, machineId: machineId || undefined, page: p, limit: 200 });
+        total = (r.meta as { total?: number } | undefined)?.total || 0;
+        all.push(...(r.data || []));
+        if ((r.data || []).length < 200) break;
+      }
+      return { rows: all, total };
+    },
     enabled: !!from && !!to,
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
-  const rows = (data?.data || []).filter((r) => !(r.meta as { reset?: boolean } | undefined)?.reset);
-  const total = (data?.meta as { total?: number } | undefined)?.total || 0;
-  const pages = Math.max(1, Math.ceil(total / SIZE));
-  // The rows are this PAGE — say so when there is more than one.
-  const pageNote = pages > 1 ? ` on this page (${page}/${pages})` : '';
+  const allRows = (data?.rows || []).filter((r) => !(r.meta as { reset?: boolean } | undefined)?.reset);
+  const capped = (data?.total || 0) > CAP;
+  // Piece number within the window, per machine, counting only what counts —
+  // "11 → 12" beside a +1, the same reading the popup gives. Oldest first, so
+  // the first piece of the shift is #1.
+  const pieceNo = useMemo(() => {
+    const m = new Map<string, { before: number; after: number }>();
+    const running = new Map<string, number>();
+    for (const r of [...allRows].reverse()) {
+      const key = r.machineId.toUpperCase();
+      const o = opts.find((x) => x.value === r.classification);
+      const implausible = !!(r.meta as { implausible?: boolean } | undefined)?.implausible;
+      const counts = !implausible && !(o && !o.counts);
+      const before = running.get(key) || 0;
+      const after = counts ? before + (r.delta || 0) : before;
+      running.set(key, after);
+      m.set(r._id, { before, after });
+    }
+    return m;
+  }, [allRows, opts]);
+  const pages = Math.max(1, Math.ceil(allRows.length / SIZE));
+  const rows = allRows.slice((page - 1) * SIZE, page * SIZE);
+  const total = allRows.length;
 
   // Who may correct which row: history editors any row; an operator their own.
   const editor = can('history', 'update');
   const mine = useMemo(() => new Set((user?.assignedMachines || []).map((m) => m.toUpperCase())), [user]);
   const mayEdit = (r: MachineEventRow): boolean => editor || (can('production', 'view') && mine.has(r.machineId.toUpperCase()));
 
-  // Totals of the rows shown, in the operator's terms: counted vs classified
+  // The window's totals, in the operator's terms: counted vs classified
   // away. Climbs the engine refused (meta.implausible) are neither.
   const tally = useMemo(() => {
     let counted = 0, away = 0;
-    for (const r of rows) {
+    for (const r of allRows) {
       if ((r.meta as { implausible?: boolean } | undefined)?.implausible) continue;
       const o = opts.find((x) => x.value === r.classification);
       if (o && !o.counts) away += r.delta || 0; else counted += r.delta || 0;
     }
     return { counted, away };
-  }, [rows, opts]);
+  }, [allRows, opts]);
 
   return (
     <Modal title="Production history" subtitle={`${windowLabel} · every counter advance, newest first`} icon={ListOrdered} onClose={onClose} maxW="max-w-4xl">
       <div className="flex flex-wrap items-center gap-2 mb-3 text-xs text-steel">
-        <span className="pill bg-running/10 text-running font-semibold">{fmtNum(tally.counted)} counted{pageNote}</span>
+        <span className="pill bg-running/10 text-running font-semibold">{fmtNum(tally.counted)} counted</span>
         {tally.away > 0 && <span className="pill bg-line text-steel font-semibold">{fmtNum(tally.away)} classified away</span>}
-        <span className="ml-auto">{rows.length}{pages > 1 ? ` of ${total}` : ''} event{total === 1 ? '' : 's'}{isFetching && !isLoading ? ' · updating…' : ''}</span>
+        <span className="ml-auto">{total} event{total === 1 ? '' : 's'}{capped ? ' · latest 2,000 shown' : ''}{pages > 1 ? ` · page ${page}/${pages}` : ''}{isFetching && !isLoading ? ' · updating…' : ''}</span>
       </div>
 
       {isLoading ? (
@@ -173,7 +206,7 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
                 <th className="text-left label px-3 py-2">Time</th>
                 {!machineId && <th className="text-left label px-3 py-2">Machine</th>}
                 <th className="text-right label px-3 py-2">Pieces</th>
-                <th className="text-right label px-3 py-2">Counter</th>
+                <th className="text-right label px-3 py-2" title="Piece number within this window — the register is in small print">Count</th>
                 <th className="text-left label px-3 py-2">Classification</th>
                 <th className="text-left label px-3 py-2">By</th>
                 <th className="px-3 py-2" />
@@ -193,7 +226,20 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
                       title={implausible ? 'A jump the machine cannot physically have made in the time — never counted' : undefined}>
                       {implausible ? 'not counted' : o && !o.counts ? '—' : `+${fmtNum(r.delta || 0)}`}
                     </td>
-                    <td className="px-3 py-2 data text-xs text-right text-steel">{fmtNum(r.prevValue ?? 0)} → {fmtNum(r.newValue ?? 0)}</td>
+                    <td className="px-3 py-2 data text-right">
+                      {(() => {
+                        const n = pieceNo.get(r._id);
+                        const moved = !!n && n.after !== n.before;
+                        return (
+                          <>
+                            <div className={`text-sm font-semibold tabular-nums ${moved ? 'text-primary' : 'text-steel/60'}`}>
+                              {n ? (moved ? `${fmtNum(n.before)} → ${fmtNum(n.after)}` : fmtNum(n.after)) : '—'}
+                            </div>
+                            <div className="text-[10px] text-steel/70">counter {fmtNum(r.prevValue ?? 0)} → {fmtNum(r.newValue ?? 0)}</div>
+                          </>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-2">
                       <span className="pill font-semibold" style={{ background: `${c}1A`, color: c }}>{o?.label || r.classification || '—'}</span>
                     </td>
