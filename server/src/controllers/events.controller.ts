@@ -11,7 +11,7 @@ import { machineScope } from '../utils/scope.js';
 import { refMatch, refIn } from '../utils/machineRef.js';
 import { userCan } from '../middleware/auth.js';
 import type { AuthUser } from '../types/auth.js';
-import { getProdClassConfig, invalidateProductionReads, CLASS_VALUES, type ClassValue } from '../utils/prodclass.js';
+import { getProdClassConfig, invalidateProductionReads, type ClassValue } from '../utils/prodclass.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 type RangeFilter = { $gte?: Date; $lte?: Date };
@@ -219,7 +219,8 @@ export const editClassification = asyncHandler(async (req, res) => {
   const user = req.user as (ScopedUser & { _id?: unknown; name?: string }) | undefined;
   const body = req.body as { value?: unknown; reason?: unknown };
   const value = body.value as ClassValue;
-  if (!CLASS_VALUES.includes(value)) return fail(res, 400, 'Unknown classification');
+  const cfgNow = await getProdClassConfig();
+  if (!cfgNow.options.some((o) => o.value === value)) return fail(res, 400, 'Unknown classification');
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (!reason) return fail(res, 400, 'A reason is required to change a past classification');
   if (reason.length > 200) return fail(res, 400, 'Reason must be 200 characters or fewer');

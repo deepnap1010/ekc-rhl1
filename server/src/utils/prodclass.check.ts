@@ -1,5 +1,5 @@
 // Self-check for the classification config rules. Run: npx tsx server/src/utils/prodclass.check.ts
-import { normalizeProdClass, DEFAULT_PROD_CLASS, CLASS_VALUES, type ProdClassConfig } from './prodclass.js';
+import { normalizeProdClass, DEFAULT_PROD_CLASS, BUILTIN_VALUES, valueFromLabel, type ProdClassConfig } from './prodclass.js';
 
 const eq = (what: string, got: unknown, want: unknown): void => {
   if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`${what}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
@@ -22,7 +22,7 @@ const base = (): Record<string, unknown> => ({
 // Nothing stored yet → the defaults, whole and enabled.
 eq('null → defaults', okOf(null), DEFAULT_PROD_CLASS);
 eq('defaults default to OK', DEFAULT_PROD_CLASS.defaultValue, 'OK');
-eq('all four options exist', DEFAULT_PROD_CLASS.options.map((o) => o.value), [...CLASS_VALUES]);
+eq('the four defaults exist', DEFAULT_PROD_CLASS.options.map((o) => o.value), [...BUILTIN_VALUES]);
 
 // Popup duration: never zero, never negative, bounded.
 eq('zero duration rejected', errOf({ ...base(), timeoutSec: 0 }), 'popup duration must be 3–600 seconds');
@@ -30,13 +30,21 @@ eq('negative rejected', errOf({ ...base(), timeoutSec: -5 }), 'popup duration mu
 eq('too long rejected', errOf({ ...base(), timeoutSec: 601 }), 'popup duration must be 3–600 seconds');
 eq('fractional seconds round', okOf({ ...base(), timeoutSec: 19.6 }).timeoutSec, 20);
 
-// The value set is closed: unknown, duplicate or missing options are refused.
-eq('unknown value rejected', errOf({ ...base(), options: [...(base().options as object[]), { value: 'SCRAP', label: 'Scrap', enabled: true, order: 5 }] }),
-  'unknown classification option "SCRAP"');
+// The option set is the admin's: a new option is welcome, a duplicate is not,
+// a malformed value is not, and OK can never be removed.
+const scrap = okOf({ ...base(), options: [...(base().options as object[]), { value: 'SCRAP', label: 'Scrap', enabled: true, order: 5 }] });
+eq('a custom option is accepted', scrap.options[4], { value: 'SCRAP', label: 'Scrap', enabled: true, order: 5, counts: false });
+eq('a custom option never counts unless told to', scrap.options[4].counts, false);
+eq('malformed value rejected', errOf({ ...base(), options: [...(base().options as object[]), { value: 'scrap piece', label: 'x', enabled: true, order: 5 }] }),
+  'invalid classification value "scrap piece" — letters, digits and _ only');
 const dup = base(); (dup.options as { value: string }[])[3].value = 'OK';
 eq('duplicate rejected', errOf(dup), 'duplicate classification option "OK"');
-const missing = base(); (missing.options as unknown[]).pop();
-eq('missing canonical option rejected', errOf(missing), 'missing classification option "SAMPLE"');
+const noOk = base(); (noOk.options as unknown[]).shift();
+eq('OK cannot be removed', errOf(noOk), 'the OK option cannot be removed');
+const noSampleOpt = base(); (noSampleOpt.options as unknown[]).pop();
+eq('a default option CAN be removed (usage is checked at save)', okOf(noSampleOpt).options.length, 3);
+eq('values mint from labels', valueFromLabel(' Trial piece! '), 'TRIAL_PIECE');
+eq('a value never starts with a digit', valueFromLabel('2nd grade'), 'X2ND_GRADE');
 
 // Labels are display-only but still bounded.
 const blank = base(); (blank.options as { label: string }[])[1].label = '  ';
@@ -49,7 +57,7 @@ const shuffled = base();
 (shuffled.options as { value: string; order: number }[]).forEach((o) => {
   o.order = o.value === 'DEFECTIVE' ? 1 : o.value === 'OK' ? 2 : 9;   // tie on 9
 });
-eq('sorted by order, ties by canonical position, reindexed',
+eq('sorted by order, ties by the order given, reindexed',
   okOf(shuffled).options.map((o) => [o.value, o.order]),
   [['DEFECTIVE', 1], ['OK', 2], ['DRY_CYCLE', 3], ['SAMPLE', 4]]);
 

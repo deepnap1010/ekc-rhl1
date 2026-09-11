@@ -19,7 +19,7 @@ import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
 import { fmtNum, fmtTime } from '../lib/format';
 import { useMachineName } from '../lib/machineName';
-import { CLASS_COLORS } from './ProductionClassPopup';
+import { classColor } from './ProductionClassPopup';
 import type { MachineEventRow } from '../types/api';
 
 const OTHER = '__other__';
@@ -64,7 +64,7 @@ export function ReclassifyModal({ e, onClose }: { e: MachineEventRow; onClose: (
           <div className="label mb-1.5">What was it really?</div>
           <div className="grid grid-cols-2 gap-2">
             {opts.map((o) => {
-              const c = CLASS_COLORS[o.value] || '#0D9488';
+              const c = classColor(o.value, opts);
               const on = value === o.value;
               return (
                 <button key={o.value} onClick={() => setValue(o.value)}
@@ -182,7 +182,7 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
             <tbody>
               {rows.map((r) => {
                 const o = opts.find((x) => x.value === r.classification);
-                const c = CLASS_COLORS[r.classification || ''] || '#64748B';
+                const c = classColor(r.classification, opts);
                 const implausible = !!(r.meta as { implausible?: boolean } | undefined)?.implausible;
                 const who = r.classSource === 'operator' || r.classSource === 'edit' ? r.classifiedBy?.name : r.operatorName;
                 return (

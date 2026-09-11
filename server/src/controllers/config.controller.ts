@@ -4,6 +4,7 @@
 // the first write. PUT upserts (settings.update permission, enforced in routes).
 import { AppConfig, type IShift, type IStageTemplate } from '../models/AppConfig.js';
 import { AuditLog } from '../models/AuditLog.js';
+import { MachineEvent } from '../models/MachineEvent.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
 import { normalizeProdClass, invalidateProdClassCache, invalidateProductionReads, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
@@ -77,9 +78,24 @@ export const updateConfig = asyncHandler(async (req, res) => {
     if (body.defaultWindow !== 'shift' && body.defaultWindow !== 'day') return fail(res, 400, 'default window must be "shift" or "day"');
     set.defaultWindow = body.defaultWindow;
   }
+  // The stored rules, read once: the removal guard and the audit's "before"
+  // both want them.
+  let before: ProdClassConfig | null = null;
   if (body.prodClass !== undefined) {
     const norm = normalizeProdClass(body.prodClass);
     if (typeof norm === 'string') return fail(res, 400, norm);
+    before = prodClassOf((await AppConfig.findOne({ key: 'global' }).select({ prodClass: 1 }).lean())?.prodClass);
+    // An option can only be REMOVED while nothing is recorded under it —
+    // otherwise those rows would lose their label. Disable it instead. A
+    // yes/no question: exists() stops at the first row.
+    // ponytail: no {kind, classification} index, so a clean removal walks every
+    // production row once; admin-only click, bounded by maxTimeMS.
+    const kept = new Set(norm.options.map((o) => o.value));
+    for (const o of before.options) {
+      if (kept.has(o.value)) continue;
+      const used = await MachineEvent.exists({ kind: 'production', classification: o.value }).maxTimeMS(15_000);
+      if (used) return fail(res, 400, `"${o.label}" is recorded on past production — disable it instead of removing it`);
+    }
     set.prodClass = norm;
   }
 
@@ -129,11 +145,6 @@ export const updateConfig = asyncHandler(async (req, res) => {
   // Popup-rule changes are audited (who changed the timeout / options / default
   // matters when a classification is questioned later). Fire-and-forget — an
   // audit row must never be the reason a save fails.
-  const before = set.prodClass !== undefined
-    ? await AppConfig.findOne({ key: 'global' }).select({ prodClass: 1 }).lean()
-        .then((d) => prodClassOf(d?.prodClass), () => null)
-    : null;
-
   const doc = await AppConfig.findOneAndUpdate(
     { key: 'global' }, { $set: set }, { new: true, upsert: true }
   ).lean();

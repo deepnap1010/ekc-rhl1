@@ -22,9 +22,19 @@ import { currentShift, shiftWindowOn } from '../lib/settings';
 import { dayWindowAt } from '../store/filters';
 
 // One accent per internal value — labels are the admin's, colors are ours.
+// The four shipped defaults keep their meaning-colours; an option the admin
+// added takes one from a palette by its position so no two look alike.
 export const CLASS_COLORS: Record<string, string> = {
   OK: '#0D9488', DRY_CYCLE: '#D97706', DEFECTIVE: '#DC2626', SAMPLE: '#64748B',
 };
+const EXTRA_COLORS = ['#4F46E5', '#0EA5E9', '#DB2777', '#65A30D', '#9333EA', '#EA580C', '#0891B2', '#B45309'];
+export function classColor(value: string | null | undefined, options?: { value: string }[]): string {
+  const v = value || '';
+  if (CLASS_COLORS[v]) return CLASS_COLORS[v];
+  const customs = (options || []).filter((o) => !CLASS_COLORS[o.value]).map((o) => o.value);
+  const i = customs.indexOf(v);
+  return i >= 0 ? EXTRA_COLORS[i % EXTRA_COLORS.length] : '#64748B';
+}
 
 export function ProductionClassPopup(): JSX.Element | null {
   const user = useAuthStore((s) => s.user);
@@ -183,7 +193,7 @@ export function ProductionClassPopup(): JSX.Element | null {
         {/* Big touch targets: this is read at arm's length on a shop floor. */}
         <div className="grid grid-cols-2 gap-2.5">
           {options.map((o) => {
-            const c = CLASS_COLORS[o.value] || '#0D9488';
+            const c = classColor(o.value, prodClass?.options);
             return (
               <button key={o.value} onClick={() => answer(current._id, o.value)}
                 className="rounded-xl border-2 py-4 px-3 text-base font-semibold transition-colors hover:opacity-90 active:scale-[0.98]"

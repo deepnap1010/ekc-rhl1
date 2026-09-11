@@ -26,7 +26,7 @@ import type { ApiMeta, MetricStat, MetricValue, MachineEventRow } from '../types
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
-import { CLASS_COLORS } from '../components/ProductionClassPopup';
+import { classColor } from '../components/ProductionClassPopup';
 import { ReclassifyModal } from '../components/ProductionHistory';
 
 
@@ -279,7 +279,7 @@ function ClassCell({ e }: { e: MachineEventRow }): JSX.Element {
   const label = opt?.label || e.classification || '—';
   const own = (user?.assignedMachines || []).some((m) => m.toUpperCase() === e.machineId.toUpperCase());
   const canEdit = can('history', 'update') || (own && can('production', 'view'));
-  const c = CLASS_COLORS[e.classification || ''] || '#64748B';
+  const c = classColor(e.classification, opts);
   const who = e.classSource === 'operator' || e.classSource === 'edit' ? e.classifiedBy?.name : null;
   return (
     <span className="inline-flex items-center gap-1.5">

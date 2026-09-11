@@ -1,19 +1,28 @@
 // server/src/utils/prodclass.ts
 // Production-event classification: the admin-configurable rules for the
-// operator popup (OK / Dry Cycle / Defective Piece / Sample).
-//
-// The INTERNAL values are a closed, stable set — reports and history hang off
-// them, so an admin renames only the display label ("Defective Piece" →
-// "Reject"), never the value. Everything configurable lives in the app_config
-// singleton under `prodClass`; this module owns its shape, validation and a
-// small cache so the 30s sweep doesn't read config once per production event.
+// operator popup. What an option is — and the one thing that is fixed — is
+// spelled out above BUILTIN_VALUES below. Everything configurable lives in
+// the app_config singleton under `prodClass`; this module owns its shape,
+// validation and a small cache so the 30s sweep doesn't read config once per
+// production event.
 import { AppConfig } from '../models/AppConfig.js';
 import { MachineEvent } from '../models/MachineEvent.js';
 import { refCandidates } from './machineRef.js';
 import { invalidate } from './cache.js';
 
-export const CLASS_VALUES = ['OK', 'DRY_CYCLE', 'DEFECTIVE', 'SAMPLE'] as const;
-export type ClassValue = (typeof CLASS_VALUES)[number];
+// The options are the ADMIN's: add, rename, disable, reorder. Each carries a
+// stable internal value minted once from its label (REWORK, TRIAL_PIECE…) —
+// history and reports key on the value, so a rename changes buttons, never
+// records. OK is the one fixed point: it is what "good production" means,
+// always counts, and cannot be removed. The four shipped here are only the
+// defaults a fresh plant starts with.
+export const BUILTIN_VALUES = ['OK', 'DRY_CYCLE', 'DEFECTIVE', 'SAMPLE'] as const;
+export type ClassValue = string;
+export const VALUE_RE = /^[A-Z][A-Z0-9_]{0,31}$/;
+
+/** A stable internal value from a label: "Trial piece" → TRIAL_PIECE. */
+export const valueFromLabel = (label: string): string =>
+  label.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/^[0-9]/, 'X$&').slice(0, 32) || 'OPTION';
 
 export interface ProdClassOption {
   value: ClassValue;   // stable internal value — never edited
@@ -53,7 +62,7 @@ export const DEFAULT_PROD_CLASS: ProdClassConfig = {
  *  saved before it existed): OK counts, nothing else does. */
 const countsDefault = (v: ClassValue): boolean => v === 'OK';
 
-const isClassValue = (v: unknown): v is ClassValue => CLASS_VALUES.includes(v as ClassValue);
+const isClassValue = (v: unknown): v is ClassValue => typeof v === 'string' && VALUE_RE.test(v);
 
 /** Validate + normalize a stored or admin-submitted config.
  *  Returns the clean config, or a human-readable error string.
@@ -72,7 +81,7 @@ export function normalizeProdClass(raw: unknown): ProdClassConfig | string {
   const byValue = new Map<ClassValue, ProdClassOption>();
   for (const o of r.options as Record<string, unknown>[]) {
     if (!o || typeof o !== 'object') return 'invalid classification option';
-    if (!isClassValue(o.value)) return `unknown classification option "${String(o?.value)}"`;
+    if (!isClassValue(o.value)) return `invalid classification value "${String(o?.value)}" — letters, digits and _ only`;
     if (byValue.has(o.value)) return `duplicate classification option "${o.value}"`;
     const label = String(o.label ?? '').trim();
     if (!label || label.length > 40) return 'option labels must be 1–40 characters';
@@ -82,23 +91,24 @@ export function normalizeProdClass(raw: unknown): ProdClassConfig | string {
     const counts = o.value === 'OK' ? true : (o.counts == null ? countsDefault(o.value) : !!o.counts);
     byValue.set(o.value, { value: o.value, label, enabled: !!o.enabled, order, counts });
   }
-  // Every canonical value must be present exactly once — an option can be
-  // disabled, never dropped (history keeps resolving its label).
-  for (const v of CLASS_VALUES) if (!byValue.has(v)) return `missing classification option "${v}"`;
+  // OK is what "good production" means and is the only option that must exist.
+  if (!byValue.has('OK')) return 'the OK option cannot be removed';
+  if (byValue.size > 20) return 'at most 20 classification options';
 
-  // Ties broken by canonical position, then reindexed 1..N — order stays
-  // unique by construction instead of by rejection.
-  const options = [...byValue.values()]
-    .sort((a, b) => (a.order - b.order) || (CLASS_VALUES.indexOf(a.value) - CLASS_VALUES.indexOf(b.value)))
-    .map((o, i) => ({ ...o, order: i + 1 }));
+  // Ties broken by the order given, then reindexed 1..N — order stays unique
+  // by construction instead of by rejection.
+  const given = [...byValue.values()];
+  const options = given
+    .map((o, i) => ({ o, i }))
+    .sort((a, b) => (a.o.order - b.o.order) || (a.i - b.i))
+    .map(({ o }, i) => ({ ...o, order: i + 1 }));
 
   if (!options.some((o) => o.enabled)) return 'enable at least one classification option';
 
   const defaultValue = r.defaultValue;
-  if (!isClassValue(defaultValue)) return 'default classification is not a known option';
-  if (!options.find((o) => o.value === defaultValue)?.enabled) {
-    return 'default classification must be an enabled option';
-  }
+  const def = options.find((o) => o.value === defaultValue);
+  if (!def) return 'default classification is not a known option';
+  if (!def.enabled) return 'default classification must be an enabled option';
 
   // Reasons: a short, trimmed, de-duplicated list; absent = the defaults.
   let reasons: string[];
@@ -115,7 +125,7 @@ export function normalizeProdClass(raw: unknown): ProdClassConfig | string {
     if (reasons.length > 30) return 'at most 30 edit reasons';
   }
 
-  return { enabled: !!r.enabled, timeoutSec, defaultValue, options, reasons };
+  return { enabled: !!r.enabled, timeoutSec, defaultValue: def.value, options, reasons };
 }
 
 // ── pieces that are not production ───────────────────────────────────────────

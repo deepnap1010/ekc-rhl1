@@ -396,8 +396,9 @@ export interface OvMachine {
 }
 export interface OvCapabilityBlocked { name: string; needs: string }
 // Production-event classification rules (admin-configured, operator-facing).
-// `value` is the stable internal key history/reports hang off; only the label,
-// order, enabled flags and popup behavior are editable.
+// Options are the admin's; each `value` is the stable internal key minted when
+// the option was added — history and reports hang off it, so a rename changes
+// the label only. OK always exists and always counts.
 export interface ProdClassOption {
   value: string; label: string; enabled: boolean; order: number;
   counts: boolean;   // a piece so classified IS production (false = subtracted everywhere)
