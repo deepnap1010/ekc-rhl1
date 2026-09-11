@@ -4,9 +4,11 @@
 // assignment history — "what was this machine's target at 10:40 last Tuesday?"
 // is answered by the row whose range covers that instant.
 //
-// The snapshot is frozen at assignment time. Editing the DIA afterwards reaches
-// nothing here; a supervisor rolls a new time out by re-assigning (explicit,
-// audited). That single decision is what makes historical reports immutable.
+// The snapshot is frozen at assignment time. A CLOSED row is never touched —
+// that is what makes historical reports immutable. When a dia's cycle time
+// for a machine changes, the machine's OPEN row is closed at that moment and
+// a new one opened on the new time (audited), so the correction applies from
+// now on and the past keeps the rate it actually ran at.
 import mongoose from 'mongoose';
 
 export interface IAssignmentSnapshot {
@@ -15,6 +17,7 @@ export interface IAssignmentSnapshot {
   dims: string;
   stageName: string;
   processingSec: number;
+  cycleSource?: 'machine' | 'stage';   // the machine's own time, or the stage default
 }
 
 export interface IMachineAssignment {
@@ -36,6 +39,7 @@ const schema = new mongoose.Schema<IMachineAssignment>(
     snapshot: {
       diaName: String, capacity: String, dims: String, stageName: String,
       processingSec: { type: Number, required: true },
+      cycleSource: { type: String, enum: ['machine', 'stage'] },
     },
     effectiveFrom: { type: Date, required: true },
     effectiveTo: { type: Date, default: null },

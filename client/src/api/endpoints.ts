@@ -135,7 +135,12 @@ export const reportsApi = {
 export interface DiaWritePayload {
   name?: string; capacity?: string; dims?: string;
   // seq is assigned server-side from list order; key omitted on new stages
-  stages?: { key?: string; name: string; processingSec: number; active?: boolean }[];
+  stages?: {
+    key?: string; name: string;
+    processingSec: number;   // default per unit; 0 = machine-specific only
+    active?: boolean;
+    machineTimes?: { machineRef: string; processingSec: number }[];   // this dia's time on specific machines
+  }[];
 }
 export const productionApi = {
   dia: () => get<DiaConfig[]>('/production/dia'),

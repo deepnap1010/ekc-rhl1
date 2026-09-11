@@ -12,7 +12,7 @@ import Modal from '../Modal';
 import { useAuthStore } from '../../store/auth';
 import { toast } from '../../store/toast';
 import { fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc, fmtRate } from '../../lib/targets';
-import { stageForMachine } from '../../lib/diaStage';
+import { stageForMachine, cycleSecFor } from '../../lib/diaStage';
 import { useAppConfig } from '../../hooks/useAppConfig';
 import { fmtTime } from '../../lib/format';
 import { useMachineName } from '../../lib/machineName';
@@ -79,6 +79,8 @@ export function AssignDiaModal({ code, current, onClose }: {
   const [stageKey, setStageKey] = useState(current?.stageKey || '');
   const dia = options.find((d) => d._id === diaId);
   const stage = dia?.stages.find((s) => s.key === stageKey && s.active);
+  // Dia + THIS machine → cycle time → target. Null = nothing to assign on.
+  const ct = cycleSecFor(stage, code);
 
   // Picking a dia AUTO-SELECTS the stage: the machine's family names it
   // (a cutting machine gets Cutting), a single-stage dia decides itself. Only
@@ -188,20 +190,30 @@ export function AssignDiaModal({ code, current, onClose }: {
             {/* The stage is auto-selected from the machine's family; the saved
                 cycle count for it previews right here — their exact card. */}
             {dia && stage && !askStage ? (
-              <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3">
+              <div className={`rounded-xl border px-4 py-3 ${ct ? 'border-accent/20 bg-accent/5' : 'border-stopped/30 bg-stopped/5'}`}>
                 <div className="text-[10px] uppercase tracking-wide text-steel mb-1">
-                  {dia.name} · Saved cycle count for this stage
+                  {dia.name} · cycle time on {mName(code)}
                 </div>
-                <div className="font-semibold text-sm text-primary">{stage.name}</div>
-                <div className="text-sm mt-0.5">
-                  <span className="text-steel">1 pc every </span>
-                  <span className="data font-bold text-accent">{secToMinPerPc(stage.processingSec)} min</span>
-                  <span className="text-steel"> → </span>
-                  <span className="data font-bold text-accent">{fmtRate(hourlyRate(stage.processingSec))}/hr</span>
-                  <span className="text-steel"> · </span>
-                  <span className="data font-bold text-accent">{fmtTarget((shiftMins * 60) / stage.processingSec)}</span>
-                  <span className="text-steel">/shift</span>
+                <div className="font-semibold text-sm text-primary">{stage.name}
+                  {ct && <span className={`ml-2 pill !text-[9px] ${ct.source === 'machine' ? 'bg-accent/10 text-accent' : 'bg-line text-steel'}`}>
+                    {ct.source === 'machine' ? 'machine-specific' : 'stage default'}</span>}
                 </div>
+                {ct ? (
+                  <div className="text-sm mt-0.5">
+                    <span className="text-steel">1 pc every </span>
+                    <span className="data font-bold text-accent">{secToMinPerPc(ct.sec)} min</span>
+                    <span className="text-steel"> → </span>
+                    <span className="data font-bold text-accent">{fmtRate(hourlyRate(ct.sec))}/hr</span>
+                    <span className="text-steel"> · </span>
+                    <span className="data font-bold text-accent">{fmtTarget((shiftMins * 60) / ct.sec)}</span>
+                    <span className="text-steel">/shift</span>
+                  </div>
+                ) : (
+                  // No time for this dia on this machine: no target can be computed, so nothing is assigned.
+                  <div className="text-xs text-stopped mt-0.5">
+                    No cycle time is configured for {dia.name} on {mName(code)} — set a default for {stage.name}, or this machine's own time, in Production Targets.
+                  </div>
+                )}
                 {dia.stages.filter((st) => st.active).length > 1 && (
                   <button onClick={() => setAskStage(true)} className="text-[11px] text-steel hover:text-accent mt-1.5">
                     Not {stage.name}? Choose a different stage
@@ -216,9 +228,12 @@ export function AssignDiaModal({ code, current, onClose }: {
                 <select value={stageKey} onChange={(e) => setStageKey(e.target.value)}
                   className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
                   <option value="">Select a stage…</option>
-                  {dia.stages.filter((s) => s.active).map((s) => (
-                    <option key={s.key} value={s.key}>{s.name} — {fmtProcessing(s.processingSec)}/pc · {fmtTarget(hourlyRate(s.processingSec))}/hr</option>
-                  ))}
+                  {dia.stages.filter((s) => s.active).map((s) => {
+                    const c = cycleSecFor(s, code);
+                    return (
+                      <option key={s.key} value={s.key}>{s.name} — {c ? `${fmtProcessing(c.sec)}/pc · ${fmtRate(hourlyRate(c.sec))}/hr` : 'no cycle time on this machine'}</option>
+                    );
+                  })}
                 </select>
                 {askStage && stageKey && (
                   <button onClick={() => setAskStage(false)} className="text-[11px] text-steel hover:text-accent mt-1.5">Done</button>
@@ -285,8 +300,8 @@ export function AssignDiaModal({ code, current, onClose }: {
           <button
             onClick={() => (schedMode ? scheduleMut.mutate() : diaId ? assignMut.mutate() : unassignMut.mutate())}
             disabled={schedMode
-              ? !diaId || !stage || !whenOk || scheduleMut.isPending
-              : (diaId ? !stage || assignMut.isPending : !current || unassignMut.isPending)}
+              ? !diaId || !stage || !ct || !whenOk || scheduleMut.isPending
+              : (diaId ? !stage || !ct || assignMut.isPending : !current || unassignMut.isPending)}
             className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
             {assignMut.isPending || unassignMut.isPending || scheduleMut.isPending ? 'Saving…'
               : schedMode ? 'Schedule dia' : diaId ? 'Assign dia' : 'Clear dia'}

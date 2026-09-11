@@ -4,7 +4,8 @@
 // processing seconds) wherever they are displayed; nothing here stores a target
 // or an achievement, so nothing here can go stale.
 import mongoose from 'mongoose';
-import { DiaConfig, type IDiaStage } from '../models/DiaConfig.js';
+import { DiaConfig, type IDiaStage, type IMachineTime } from '../models/DiaConfig.js';
+import { cycleSecFor, noCycleMsg } from '../utils/cycleTime.js';
 import { MachineAssignment } from '../models/MachineAssignment.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { ok, created, fail, asyncHandler } from '../utils/http.js';
@@ -53,17 +54,75 @@ function cleanStages(input: unknown): IDiaStage[] | string {
     const s = input[i] as { key?: string; name?: string; processingSec?: unknown; active?: unknown };
     const name = String(s?.name || '').trim();
     if (!name) return `Stage ${i + 1} needs a name`;
-    const sec = Number(s?.processingSec);
-    if (!Number.isInteger(sec) || sec < 1 || sec > 86_400) {
+    // Machine-specific times: the same dia on different machines of this
+    // stage. Each ref once, each time a real per-piece figure.
+    const mt: IMachineTime[] = [];
+    const rawMt = (s as { machineTimes?: unknown }).machineTimes;
+    if (rawMt !== undefined) {
+      if (!Array.isArray(rawMt) || rawMt.length > 200) return `"${name}": invalid machine times`;
+      const seen = new Set<string>();
+      for (const m of rawMt as { machineRef?: unknown; processingSec?: unknown }[]) {
+        const ref = String(m?.machineRef || '').trim().toUpperCase();
+        if (!ref || ref.length > 60) return `"${name}": a machine time needs a machine`;
+        const msec = Number(m?.processingSec);
+        if (!Number.isInteger(msec) || msec < 1 || msec > 86_400) {
+          return `"${name}" on ${ref}: cycle time must be 1 second to 24 hours per unit`;
+        }
+        if (seen.has(ref)) return `"${name}": ${ref} is listed twice`;
+        seen.add(ref);
+        mt.push({ machineRef: ref, processingSec: msec });
+      }
+    }
+    // The stage default may be ABSENT (0) only when machine-specific times
+    // carry the stage — a stage with no time at all is not a stage.
+    const sec = s?.processingSec == null || s?.processingSec === '' ? 0 : Number(s?.processingSec);
+    if (!Number.isInteger(sec) || sec < 0 || sec > 86_400) {
       return `"${name}": processing time must be 1 second to 24 hours per unit`;
     }
+    if (sec === 0 && !mt.length) return `"${name}": set a default cycle time or at least one machine's`;
     const key = String(s?.key || '').trim() || slug(name);
     if (!key) return `"${name}": invalid stage name`;
     if (keys.has(key)) return `Duplicate stage "${name}"`;
     keys.add(key);
-    out.push({ key, name, seq: i + 1, processingSec: sec, active: s?.active !== false });
+    out.push({ key, name, seq: i + 1, processingSec: sec, active: s?.active !== false, ...(mt.length ? { machineTimes: mt } : {}) });
   }
   return out;
+}
+
+/** After a dia's times change, every machine currently RUNNING it moves to
+ *  its newly resolved time from this moment: the open row closes, a new one
+ *  opens (audited as a re-time). A machine whose time can no longer be
+ *  resolved keeps running on its snapshot — nothing is taken away silently. */
+async function retimeOpenAssignments(dia: { _id: unknown; name: string; capacity: string; dims: string; stages: IDiaStage[] }, user: ScopedUser | undefined): Promise<number> {
+  // A schedule already due lands first, at its own applyAt — so the re-time
+  // sees the machine's real dia and its row can never read as "assigned after
+  // the scheduled time" and supersede it.
+  await applyDueSchedules().catch(() => {});
+  const open = await MachineAssignment.find({ diaId: dia._id, effectiveTo: null }).lean();
+  let n = 0;
+  const now = new Date();
+  for (const a of open) {
+    const stage = dia.stages.find((s) => s.key === a.stageKey && s.active);
+    const ct = cycleSecFor(stage, a.machineRef);
+    if (!stage || !ct || ct.sec === a.snapshot.processingSec) continue;
+    // Close exactly the row we read. If someone cleared or re-assigned the
+    // machine in between, that decision stands — reopening it here would
+    // resurrect a cleared machine or leave two rows open (a doubled target).
+    const r = await MachineAssignment.updateOne({ _id: a._id, effectiveTo: null }, { $set: { effectiveTo: now } });
+    if (!r.modifiedCount) continue;
+    const doc = await MachineAssignment.create({
+      machineRef: a.machineRef, diaId: dia._id, stageKey: stage.key,
+      snapshot: { diaName: dia.name, capacity: dia.capacity, dims: dia.dims, stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source },
+      effectiveFrom: now, effectiveTo: null,
+      assignedBy: { id: String(user?._id || ''), name: user?.name }, note: 'cycle time updated',
+    });
+    audit(user, 'assignment.retime',
+      { type: 'assignment', id: String(doc._id), label: `${a.machineRef} → ${dia.name} / ${stage.name}` },
+      { processingSec: a.snapshot.processingSec, cycleSource: a.snapshot.cycleSource ?? null },
+      { processingSec: ct.sec, cycleSource: ct.source });
+    n += 1;
+  }
+  return n;
 }
 
 // ── DIA configs ──────────────────────────────────────────────────────────────
@@ -101,15 +160,23 @@ export const createDia = asyncHandler(async (req, res) => {
   }
 });
 
-// PUT /production/dia/:id — edits the CONFIG only. Machines keep their frozen
-// snapshots until re-assigned; the UI says so next to the save button.
+// The one shape a stage takes in an audit row — the same on both sides, so a
+// per-machine time that moved shows as before → after like any other field.
+const auditStage = (s: IDiaStage) => ({
+  key: s.key, name: s.name, processingSec: s.processingSec, active: s.active,
+  machineTimes: s.machineTimes?.map((m) => ({ machineRef: m.machineRef, processingSec: m.processingSec })),
+});
+
+// PUT /production/dia/:id — edits the CONFIG; a changed cycle time then moves
+// every machine currently running the dia to its new time from now (open row
+// closed, new row opened, audited). Closed rows are never touched.
 export const updateDia = asyncHandler(async (req, res) => {
   const doc = await DiaConfig.findById(req.params.id);
   if (!doc) return fail(res, 404, 'DIA not found');
   const { name, capacity, dims, stages } = req.body as Record<string, unknown>;
   const before: Record<string, unknown> = {
     name: doc.name, capacity: doc.capacity, dims: doc.dims,
-    stages: doc.stages.map((s) => ({ key: s.key, name: s.name, processingSec: s.processingSec, active: s.active })),
+    stages: doc.stages.map(auditStage),
   };
   if (name !== undefined) {
     if (!String(name).trim()) return fail(res, 400, 'Name is required');
@@ -118,8 +185,32 @@ export const updateDia = asyncHandler(async (req, res) => {
   if (capacity !== undefined) doc.capacity = String(capacity || '').trim();
   if (dims !== undefined) doc.dims = String(dims || '').trim();
   if (stages !== undefined) {
+    // A client that does not send machineTimes (the /production edit form,
+    // an API script) must not ERASE them: an absent key means "unchanged",
+    // like every other field of this handler. An explicit [] still clears.
+    if (Array.isArray(stages)) {
+      for (const s of stages as { key?: unknown; machineTimes?: unknown }[]) {
+        if (s && typeof s === 'object' && s.machineTimes === undefined) {
+          s.machineTimes = doc.stages.find((k) => k.key === s.key)?.machineTimes
+            ?.map((m) => ({ machineRef: m.machineRef, processingSec: m.processingSec }));
+        }
+      }
+    }
     const clean = cleanStages(stages);
     if (typeof clean === 'string') return fail(res, 400, clean);
+    // A machine RUNNING this dia must still resolve a time on the new stages.
+    // A stage that stays active but has no time for its machine would leave a
+    // target computed from a number that exists nowhere in config — refuse,
+    // and name the machines, before anything is saved.
+    const running = await MachineAssignment.find({ diaId: doc._id, effectiveTo: null }, { machineRef: 1, stageKey: 1 }).lean();
+    const stuck = running.filter((a) => {
+      const st = clean.find((x) => x.key === a.stageKey && x.active);
+      return st && !cycleSecFor(st, a.machineRef);
+    });
+    if (stuck.length) {
+      const names = stuck.map((a) => a.machineRef).join(', ');
+      return fail(res, 400, `${names} ${stuck.length === 1 ? 'is' : 'are'} running "${doc.name}" and would be left without a cycle time — set one, or clear the machine first`);
+    }
     doc.set('stages', clean);
   }
   doc.updatedBy = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
@@ -131,9 +222,11 @@ export const updateDia = asyncHandler(async (req, res) => {
   }
   audit(req.user as ScopedUser, 'dia.update', { type: 'dia', id: String(doc._id), label: doc.name }, before, {
     name: doc.name, capacity: doc.capacity, dims: doc.dims,
-    stages: doc.stages.map((s) => ({ key: s.key, name: s.name, processingSec: s.processingSec, active: s.active })),
+    stages: doc.stages.map(auditStage),
   });
-  return ok(res, doc.toObject());
+  // A changed cycle time recalculates the target of every machine on it, from now.
+  const retimed = stages !== undefined ? await retimeOpenAssignments(doc.toObject(), req.user as ScopedUser) : 0;
+  return ok(res, doc.toObject(), { retimed });
 });
 
 // POST /production/dia/:id/active { active } — deactivate blocks NEW assignments;
@@ -205,6 +298,9 @@ export const assignMachine = asyncHandler(async (req, res) => {
   const stage = dia.stages.find((s) => s.key === stageKey);
   if (!stage) return fail(res, 404, 'Stage not found on this DIA');
   if (!stage.active) return fail(res, 400, `Stage "${stage.name}" is deactivated`);
+  // Dia + THIS machine → cycle time. No time, no target, no assignment.
+  const ct = cycleSecFor(stage, ref);
+  if (!ct) return fail(res, 400, noCycleMsg(dia.name, stage.name, ref));
 
   const now = new Date();
   // Read the one that mattered, then close EVERY open row for this machine: one
@@ -222,7 +318,7 @@ export const assignMachine = asyncHandler(async (req, res) => {
     machineRef: ref, diaId: dia._id, stageKey: stage.key,
     snapshot: {
       diaName: dia.name, capacity: dia.capacity, dims: dia.dims,
-      stageName: stage.name, processingSec: stage.processingSec,
+      stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source,
     },
     effectiveFrom: now, effectiveTo: null,
     assignedBy: who, note: String(note || ''),
@@ -230,7 +326,7 @@ export const assignMachine = asyncHandler(async (req, res) => {
   audit(req.user as ScopedUser, 'assignment.create',
     { type: 'assignment', id: String(doc._id), label: `${ref} → ${dia.name} / ${stage.name}` },
     prev ? { diaName: prev.snapshot?.diaName, stageName: prev.snapshot?.stageName, processingSec: prev.snapshot?.processingSec } : null,
-    { diaName: dia.name, stageName: stage.name, processingSec: stage.processingSec });
+    { diaName: dia.name, stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source });
   return created(res, doc.toObject());
 });
 
@@ -340,6 +436,8 @@ export const createSchedule = asyncHandler(async (req, res) => {
   const stage = dia.stages.find((s) => s.key === stageKey);
   if (!stage) return fail(res, 404, 'Stage not found on this DIA');
   if (!stage.active) return fail(res, 400, `Stage "${stage.name}" is deactivated`);
+  // Refuse now what could never apply later: no time for this dia on this machine.
+  if (!cycleSecFor(stage, ref)) return fail(res, 400, noCycleMsg(dia.name, stage.name, ref));
 
   const who = { id: String((req.user as ScopedUser)?._id || ''), name: (req.user as ScopedUser)?.name };
   const doc = await ScheduledAssignment.create({
@@ -764,6 +862,9 @@ export const setMachineDia = asyncHandler(async (req, res) => {
       : `Which stage of "${dia.name}" does ${ref} run? Send { stage } — no stage name matches this machine.`);
   }
 
+  const ct = cycleSecFor(stage, ref);
+  if (!ct) return fail(res, 400, noCycleMsg(dia.name, stage.name, ref));
+
   const now = new Date();
   const prev = await MachineAssignment.findOneAndUpdate(
     { machineRef: ref, effectiveTo: null }, { $set: { effectiveTo: now } }, { sort: { effectiveFrom: -1 } },
@@ -773,14 +874,14 @@ export const setMachineDia = asyncHandler(async (req, res) => {
     machineRef: ref, diaId: dia._id, stageKey: stage.key,
     snapshot: {
       diaName: dia.name, capacity: dia.capacity, dims: dia.dims,
-      stageName: stage.name, processingSec: stage.processingSec,
+      stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source,
     },
     effectiveFrom: now, effectiveTo: null, assignedBy: who,
   });
   audit(req.user as ScopedUser, 'assignment.create',
     { type: 'assignment', id: String(doc._id), label: `${ref} → ${dia.name} / ${stage.name}` },
     prev ? { diaName: prev.snapshot?.diaName, stageName: prev.snapshot?.stageName } : null,
-    { diaName: dia.name, stageName: stage.name, processingSec: stage.processingSec });
+    { diaName: dia.name, stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source });
   return created(res, asDiaRow(doc.toObject() as unknown as Parameters<typeof asDiaRow>[0]));
 });
 

@@ -106,8 +106,8 @@ export default function ProductionSetup(): JSX.Element {
                     <div key={s.key} className={`flex items-baseline justify-between gap-2 text-xs ${s.active ? '' : 'line-through text-steel/60'}`}>
                       <span className="truncate">{s.name}</span>
                       <span className="data text-steel shrink-0">
-                        {fmtProcessing(s.processingSec)}/unit
-                        <span className="text-accent font-semibold"> → {fmtRate(hourlyRate(s.processingSec))}/hr</span>
+                        {s.processingSec > 0 ? <>{fmtProcessing(s.processingSec)}/unit<span className="text-accent font-semibold"> → {fmtRate(hourlyRate(s.processingSec))}/hr</span></> : 'per machine'}
+                        {s.machineTimes?.length ? <span className="text-steel"> · {s.machineTimes.length} machine-specific</span> : null}
                       </span>
                     </div>
                   ))}
@@ -382,9 +382,12 @@ function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: (
     for (const st of dia?.stages || []) if (!names.includes(st.name)) names.push(st.name);
     return names;
   })();
+  // Stages timed per machine stay even with a blank default; the server carries
+  // their machine times forward (Settings → Dia & Stages is where those are edited).
+  const perMachine = new Set((dia?.stages || []).filter((st) => st.active && st.machineTimes?.length).map((st) => st.name));
   const [vals, setVals] = useState<Record<string, string>>(() => {
     const v: Record<string, string> = {};
-    for (const st of dia?.stages || []) if (st.active) v[st.name] = secToMinPerPc(st.processingSec);
+    for (const st of dia?.stages || []) if (st.active) v[st.name] = st.processingSec > 0 ? secToMinPerPc(st.processingSec) : '';
     return v;
   });
 
@@ -393,8 +396,8 @@ function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: (
       const keyOf = new Map((dia?.stages || []).map((st) => [st.name, st.key]));
       const stages = stageNames
         .map((n) => ({ name: n, processingSec: minPerPcToSec(vals[n] || '') }))
-        .filter((st): st is { name: string; processingSec: number } => st.processingSec != null)
-        .map((st) => ({ key: keyOf.get(st.name), name: st.name, processingSec: st.processingSec, active: true }));
+        .filter((st) => st.processingSec != null || perMachine.has(st.name))
+        .map((st) => ({ key: keyOf.get(st.name), name: st.name, processingSec: st.processingSec ?? 0, active: true }));
       const body = { name, stages };
       return dia ? productionApi.updateDia(dia._id, body) : productionApi.createDia(body);
     },
@@ -402,7 +405,7 @@ function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: (
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not save'),
   });
 
-  const anyStage = stageNames.some((n) => minPerPcToSec(vals[n] || '') != null);
+  const anyStage = stageNames.some((n) => minPerPcToSec(vals[n] || '') != null || perMachine.has(n));
   const valid = !!name.trim() && anyStage;
 
   return (
@@ -440,8 +443,9 @@ function DiaModal({ dia, onClose, onSaved }: { dia: DiaConfig | null; onClose: (
 
         {dia && (dia.usedOn || 0) > 0 && (
           <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-            {dia.usedOn} machine{dia.usedOn === 1 ? '' : 's'} currently run{dia.usedOn === 1 ? 's' : ''} this DIA on a frozen
-            snapshot — saving here changes nothing on them until you re-assign, so past reports stay accurate.
+            {dia.usedOn} machine{dia.usedOn === 1 ? '' : 's'} currently run{dia.usedOn === 1 ? 's' : ''} this DIA — a changed
+            cycle time moves them to the new time from now; past reports keep the rate they ran at.
+            {perMachine.size > 0 && ' Machine-specific times are kept; edit those under Settings → Dia & Stages.'}
           </p>
         )}
 

@@ -6,6 +6,18 @@
 // DIA's order that matches wins; no match → null, and the assign modal falls
 // back to asking.
 import type { DiaConfig, DiaStage } from '../types/api';
+
+/** Dia + machine → cycle time. The machine's own time wins; the stage default
+ *  stands in; neither → null, and the UI must say so instead of computing a
+ *  target from nothing. Mirrors server utils/cycleTime.ts exactly. */
+export function cycleSecFor(stage: Pick<DiaStage, 'processingSec' | 'machineTimes'> | null | undefined, machineRef: string): { sec: number; source: 'machine' | 'stage' } | null {
+  if (!stage) return null;
+  const want = String(machineRef || '').trim().toUpperCase();
+  const own = (stage.machineTimes || []).find((m) => m.machineRef.toUpperCase() === want);
+  if (own && own.processingSec > 0) return { sec: own.processingSec, source: 'machine' };
+  if (stage.processingSec > 0) return { sec: stage.processingSec, source: 'stage' };
+  return null;
+}
 import { familySpellings } from './machineOrder';
 
 const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, '');

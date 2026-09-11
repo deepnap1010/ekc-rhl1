@@ -574,12 +574,14 @@ export interface DowntimeReport {
 }
 
 // ─── Production targets (DIA) ─────────────────────────────────────────────
+export interface MachineTime { machineRef: string; processingSec: number }
 export interface DiaStage {
   key: string;
   name: string;
   seq: number;
-  processingSec: number;   // per unit
+  processingSec: number;   // default per unit; 0 = machine-specific only
   active: boolean;
+  machineTimes?: MachineTime[];   // the same dia, timed per machine (wins over the default)
 }
 export interface DiaConfig {
   _id: string;
@@ -600,6 +602,7 @@ export interface AssignmentSnapshot {
   dims: string;
   stageName: string;
   processingSec: number;   // FROZEN at assignment time
+  cycleSource?: 'machine' | 'stage';   // the machine's own time, or the stage default
 }
 export interface MachineAssignment {
   _id: string;

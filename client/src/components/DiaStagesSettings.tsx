@@ -28,8 +28,8 @@ import { toast } from '../store/toast';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { fmtTime } from '../lib/format';
 import { groupMachines } from '../lib/machineOrder';
-import { stageForMachine } from '../lib/diaStage';
-import type { DiaConfig, StageTemplate } from '../types/api';
+import { stageForMachine, cycleSecFor } from '../lib/diaStage';
+import type { DiaConfig, StageTemplate, Machine } from '../types/api';
 
 // Times read and type in MINUTES per piece (their unit); stored in seconds.
 import { fmtMinPerPc as fmtMin, minPerPcToSec as minToSec, secToMinPerPc as secToMinStr } from '../lib/targets';
@@ -74,7 +74,7 @@ export default function DiaStagesSettings(): JSX.Element {
 
   return (
     <div className="space-y-5">
-      <DiametersPanel dias={dias || []} templates={stageTemplates} usageOf={usageOf}
+      <DiametersPanel dias={dias || []} templates={stageTemplates} usageOf={usageOf} machines={machineList || []}
         canCreate={canCreate} canEdit={canDia} onSaved={refresh} />
       <StagesPanel dias={dias || []} templates={stageTemplates} machines={machineList || []} canEdit={canTemplates} />
       <AssignPanel machines={machineList || []} dias={dias || []} asgBy={asgBy} canEdit={canDia} onSaved={refresh} />
@@ -83,8 +83,8 @@ export default function DiaStagesSettings(): JSX.Element {
 }
 
 // ═══ 1 · Diameters ════════════════════════════════════════════════════════════
-function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved }: {
-  dias: DiaConfig[]; templates: StageTemplate[];
+function DiametersPanel({ dias, templates, usageOf, machines, canCreate, canEdit, onSaved }: {
+  dias: DiaConfig[]; templates: StageTemplate[]; machines: Machine[];
   usageOf: (name: string) => number;
   canCreate: boolean; canEdit: boolean; onSaved: () => void;
 }): JSX.Element {
@@ -140,7 +140,9 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
   const shortDate = (v?: string | null): string => (v ? new Date(v).toLocaleDateString() : '—');
 
   const cycleSummary = (d: DiaConfig): string =>
-    d.stages.filter((s) => s.active).map((s) => `${s.name} ${fmtMin(s.processingSec)}`).join(' · ') || 'no stages';
+    d.stages.filter((s) => s.active).map((s) =>
+      `${s.name} ${s.processingSec > 0 ? fmtMin(s.processingSec) : 'per machine'}${s.machineTimes?.length ? ` (+${s.machineTimes.length} machine-specific)` : ''}`,
+    ).join(' · ') || 'no stages';
 
   return (
     <div className="panel p-5">
@@ -201,7 +203,7 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
                 )}
               </div>
               {editFor === d._id && (
-                <EditCycles dia={d} templates={templates} onSaved={() => { setEditFor(null); onSaved(); }} />
+                <EditCycles dia={d} templates={templates} machines={machines} onSaved={() => { setEditFor(null); onSaved(); }} />
               )}
             </div>
           ))}
@@ -249,58 +251,117 @@ function DiametersPanel({ dias, templates, usageOf, canCreate, canEdit, onSaved 
 }
 
 // "Edit cycles" — the same min/pc grid over a SAVED dia. Blank removes the
-// stage from this dia; filling a blank adds it. Machines keep their frozen
-// time until re-assigned, so past reports never move.
-function EditCycles({ dia, templates, onSaved }: {
-  dia: DiaConfig; templates: StageTemplate[]; onSaved: () => void;
+// stage from this dia; filling a blank adds it.
+// Dia + machine → cycle time. Each stage has a default; under it, every
+// machine of that stage's family can carry its OWN time (the same dia cuts
+// faster on one machine than another). Blank machine = the default. A stage
+// may even have no default — machine-specific only — in which case a machine
+// without its own time cannot be assigned this dia. Saving re-times every
+// machine currently running the dia, from now.
+function EditCycles({ dia, templates, machines, onSaved }: {
+  dia: DiaConfig; templates: StageTemplate[]; machines: Machine[]; onSaved: () => void;
 }): JSX.Element {
+  const mName = useMachineName();
   // Every stage the flow knows OR the dia already has (covers renamed flows).
   const stageNames = useMemo(() => {
     const names = templates.map((t) => t.name);
     for (const s of dia.stages) if (!names.includes(s.name)) names.push(s.name);
     return names;
   }, [dia, templates]);
+  // The machines a stage's family covers — the ones that can carry their own time.
+  const machinesOf = (stageName: string): Machine[] =>
+    machines.filter((m) => !!stageForMachine(m, { stages: [{ key: stageName, name: stageName, seq: 1, processingSec: 1, active: true }] }));
+  const keyOf = (m: Machine): string => String(m.code || m.machineId || '').toUpperCase();
+
   const [vals, setVals] = useState<Record<string, string>>(() => {
     const v: Record<string, string> = {};
-    for (const s of dia.stages) if (s.active) v[s.name] = secToMinStr(s.processingSec);
+    for (const s of dia.stages) if (s.active) v[s.name] = s.processingSec > 0 ? secToMinStr(s.processingSec) : '';
+    return v;
+  });
+  // stage name → machine ref → min/pc (as typed)
+  const [perMachine, setPerMachine] = useState<Record<string, Record<string, string>>>(() => {
+    const v: Record<string, Record<string, string>> = {};
+    for (const s of dia.stages) if (s.active) {
+      v[s.name] = {};
+      for (const mt of s.machineTimes || []) v[s.name][mt.machineRef.toUpperCase()] = secToMinStr(mt.processingSec);
+    }
+    return v;
+  });
+  const [openMachines, setOpenMachines] = useState<Record<string, boolean>>(() => {
+    const v: Record<string, boolean> = {};
+    for (const s of dia.stages) if (s.machineTimes?.length) v[s.name] = true;
     return v;
   });
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
-    const keyOf = new Map(dia.stages.map((s) => [s.name, s.key]));
-    const stages = stageNames
-      .map((n) => ({ name: n, processingSec: minToSec(vals[n] || '') }))
-      .filter((s): s is { name: string; processingSec: number } => s.processingSec != null)
-      .map((s) => ({ key: keyOf.get(s.name), name: s.name, processingSec: s.processingSec, active: true }));
+    const keyOfStage = new Map(dia.stages.map((s) => [s.name, s.key]));
+    const stages = stageNames.map((n) => {
+      const def = minToSec(vals[n] || '');
+      const machineTimes = Object.entries(perMachine[n] || {})
+        .map(([machineRef, txt]) => ({ machineRef, processingSec: minToSec(txt || '') }))
+        .filter((m): m is { machineRef: string; processingSec: number } => m.processingSec != null);
+      // A stage exists if it has a default OR any machine's own time.
+      if (def == null && !machineTimes.length) return null;
+      return { key: keyOfStage.get(n), name: n, processingSec: def ?? 0, active: true, machineTimes };
+    }).filter((s): s is NonNullable<typeof s> => !!s);
     if (!stages.length) { toast.error('A dia needs at least one stage with a cycle count'); return; }
     setBusy(true);
     try {
-      await productionApi.updateDia(dia._id, { stages });
-      toast.success('Cycles saved — re-assign a machine to put it on the new time');
+      const r = await productionApi.updateDia(dia._id, { stages });
+      const n = (r.meta as { retimed?: number } | undefined)?.retimed || 0;
+      toast.success(n ? `Cycles saved — ${n} machine${n === 1 ? '' : 's'} now on the new time` : 'Cycles saved');
       onSaved();
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not save'); setBusy(false); }
   };
 
   return (
     <div className="px-3 pb-3 pt-2 border-t border-line">
-      <div className="space-y-2 mb-3 max-w-md">
-        {stageNames.map((n) => (
-          <div key={n} className="flex items-center gap-2">
-            <span className="flex-1 text-sm text-primary truncate">{n}</span>
-            <input value={vals[n] || ''} inputMode="decimal" placeholder="—"
-              onChange={(e) => setVals((p) => ({ ...p, [n]: e.target.value.replace(/[^\d.]/g, '') }))}
-              className="w-20 bg-surface border border-line rounded-lg px-2 py-1.5 text-sm text-center outline-none focus:border-accent" />
-            <span className="text-[10px] text-steel w-12">min/pc</span>
-          </div>
-        ))}
+      <div className="space-y-2 mb-3 max-w-xl">
+        {stageNames.map((n) => {
+          const fam = machinesOf(n);
+          const own = Object.values(perMachine[n] || {}).filter((t) => minToSec(t || '') != null).length;
+          return (
+            <div key={n} className="rounded-lg border border-line/60 px-2.5 py-2">
+              <div className="flex items-center gap-2">
+                <span className="flex-1 text-sm text-primary truncate">{n}</span>
+                <input value={vals[n] || ''} inputMode="decimal" placeholder={own ? 'per machine' : '—'}
+                  onChange={(e) => setVals((p) => ({ ...p, [n]: e.target.value.replace(/[^\d.]/g, '') }))}
+                  className="w-24 bg-surface border border-line rounded-lg px-2 py-1.5 text-sm text-center outline-none focus:border-accent" />
+                <span className="text-[10px] text-steel w-16">min/pc default</span>
+                {fam.length > 0 && (
+                  <button onClick={() => setOpenMachines((p) => ({ ...p, [n]: !p[n] }))}
+                    className={`text-[11px] shrink-0 ${own ? 'text-accent' : 'text-steel hover:text-accent'}`}>
+                    {openMachines[n] ? 'Hide machines' : own ? `${own} machine-specific` : 'Per machine…'}
+                  </button>
+                )}
+              </div>
+              {openMachines[n] && fam.length > 0 && (
+                <div className="mt-2 grid sm:grid-cols-2 gap-x-4 gap-y-1.5 pl-1">
+                  {fam.map((m) => {
+                    const k = keyOf(m);
+                    return (
+                      <div key={k} className="flex items-center gap-2">
+                        <span className="flex-1 text-xs text-primary truncate" title={k}>{mName(k)}</span>
+                        <input value={perMachine[n]?.[k] || ''} inputMode="decimal" placeholder={vals[n] ? `${vals[n]} (default)` : '—'}
+                          onChange={(e) => setPerMachine((p) => ({ ...p, [n]: { ...(p[n] || {}), [k]: e.target.value.replace(/[^\d.]/g, '') } }))}
+                          className="w-24 bg-surface border border-line rounded-lg px-2 py-1 text-xs text-center outline-none focus:border-accent" />
+                        <span className="text-[10px] text-steel w-10">min/pc</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className="flex items-center gap-3">
         <button onClick={save} disabled={busy}
           className="flex items-center gap-1.5 bg-accent text-white text-xs font-medium px-3 py-1.5 rounded-lg disabled:opacity-50">
           <Check size={12} /> {busy ? 'Saving…' : 'Save cycles'}
         </button>
-        <span className="text-[10px] text-steel">Machines keep their current time until re-assigned — past reports stay accurate.</span>
+        <span className="text-[10px] text-steel">A machine's own time beats the default. Machines running this dia move to the new time from now; past reports keep the rate they ran at.</span>
       </div>
     </div>
   );
@@ -333,7 +394,7 @@ function StagesPanel({ dias, templates, machines, canEdit }: {
     dias.filter((d) => d.active)
       .map((d) => {
         const s = d.stages.find((x) => x.active && x.name === name);
-        return s ? `${d.name}: ${fmtMin(s.processingSec)}` : null;
+        return s ? `${d.name}: ${s.processingSec > 0 ? fmtMin(s.processingSec) : 'per machine'}` : null;
       })
       .filter(Boolean).join(' · ');
 
@@ -509,14 +570,18 @@ function AssignPanel({ machines, dias, asgBy, canEdit, onSaved }: {
           subtitle={`No stage of "${askStage.dia.name}" matches this machine's family — pick the one it runs`}
           icon={Layers} onClose={() => setAskStage(null)} maxW="max-w-sm">
           <div className="space-y-1.5">
-            {askStage.dia.stages.filter((st) => st.active).map((st) => (
-              <button key={st.key}
-                onClick={() => { void doAssign(askStage.code, askStage.dia.name, st.name); setAskStage(null); }}
-                className="w-full flex items-center justify-between gap-2 rounded-lg border border-line bg-base px-3 py-2 text-sm hover:border-accent/40 hover:bg-accent/5">
-                <span className="text-primary">{st.name}</span>
-                <span className="data text-xs text-steel">{fmtMin(st.processingSec)}/pc</span>
-              </button>
-            ))}
+            {askStage.dia.stages.filter((st) => st.active).map((st) => {
+              // THIS machine's time for the stage — a stage with none is shown, disabled.
+              const c = cycleSecFor(st, askStage.code);
+              return (
+                <button key={st.key} disabled={!c}
+                  onClick={() => { void doAssign(askStage.code, askStage.dia.name, st.name); setAskStage(null); }}
+                  className="w-full flex items-center justify-between gap-2 rounded-lg border border-line bg-base px-3 py-2 text-sm hover:border-accent/40 hover:bg-accent/5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <span className="text-primary">{st.name}</span>
+                  <span className="data text-xs text-steel">{c ? `${fmtMin(c.sec)}/pc${c.source === 'machine' ? ' · own' : ''}` : 'no cycle time on this machine'}</span>
+                </button>
+              );
+            })}
           </div>
         </Modal>
       )}

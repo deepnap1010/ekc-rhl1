@@ -22,6 +22,7 @@ import { MachineAssignment } from '../models/MachineAssignment.js';
 import { DiaConfig } from '../models/DiaConfig.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { refMatch } from '../utils/machineRef.js';
+import { cycleSecFor } from '../utils/cycleTime.js';
 
 /** A claim older than this is treated as abandoned (the process died holding it). */
 const STALE_CLAIM_MS = 120_000;
@@ -72,6 +73,9 @@ async function applyOne(s: IScheduledAssignment & { _id: unknown }): Promise<voi
   if (!dia.active) return finish({ status: 'failed', reason: `"${dia.name}" was retired before this could apply` });
   const stage = dia.stages.find((st) => st.key === s.stageKey && st.active);
   if (!stage) return finish({ status: 'failed', reason: `stage "${s.stageName}" is no longer active on "${dia.name}"` });
+  // Resolved at the moment it applies — the time set for this dia on THIS machine.
+  const ct = cycleSecFor(stage, s.machineRef);
+  if (!ct) return finish({ status: 'failed', reason: `no cycle time is configured for "${dia.name}" on ${s.machineRef}` });
 
   const where = { machineRef: refMatch(s.machineRef), effectiveTo: null };
   const open = await MachineAssignment.findOne(where).sort({ effectiveFrom: -1 }).lean();
@@ -102,7 +106,7 @@ async function applyOne(s: IScheduledAssignment & { _id: unknown }): Promise<voi
     machineRef: s.machineRef, diaId: dia._id, stageKey: stage.key,
     snapshot: {
       diaName: dia.name, capacity: dia.capacity, dims: dia.dims,
-      stageName: stage.name, processingSec: stage.processingSec,
+      stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source,
     },
     effectiveFrom: from, effectiveTo: null,
     assignedBy: { id: s.createdBy?.id, name: s.createdBy?.name },
@@ -116,7 +120,7 @@ async function applyOne(s: IScheduledAssignment & { _id: unknown }): Promise<voi
     action: 'assignment.create',
     entity: { type: 'assignment', id: String(doc._id), label: `${s.machineRef} → ${dia.name} / ${stage.name} (scheduled)` },
     before: open ? { diaName: open.snapshot?.diaName, stageName: open.snapshot?.stageName, processingSec: open.snapshot?.processingSec } : null,
-    after: { diaName: dia.name, stageName: stage.name, processingSec: stage.processingSec, scheduledFor: s.applyAt.toISOString() },
+    after: { diaName: dia.name, stageName: stage.name, processingSec: ct.sec, cycleSource: ct.source, scheduledFor: s.applyAt.toISOString() },
   }).catch(() => {});
   console.log(`[schedule] ${s.machineRef} → ${dia.name} / ${stage.name} (due ${s.applyAt.toISOString()})`);
 }

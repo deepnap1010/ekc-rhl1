@@ -15,7 +15,7 @@ import { productionApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { toast } from '../store/toast';
-import { stageForMachine } from '../lib/diaStage';
+import { stageForMachine, cycleSecFor } from '../lib/diaStage';
 import { hourlyRate, secToMinPerPc, fmtRate } from '../lib/targets';
 import { fmtTime } from '../lib/format';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
@@ -70,6 +70,8 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
   const [when, setWhen] = useState(() => defaultApplyAt(shifts[0]?.start));
   const dia = options.find((d) => d._id === diaId);
   const stage = dia?.stages.find((s) => s.key === stageKey && s.active);
+  // Dia + THIS machine → cycle time. Null = nothing to schedule on.
+  const ct = cycleSecFor(stage, machine);
 
   // Same auto-pick rule as assigning right now: the machine's family names the
   // stage, a single-stage dia decides itself, otherwise we ask.
@@ -134,9 +136,10 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
             <select value={stageKey} onChange={(e) => setStageKey(e.target.value)}
               className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
               <option value="">Select a stage…</option>
-              {dia.stages.filter((s) => s.active).map((s) => (
-                <option key={s.key} value={s.key}>{s.name} — {secToMinPerPc(s.processingSec)} min/pc</option>
-              ))}
+              {dia.stages.filter((s) => s.active).map((s) => {
+                const c = cycleSecFor(s, machine);
+                return <option key={s.key} value={s.key}>{s.name} — {c ? `${secToMinPerPc(c.sec)} min/pc` : 'no cycle time on this machine'}</option>;
+              })}
             </select>
           </div>
         )}
@@ -148,20 +151,27 @@ export function ScheduleDiaModal({ onClose }: { onClose: () => void }): JSX.Elem
           {!whenOk && <p className="text-[11px] text-stopped mt-1">Pick a moment in the future.</p>}
         </div>
 
-        {dia && stage && machine && (
-          <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-2.5 text-sm">
-            <span className="data font-bold text-primary" title={mTitle(machine)}>{mName(machine)}</span>
-            <span className="text-steel"> switches to </span>
-            <span className="data font-bold text-accent">{dia.name}</span>
-            <span className="text-steel"> · {stage.name} ({secToMinPerPc(stage.processingSec)} min/pc → {fmtRate(hourlyRate(stage.processingSec))}/hr) at </span>
-            <span className="data font-semibold text-primary">{whenOk ? fmtTime(new Date(when).toISOString()) : '—'}</span>
-          </div>
-        )}
+        {dia && stage && machine && (() => {
+          const c = ct;
+          return c ? (
+            <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-2.5 text-sm">
+              <span className="data font-bold text-primary" title={mTitle(machine)}>{mName(machine)}</span>
+              <span className="text-steel"> switches to </span>
+              <span className="data font-bold text-accent">{dia.name}</span>
+              <span className="text-steel"> · {stage.name} ({secToMinPerPc(c.sec)} min/pc → {fmtRate(hourlyRate(c.sec))}/hr{c.source === 'machine' ? ', this machine\'s own time' : ''}) at </span>
+              <span className="data font-semibold text-primary">{whenOk ? fmtTime(new Date(when).toISOString()) : '—'}</span>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-stopped/30 bg-stopped/5 px-4 py-2.5 text-xs text-stopped">
+              No cycle time is configured for {dia.name} on {mName(machine)} — set one in Production Targets before scheduling.
+            </div>
+          );
+        })()}
 
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="px-3.5 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base">Close</button>
           <button onClick={() => createMut.mutate()}
-            disabled={!machine || !dia || !stage || !whenOk || createMut.isPending}
+            disabled={!machine || !dia || !stage || !ct || !whenOk || createMut.isPending}
             className="px-3.5 py-2 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50">
             {createMut.isPending ? 'Saving…' : 'Schedule dia'}
           </button>
