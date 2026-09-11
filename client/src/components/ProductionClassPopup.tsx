@@ -8,16 +8,18 @@
 // row leaves the queue with its default intact. Multiple advances queue up:
 // one popup per event, each with its own full countdown, so nothing is merged,
 // lost, or answered twice (the server takes the first answer atomically).
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Factory } from 'lucide-react';
 import Modal from './Modal';
-import { productionApi } from '../api/endpoints';
+import { productionApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { toast } from '../store/toast';
 import { fmtNum, fmtTime } from '../lib/format';
 import { useMachineName } from '../lib/machineName';
+import { currentShift, shiftWindowOn } from '../lib/settings';
+import { dayWindowAt } from '../store/filters';
 
 // One accent per internal value — labels are the admin's, colors are ours.
 export const CLASS_COLORS: Record<string, string> = {
@@ -27,7 +29,7 @@ export const CLASS_COLORS: Record<string, string> = {
 export function ProductionClassPopup(): JSX.Element | null {
   const user = useAuthStore((s) => s.user);
   const can = useAuthStore((s) => s.can);
-  const { prodClass } = useAppConfig();
+  const { prodClass, shifts, defaultWindow } = useAppConfig();
   const mName = useMachineName();
   const qc = useQueryClient();
   const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
@@ -86,6 +88,48 @@ export function ProductionClassPopup(): JSX.Element | null {
     return () => { clearInterval(t); clearTimeout(expiry); };
   }, [currentId, timeoutSec]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The number the operator recognises is the SHIFT's count — "piece 52 of
+  // this shift" — not the machine's lifetime register (2,446 → 2,447), which
+  // the cards already keep aside for the same reason. Same engine as the
+  // cards: the confirmed-step count over the window from the shift's (or
+  // day's) start up to the minute this event landed in. The admin's Default
+  // window decides shift or day.
+  const evAt = current ? new Date(current.startedAt) : null;
+  // The memo also decides the LABEL, so "this shift" can never sit over a
+  // day-wide number: full day by the admin's choice, or no shift covering the
+  // moment (a schedule gap), both count the day and say so.
+  const win = useMemo(() => {
+    if (!evAt) return null;
+    const sh = defaultWindow === 'shift' ? currentShift(shifts, evAt) : null;
+    if (!sh) return { ...dayWindowAt(shifts, evAt), label: 'today' };
+    const day = new Date(evAt); day.setHours(0, 0, 0, 0);
+    let w = shiftWindowOn(sh, day);
+    if (evAt.getTime() < w.from.getTime()) { day.setDate(day.getDate() - 1); w = shiftWindowOn(sh, day); }
+    return { ...w, label: 'this shift' };
+  }, [evAt?.getTime(), shifts, defaultWindow]); // eslint-disable-line react-hooks/exhaustive-deps
+  // One minute past the event's own stamp: the sweep takes `now` at sweep
+  // start, so the telemetry carrying this step can be a few seconds later.
+  // NOT rounded to a minute boundary — that gave every event stamped in the
+  // same minute one shared key (and one server cache entry), so a later
+  // event's popup showed the earlier event's count. Server clips `to` to now.
+  const countTo = evAt ? new Date(evAt.getTime() + 60_000) : null;
+  const { data: countRows, isPending: counting } = useQuery({
+    queryKey: ['activity', win?.from.toISOString(), countTo?.toISOString()],
+    queryFn: () => machineApi.activity({ from: win!.from.toISOString(), to: countTo!.toISOString() }),
+    // Same guard as the server's route — an operator role without machines
+    // view would otherwise 403 on every event and fall back anyway.
+    enabled: !!win && !!countTo && !!current && can('machines', 'view'),
+    staleTime: 5 * 60_000,
+  });
+  const found = current
+    ? countRows?.data?.find((r) => r.code.toUpperCase() === current.machineId.toUpperCase())?.production ?? null
+    : null;
+  // Usable only when the window's count actually CONTAINS this step. The
+  // engine baselines on the window's first bucket, so a piece in the shift's
+  // first minute — or one the 30s sweep stamped just across a handover —
+  // counts 0 here, and "0 → 0 · +1 pc" is a lie the raw register is not.
+  const shiftCount = found != null && found >= (current?.delta || 0) ? found : null;
+
   if (!active || !current) return null;
 
   const options = (prodClass?.options || []).filter((o) => o.enabled).sort((a, b) => a.order - b.order);
@@ -105,12 +149,32 @@ export function ProductionClassPopup(): JSX.Element | null {
             <span className="font-semibold text-primary truncate">{mName(current.machineId)}</span>
             <span className="data text-xs text-steel shrink-0">{fmtTime(current.startedAt)}</span>
           </div>
-          <div className="mt-1 flex items-baseline gap-2">
-            <span className="data text-2xl font-bold text-primary tabular-nums">
-              {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}
-            </span>
-            <span className="pill bg-running/10 text-running font-bold">+{fmtNum(current.delta || 0)} pc{(current.delta || 0) === 1 ? '' : 's'}</span>
-          </div>
+          {shiftCount != null ? (
+            <>
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="data text-2xl font-bold text-primary tabular-nums">
+                  {fmtNum(shiftCount - (current.delta || 0))} → {fmtNum(shiftCount)}
+                </span>
+                <span className="pill bg-running/10 text-running font-bold">+{fmtNum(current.delta || 0)} pc{(current.delta || 0) === 1 ? '' : 's'}</span>
+                <span className="text-[11px] text-steel">{win?.label}</span>
+              </div>
+              <div className="text-[11px] text-steel mt-0.5 data">counter {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}</div>
+            </>
+          ) : counting && can('machines', 'view') ? (
+            // Count in flight: hold the line. Flashing the raw register for a
+            // few hundred ms and then swapping it is the number an operator
+            // at arm's length actually reads.
+            <div className="mt-1 h-8" />
+          ) : (
+            // No confirmed count for the window yet (or a machine without a
+            // recognised counter): the raw register is still an honest answer.
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="data text-2xl font-bold text-primary tabular-nums">
+                {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}
+              </span>
+              <span className="pill bg-running/10 text-running font-bold">+{fmtNum(current.delta || 0)} pc{(current.delta || 0) === 1 ? '' : 's'}</span>
+            </div>
+          )}
           {rows.length > 1 && (
             <div className="text-[11px] text-steel mt-1">{rows.length - 1} more waiting — each gets its own turn</div>
           )}

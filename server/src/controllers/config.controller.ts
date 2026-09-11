@@ -59,6 +59,7 @@ export const getConfig = asyncHandler(async (_req, res) => {
     products: doc?.products?.length ? doc.products : DEFAULTS.products,
     processStages: doc?.processStages?.length ? doc.processStages : DEFAULTS.processStages,
     prodClass: prodClassOf(doc?.prodClass),
+    defaultWindow: doc?.defaultWindow === 'day' ? 'day' : 'shift',
     stored: !!doc,
     // The client shows a banner and hides its edit controls on a review copy.
     readOnly: env.readOnly,
@@ -69,9 +70,13 @@ export const getConfig = asyncHandler(async (_req, res) => {
 export const updateConfig = asyncHandler(async (req, res) => {
   const body = req.body as {
     shifts?: IShift[]; products?: string[]; processStages?: string[];
-    stageTemplates?: IStageTemplate[]; prodClass?: unknown;
+    stageTemplates?: IStageTemplate[]; prodClass?: unknown; defaultWindow?: unknown;
   };
   const set: Record<string, unknown> = {};
+  if (body.defaultWindow !== undefined) {
+    if (body.defaultWindow !== 'shift' && body.defaultWindow !== 'day') return fail(res, 400, 'default window must be "shift" or "day"');
+    set.defaultWindow = body.defaultWindow;
+  }
   if (body.prodClass !== undefined) {
     const norm = normalizeProdClass(body.prodClass);
     if (typeof norm === 'string') return fail(res, 400, norm);
@@ -146,6 +151,7 @@ export const updateConfig = asyncHandler(async (req, res) => {
     breaks: doc.breaks || [],
     stageTemplates: doc.stageTemplates?.length ? doc.stageTemplates : DEFAULTS.stageTemplates,
     prodClass: prodClassOf(doc.prodClass),
+    defaultWindow: doc.defaultWindow === 'day' ? 'day' : 'shift',
     stored: true,
   });
 });

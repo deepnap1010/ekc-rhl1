@@ -115,10 +115,10 @@ export default function Machines() {
   // uptime/idle/stopped/downtime tiles AND the produced-vs-target line — and it
   // is the same window the machine's own page uses, so a card and the page it
   // opens can never disagree.
-  const { shifts: cfgShifts, breaks: cfgBreaks } = useAppConfig();
+  const { shifts: cfgShifts, breaks: cfgBreaks, defaultWindow } = useAppConfig();
   const [shiftName, setShiftName] = useState('');
   const [shiftPicked, setShiftPicked] = useState(false);
-  const runningShift = currentShift(cfgShifts);
+  const runningShift = defaultWindow === 'shift' ? currentShift(cfgShifts) : null;
   useEffect(() => {
     if (!shiftPicked) setShiftName(runningShift?.name || '');
   }, [runningShift?.name, shiftPicked]);

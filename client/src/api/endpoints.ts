@@ -85,7 +85,7 @@ export const eventsApi = {
 
 export const configApi = {
   get: () => get<AppConfigShape>('/config'),
-  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass'>>) =>
+  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass' | 'defaultWindow'>>) =>
     api.put('/config', body) as unknown as Promise<ApiResponse<AppConfigShape>>,
 };
 

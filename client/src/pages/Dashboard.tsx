@@ -38,7 +38,7 @@ const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', STEEL = '#64748B', S
 export default function Dashboard() {
   const mName = useMachineName();
   const live = useDashboardLive();
-  const { shifts } = useAppConfig();   // shared server-side shift config
+  const { shifts, defaultWindow } = useAppConfig();   // shared server-side shift config
   const f = useFilters();
 
   // Shared filter selection → one concrete window every query below uses.
@@ -116,7 +116,7 @@ export default function Dashboard() {
 
   const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
 
-  useCurrentShiftDefault(shifts);
+  useCurrentShiftDefault(shifts, defaultWindow === 'shift');
   // The shift default is not a filter the user set, so it does not count as dirty.
   const atDefaults = !f.machineId && !f.shiftPicked && f.preset === 'today';
   const [pickRange, setPickRange] = useState(false);

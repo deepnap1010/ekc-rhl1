@@ -72,14 +72,14 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
   // answered "today". Two different truths on one screen is how a shop floor
   // stops trusting a dashboard. The selection lives here now, and the target,
   // the hourly bars, the runtime split and the piece count all read it.
-  const { shifts } = useAppConfig();
+  const { shifts, defaultWindow } = useAppConfig();
   const [range, setRange] = useState<RangeValue>({ preset: 'today', customFrom: '', customTo: '' });
   // Opens on the shift ON THE FLOOR, the same default the machine cards use, so
   // a card and the page it opens quote the same window. It keeps following the
   // clock across a handover until someone picks a shift by hand.
   const [shiftName, setShiftName] = useState('');
   const [shiftPicked, setShiftPicked] = useState(false);
-  const runningShift = currentShift(shifts);
+  const runningShift = defaultWindow === 'shift' ? currentShift(shifts) : null;
   useEffect(() => {
     if (!shiftPicked) setShiftName(runningShift?.name || '');
   }, [runningShift?.name, shiftPicked]);

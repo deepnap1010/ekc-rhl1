@@ -26,6 +26,10 @@ export interface IAppConfig {
   // Production-event classification rules (popup, options, timeout, default).
   // Shape owned + validated by utils/prodclass.ts; stored as-is here.
   prodClass?: Record<string, unknown>;
+  // What "now" means on every screen by default: the running SHIFT or the full
+  // production DAY. Governs which window the dashboards open on and which
+  // count the classification popup speaks in ("piece 52 of this shift").
+  defaultWindow?: 'shift' | 'day';
   updatedBy?: string;
 }
 
@@ -46,6 +50,7 @@ const appConfigSchema = new mongoose.Schema<IAppConfig>(
     products:      { type: [String], default: [] },
     processStages: { type: [String], default: [] },
     prodClass:     { type: mongoose.Schema.Types.Mixed },   // validated at the boundary
+    defaultWindow: { type: String, enum: ['shift', 'day'] },
     updatedBy:     { type: String },
   },
   { collection: 'app_config', versionKey: false, timestamps: true }

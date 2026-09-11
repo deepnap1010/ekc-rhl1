@@ -16,6 +16,11 @@ export interface AppConfigLists {
   processStages: string[];
   /** Production classification popup rules — null until the server answers. */
   prodClass: ProdClassConfig | null;
+  /** Admin's choice of what "now" means by default: the running shift or the
+   *  full day. null while /config is still in flight — guessing 'shift' there
+   *  opened every screen on the running shift and snapped it to the full day a
+   *  moment later, one wasted shift-window fetch per screen on every reload. */
+  defaultWindow: 'shift' | 'day' | null;
   fromServer: boolean;
   /** This deployment mirrors the plant — it takes no changes. */
   readOnly: boolean;
@@ -51,6 +56,7 @@ export function useAppConfig(): AppConfigLists {
     products: data?.products?.length ? data.products : s.production.products,
     processStages: data?.processStages?.length ? data.processStages : s.production.processStages,
     prodClass: data?.prodClass || null,
+    defaultWindow: data ? (data.defaultWindow === 'day' ? 'day' : 'shift') : null,
     fromServer: !!data,
     readOnly: !!data?.readOnly,
   };

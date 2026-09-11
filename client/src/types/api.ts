@@ -414,6 +414,7 @@ export interface AppConfigShape {
   products: string[];
   processStages: string[];
   prodClass?: ProdClassConfig;   // production classification popup rules
+  defaultWindow?: 'shift' | 'day';   // what every screen opens on: the running shift or the full day
   stored: boolean;
   // True when this deployment only MIRRORS the plant: it is refreshed from the
   // factory server, so changes made here would be overwritten.

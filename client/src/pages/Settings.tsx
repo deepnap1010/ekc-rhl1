@@ -214,14 +214,14 @@ function NumberField({ value, onChange, min, max, suffix, width }: { value: numb
 }
 
 // Segmented control (e.g. theme picker)
-function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: { value: T; label: string; icon?: LucideIcon }[] }) {
+function Segmented<T extends string>({ value, onChange, options, disabled }: { value: T; onChange: (v: T) => void; options: { value: T; label: string; icon?: LucideIcon }[]; disabled?: boolean }) {
   const t = useT();
   return (
-    <div className="inline-flex bg-base border border-line rounded-lg p-0.5">
+    <div className={`inline-flex bg-base border border-line rounded-lg p-0.5 ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}>
       {options.map((o) => {
         const active = value === o.value;
         return (
-          <button key={o.value} onClick={() => onChange(o.value)}
+          <button key={o.value} disabled={disabled} onClick={() => onChange(o.value)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${active ? 'bg-surface text-accent shadow-sm' : 'text-steel hover:text-primary'}`}>
             {o.icon && <o.icon size={14} />}{t(o.label)}
           </button>
@@ -436,6 +436,35 @@ function Info2({ label, value }: { label: string; value: ReactNode }) {
 }
 
 // ── 2 · Company & Plants ───────────────────────────────────────────────────────
+// What "now" means by default on every screen — the running shift or the
+// full production day. Server-side so every desktop and operator tablet
+// agrees; saved on click like the stage templates (no debounce — one value).
+function DefaultWindowSection() {
+  const qc = useQueryClient();
+  const can = useAuthStore((st) => st.can);
+  const { defaultWindow: dw, readOnly } = useAppConfig();
+  const defaultWindow = dw ?? 'shift';
+  const dis = !can('settings', 'update') || readOnly;
+  const save = async (v: 'shift' | 'day'): Promise<void> => {
+    if (dis || v === defaultWindow) return;
+    try {
+      await configApi.update({ defaultWindow: v });
+      await qc.invalidateQueries({ queryKey: ['app-config'] });
+      toast.success(v === 'shift' ? 'Screens now open on the running shift' : 'Screens now open on the full day');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not save');
+    }
+  };
+  return (
+    <Section title="Default window" desc="What every screen opens on, and which count the classification popup speaks in." icon={Clock}>
+      <Row label="Open screens on" hint={defaultWindow === 'shift' ? 'Dashboard, Machines and each machine page start on the shift running now; the popup says "piece 52 of this shift".' : 'Screens start on the whole production day; the popup says "piece 80 of today".'}>
+        <Segmented value={defaultWindow} onChange={(v) => { void save(v); }} disabled={dis}
+          options={[{ value: 'shift', label: 'Current shift' }, { value: 'day', label: 'Full day' }]} />
+      </Row>
+    </Section>
+  );
+}
+
 function CompanySection({ s }: { s: Settings }) {
   const navigate = useNavigate();
   const { data: machineList } = useQuery({ queryKey: ['machines', 'settings'], queryFn: () => machineApi.list({ limit: 200 }).then((r) => r.data) });
@@ -478,6 +507,8 @@ function CompanySection({ s }: { s: Settings }) {
         </div>
         <div className="mt-3"><ServerNote>Plants come from the company structure. To add or rename a plant in the live data, an administrator updates it on the server.</ServerNote></div>
       </Section>
+
+      <DefaultWindowSection />
 
       <Section title="Shift timings" desc="Fully dynamic — add, rename or remove shifts; the Machines page filters by them." icon={Clock}>
         <div className="space-y-2">

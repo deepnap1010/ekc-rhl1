@@ -50,7 +50,7 @@ export const useFilters = create<FiltersState>((set) => ({
  *  minute, so a screen left open rolls over at the shift change on its own.
  *  Only ever writes while the user has not chosen a shift, and never on a
  *  multi-day preset, where a single shift window would be a lie. */
-export function useCurrentShiftDefault(shifts: ShiftTiming[]): void {
+export function useCurrentShiftDefault(shifts: ShiftTiming[], enabled = true): void {
   const shiftPicked = useFilters((s) => s.shiftPicked);
   const preset = useFilters((s) => s.preset);
   const shiftName = useFilters((s) => s.shiftName);
@@ -58,14 +58,15 @@ export function useCurrentShiftDefault(shifts: ShiftTiming[]): void {
     if (shiftPicked || !shifts.length) return;
     const apply = (): void => {
       if (!shiftApplies(preset)) return;
-      const now = currentShift(shifts)?.name || '';
+      // Admin's "Default window" = full day → the default is no shift at all.
+      const now = enabled ? currentShift(shifts)?.name || '' : '';
       // setState directly: going through `set` would mark the shift as picked.
       if (now !== useFilters.getState().shiftName) useFilters.setState({ shiftName: now });
     };
     apply();
     const t = setInterval(apply, 60_000);
     return () => clearInterval(t);
-  }, [shifts, shiftPicked, preset, shiftName]);
+  }, [shifts, shiftPicked, preset, shiftName, enabled]);
 }
 
 // A shift only narrows a SINGLE-DAY selection (today / yesterday) to its concrete
