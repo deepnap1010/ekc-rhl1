@@ -187,7 +187,8 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
   }, [allRows, opts]);
 
   return (
-    <Modal title="Production history" subtitle={`${windowLabel} · every counter advance, newest first`} icon={ListOrdered} onClose={onClose} maxW="max-w-4xl">
+    <Modal title={machineId ? `Production history · ${mName(machineId)}` : 'Production history'}
+      subtitle={`${windowLabel} · every counter advance, newest first`} icon={ListOrdered} onClose={onClose} maxW="max-w-4xl">
       <div className="flex flex-wrap items-center gap-2 mb-3 text-xs text-steel">
         <span className="pill bg-running/10 text-running font-semibold">{fmtNum(tally.counted)} counted</span>
         {tally.away > 0 && <span className="pill bg-line text-steel font-semibold">{fmtNum(tally.away)} classified away</span>}
@@ -204,7 +205,7 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
             <thead className="bg-base">
               <tr className="text-steel">
                 <th className="text-left label px-3 py-2">Time</th>
-                {!machineId && <th className="text-left label px-3 py-2">Machine</th>}
+                <th className="text-left label px-3 py-2">Machine</th>
                 <th className="text-right label px-3 py-2">Pieces</th>
                 <th className="text-right label px-3 py-2" title="Piece number within this window — the register is in small print">Count</th>
                 <th className="text-left label px-3 py-2">Classification</th>
@@ -221,7 +222,7 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
                 return (
                   <tr key={r._id} className={`border-t border-line ${o && !o.counts ? 'opacity-70' : ''}`}>
                     <td className="px-3 py-2 data text-xs">{fmtTime(r.startedAt)}</td>
-                    {!machineId && <td className="px-3 py-2 data text-xs font-semibold text-primary">{mName(r.machineId)}</td>}
+                    <td className="px-3 py-2 data text-xs font-semibold text-primary">{mName(r.machineId)}</td>
                     <td className="px-3 py-2 data text-xs text-right font-semibold" style={{ color: implausible || (o && !o.counts) ? '#94A3B8' : '#0D9488' }}
                       title={implausible ? 'A jump the machine cannot physically have made in the time — never counted' : undefined}>
                       {implausible ? 'not counted' : o && !o.counts ? '—' : `+${fmtNum(r.delta || 0)}`}
