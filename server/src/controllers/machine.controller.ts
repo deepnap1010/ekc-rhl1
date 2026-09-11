@@ -308,6 +308,23 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     for (const e of stepEvents(minutes.filter((x) => x.production != null).map((x) => ({ t: x.t, v: x.production as number })), PROD_STEP_PER_MIN)) {
       madeAt.set(e.t, (madeAt.get(e.t) || 0) + e.made);
     }
+    // A machine with no register but a derived rule (config/derivedCounters)
+    // still made pieces — the same edge events its card and hourly bars count,
+    // dropped into the minute each one landed in, so the History shows "+1"
+    // where the card shows 17 instead of a column of dashes.
+    const dc = prodKey ? null : derivedCounterFor(refs[0]);
+    if (dc) {
+      const byMinute = new Map<number, number>();
+      for (const e of await derivedEvents(refs, dc, fromD, endD)) {
+        const b = Math.floor(e.t / 60_000) * 60_000;
+        byMinute.set(b, (byMinute.get(b) || 0) + e.made);
+      }
+      // minutes[].t is the bin's last reading; match on the bin start.
+      for (const x of minutes) {
+        const n = byMinute.get(Math.floor(x.t / 60_000) * 60_000);
+        if (n) madeAt.set(x.t, (madeAt.get(x.t) || 0) + n);
+      }
+    }
     // Classified-away pieces come off the minute that made them; anything a
     // minute cannot absorb (the event stamped a bin later than the climb)
     // carries to the next minute that made something.
@@ -337,7 +354,9 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     for (const x of minutes) {
       const made = madeAt.get(x.t) || 0;
       running += made;
-      if (rows.length && x.production === prevProd && x.status === prevStatus) continue;
+      // A minute that made something is a row even if nothing else changed —
+      // a derived machine has no counter value to differ from the last row's.
+      if (rows.length && !made && x.production === prevProd && x.status === prevStatus) continue;
       rows.push({ ts: x.ts, production: x.production, made, total: running, status: x.status });
       prevProd = x.production;
       prevStatus = x.status;
@@ -359,6 +378,7 @@ export const machineTimeline = asyncHandler(async (req, res) => {
       minutes: agg.length,
       replayMinutes: agg.filter((r) => r.readings > REPLAY_PER_MIN).length,
       prodKey,
+      derivedKey: dc?.key ?? null,
     };
   });
 
@@ -369,7 +389,7 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   const skip = (page - 1) * lim;
   return ok(res, all.slice(skip, skip + lim), {
     from: fromD.toISOString(), to: endD.toISOString(),
-    productionKey: built.prodKey, total: all.length, minutes: built.minutes,
+    productionKey: built.prodKey, derivedKey: built.derivedKey, total: all.length, minutes: built.minutes,
     replayMinutes: built.replayMinutes,
     page, limit: lim, capped: built.rows.length > MAX_ROWS,
   });

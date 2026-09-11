@@ -62,7 +62,10 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
   // show. BOTTOMMILLING04 sends 74,642 readings that all say "running" and no
   // production signal at all, which collapsed a whole week into a single row
   // dated three days ago — technically a change, practically a bug report.
-  const noCounter = !isLoading && meta != null && !meta.productionKey;
+  // Derived (config/derivedCounters): no register, but pieces counted from a
+  // signal — the totals are real, only the Counter column has nothing to say.
+  const derivedKey = (meta as { derivedKey?: string | null } | undefined)?.derivedKey || null;
+  const noCounter = !isLoading && meta != null && !meta.productionKey && !derivedKey;
 
   // The CSV covers the window, not the page on screen — a 25-row export from a
   // 4,000-change range would be a trap. Capped at the endpoint's 2,000.
@@ -104,6 +107,15 @@ export default function MachineTimeline({ machine, code }: { machine: Machine; c
         missing piece. Unchanged minutes are hidden.
         {meta?.capped ? ' Showing the most recent 20,000 changes in this window.' : ''}
       </p>
+
+      {derivedKey && !isLoading && (
+        <p className="text-[11px] text-steel bg-base border border-line rounded-lg px-3 py-2">
+          This machine reports <span className="font-semibold text-primary">no production counter</span>; its pieces are
+          counted from <span className="font-medium text-primary">{derivedKey.replace(/_/g, ' ')}</span> cycles — the same
+          count as its card. Each <span className="text-accent font-medium">+1</span> below is one cycle; the Counter
+          column stays empty because there is no register to quote.
+        </p>
+      )}
 
       {noCounter && (
         <p className="text-[11px] text-steel bg-base border border-line rounded-lg px-3 py-2">
