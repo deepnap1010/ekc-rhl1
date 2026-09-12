@@ -611,8 +611,9 @@ export async function computeActivity(
   });
 
   // ── Derived counters ──────────────────────────────────────────────────────
-  // A machine with no counter register but a signal that bursts once per piece
-  // (config/derivedCounters) counts its own work: rising edges in the window.
+  // A machine with no counter register but a signal that does something
+  // distinctive once per piece (config/derivedCounters) counts its own work:
+  // edges in the window.
   // A FALLBACK: a row whose payload carried a register already has its count
   // and is left alone — the plant's number beats our reading of a speed.
   // Runs before line links so a machine that counts — either way — never

@@ -640,7 +640,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     tone: dark ? 'neutral' : madeToday > 0 ? 'good' : 'neutral',
     // A borrowed count says so instead of quoting a counter this machine
     // doesn't have.
-    // A derived count has no register to quote: the server counted bursts of a
+    // A derived count has no register to quote: the server counted edges of a
     // signal (config/derivedCounters), so the sub-line says that instead.
     sub: dark && lastDay
       ? `last day with signal — lost ${fmtTime(lastSeen)}`

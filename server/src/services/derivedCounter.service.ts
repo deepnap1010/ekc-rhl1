@@ -30,27 +30,44 @@ export async function derivedEvents(
   const range: Record<string, Date> = { $gte: new Date(from.getTime() - REFRACTORY_MS) };
   if (to) range.$lte = to;
 
+  // The two rule kinds share everything but the two tests. Both: numeric
+  // samples only — a null or '' reading is a MISSING sample, and treating it
+  // as 0 would read a collector hiccup as a dip and invent a piece from it.
+  // Each reading is judged against ITSELF ("am I below?", "am I high?") and
+  // the "below" verdict is what gets shifted to the next row — so a stroke's
+  // previous reading is measured against its OWN travel setting, exactly as
+  // strokeEvents does, not against a setting the operator changed since. The
+  // first sample in the window has no previous verdict (default false), so a
+  // window opening mid-burst (or mid-stroke) does not count it, and no piece
+  // is counted twice across adjacent windows.
+  const fields: Record<string, unknown> = { pv: { $getField: { field: dc.key, input: '$data' } } };
+  const numeric: Record<string, unknown> = { pv: { $type: NUMERIC } };
+  let below: unknown, high: unknown;
+  if (dc.kind === 'threshold') {
+    // A rising edge: at or above the threshold, with the previous reading below.
+    below = { $lt: ['$pv', dc.threshold] };
+    high = { $gte: ['$pv', dc.threshold] };
+  } else {
+    // A stroke: from below low×travel to at least high×travel. A reading
+    // carrying the position but no travel cannot be judged and is skipped —
+    // on the floor that is ~3% of samples, none of them edges.
+    fields.tv = { $getField: { field: dc.travelKey, input: '$data' } };
+    numeric.tv = { $type: NUMERIC, $gt: 0 };
+    below = { $lt: ['$pv', { $multiply: ['$tv', dc.low] }] };
+    high = { $gte: ['$pv', { $multiply: ['$tv', dc.high] }] };
+  }
   const rows = await Telemetry.aggregate([
     // $in of exact strings, never a regex: a case-insensitive regex cannot use
     // {machineId, timestamp} and turns this into a full collection scan.
     { $match: { machineId: { $in: refs.flatMap(refCandidates) }, timestamp: range } },
-    { $addFields: { pv: { $getField: { field: dc.key, input: '$data' } } } },
-    // Numeric only — a null or '' reading is a MISSING sample, and treating it
-    // as 0 would read a collector hiccup as a dip and invent a piece from it.
-    { $match: { pv: { $type: NUMERIC } } },
+    { $addFields: fields },
+    { $match: numeric },
     { $setWindowFields: {
       partitionBy: '$machineId',
       sortBy: { timestamp: 1 },
-      output: { prev: { $shift: { output: '$pv', by: -1, default: null } } },
+      output: { prevBelow: { $shift: { output: below, by: -1, default: false } } },
     } },
-    // A rising edge: at or above the threshold, with the previous numeric
-    // reading below it. The first sample in the window has no previous reading,
-    // and $ifNull makes it not-below — so a window opening mid-burst does not
-    // count that burst, and no piece is counted twice across adjacent windows.
-    { $match: { $expr: { $and: [
-      { $gte: ['$pv', dc.threshold] },
-      { $lt: [{ $ifNull: ['$prev', dc.threshold] }, dc.threshold] },
-    ] } } },
+    { $match: { $expr: { $and: [high, '$prevBelow'] } } },
     { $project: { _id: 0, t: '$timestamp' } },
     { $sort: { t: 1 } },
   ]).option({ maxTimeMS: 30_000 }).exec() as { t: Date }[];
