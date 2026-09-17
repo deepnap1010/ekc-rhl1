@@ -18,7 +18,7 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { toast } from '../store/toast';
 import { fmtNum, fmtTime } from '../lib/format';
 import { useMachineName } from '../lib/machineName';
-import { currentShift, shiftWindowOn } from '../lib/settings';
+import { shiftWindowAt } from '../lib/settings';
 import { dayWindowAt } from '../store/filters';
 
 // One accent per internal value — labels are the admin's, colors are ours.
@@ -110,12 +110,9 @@ export function ProductionClassPopup(): JSX.Element | null {
   // moment (a schedule gap), both count the day and say so.
   const win = useMemo(() => {
     if (!evAt) return null;
-    const sh = defaultWindow === 'shift' ? currentShift(shifts, evAt) : null;
-    if (!sh) return { ...dayWindowAt(shifts, evAt), label: 'today' };
-    const day = new Date(evAt); day.setHours(0, 0, 0, 0);
-    let w = shiftWindowOn(sh, day);
-    if (evAt.getTime() < w.from.getTime()) { day.setDate(day.getDate() - 1); w = shiftWindowOn(sh, day); }
-    return { ...w, label: 'this shift' };
+    const sw = defaultWindow === 'shift' ? shiftWindowAt(shifts, evAt) : null;
+    if (!sw) return { ...dayWindowAt(shifts, evAt), label: 'today' };
+    return { from: sw.from, to: sw.to, label: 'this shift' };
   }, [evAt?.getTime(), shifts, defaultWindow]); // eslint-disable-line react-hooks/exhaustive-deps
   // One minute past the event's own stamp: the sweep takes `now` at sweep
   // start, so the telemetry carrying this step can be a few seconds later.

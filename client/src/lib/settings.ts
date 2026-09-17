@@ -31,6 +31,12 @@ export function shiftWindowOn(sh: ShiftTiming, day: Date): { from: Date; to: Dat
  *  the night shift that CLOCKED IN yesterday, not a shift that hasn't started.
  *  null when no shift covers the moment (a gap in the schedule, or none set). */
 export function currentShift(shifts: ShiftTiming[], at: Date = new Date()): ShiftTiming | null {
+  return shiftWindowAt(shifts, at)?.shift ?? null;
+}
+
+/** The shift and its concrete [from, to] window containing `at` — anchored on
+ *  the right day for an overnight shift. null when no shift covers the moment. */
+export function shiftWindowAt(shifts: ShiftTiming[], at: Date): { shift: ShiftTiming; from: Date; to: Date } | null {
   const t = at.getTime();
   for (const offset of [-1, 0]) {
     const day = new Date(at);
@@ -38,7 +44,7 @@ export function currentShift(shifts: ShiftTiming[], at: Date = new Date()): Shif
     day.setDate(day.getDate() + offset);
     for (const sh of shifts) {
       const w = shiftWindowOn(sh, day);
-      if (t >= w.from.getTime() && t < w.to.getTime()) return sh;
+      if (t >= w.from.getTime() && t < w.to.getTime()) return { shift: sh, ...w };
     }
   }
   return null;

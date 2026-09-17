@@ -22,7 +22,7 @@ import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { resolveRange, todayWindow, clampToNow, dayWindowAt } from '../store/filters';
-import { currentShift } from '../lib/settings';
+import { currentShift, shiftWindowAt } from '../lib/settings';
 import { useMachineName, useMachineTitle, hasCustomName, useAdoptLocalNames } from '../lib/machineName';
 import ParametersModal from '../components/machine/MachineParameters';
 import type { Machine, MachineTick, MachineActivityRow, MachineAssignment } from '../types/api';
@@ -444,7 +444,7 @@ export default function Machines() {
             {machines.map((m) => {
               const ref = m.code || m.machineId || '';
               return (
-                <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
+                <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]} shiftName={shiftName}
                   activity={actBy.get(ref)}
                   assignment={asgBy.get(String(ref).toUpperCase())}
                   dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks} winLabel={winLabel}
@@ -480,12 +480,13 @@ interface MachineCardProps {
   assignment?: MachineAssignment;       // current DIA + frozen processing time
   dayFrom?: string;                     // the window `activity` covers — a shift, or the production day
   dayTo?: string;
-  winLabel?: string;                    // what to call it: "Shift A", "Today" 
+  winLabel?: string;                    // what to call it: "Shift A", "Today"
+  shiftName?: string;                   // '' = full day; set = the page is shift-wise, so a dark card answers for its last SHIFT 
   breaks?: { name: string; start: string; end: string }[];   // planned pauses — off the target
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, activity: liveActivity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity: liveActivity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', shiftName = '', onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -511,8 +512,18 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // flickering between two windows while each fetch was in flight. And the
   // label would lie: a 15-minute collector hiccup is not a finished historical
   // day. Dark-today machines keep the live window plus the Last-known wrapper.
-  const lastWin = dark && lastSeen ? dayWindowAt(cardShifts, new Date(lastSeen)) : null;
+  //
+  // In SHIFT mode the unit is the shift, not the day: a machine that went
+  // quiet in Shift A, looked at during Shift B, has a finished window with
+  // real figures — Shift A — and showing "today's day" (unfinished) instead
+  // dropped it to the lifetime register and four zero tiles. The shift that
+  // contains the last reading is the honest answer, dated and named.
+  const lastAt = dark && lastSeen ? new Date(lastSeen) : null;
+  const lastShiftWin = lastAt && shiftName ? shiftWindowAt(cardShifts, lastAt) : null;
+  const lastWin = lastAt ? (lastShiftWin ? { from: lastShiftWin.from, to: lastShiftWin.to } : dayWindowAt(cardShifts, lastAt)) : null;
   const lastDay = lastWin && lastWin.to.getTime() <= Date.now() ? lastWin : null;
+  const lastUnit = lastShiftWin ? 'shift' : 'day';
+  const lastLabel = lastDay ? (lastShiftWin ? `${lastShiftWin.shift.name} · ${fmtDate(lastDay.from)}` : fmtDate(lastDay.from)) : '';
   const lastFromISO = lastDay?.from.toISOString();
   const lastToISO = lastDay?.to.toISOString();
   const { data: lastDayAct } = useQuery({
@@ -634,7 +645,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   const dayHero: Headline | null = madeToday == null ? null : {
     // Dark, the headline is DATED — its window is the last day with signal,
     // not the one everyone else on the page is answering for.
-    label: `Production · ${dark && lastDay ? fmtDate(lastDay.from) : winLabel}`,
+    label: `Production · ${dark && lastDay ? lastLabel : winLabel}`,
     value: fmtNum(madeToday),
     unit: 'pcs',
     tone: dark ? 'neutral' : madeToday > 0 ? 'good' : 'neutral',
@@ -643,7 +654,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     // A derived count has no register to quote: the server counted edges of a
     // signal (config/derivedCounters), so the sub-line says that instead.
     sub: dark && lastDay
-      ? `last day with signal — lost ${fmtTime(lastSeen)}`
+      ? `last ${lastUnit} with signal — lost ${fmtTime(lastSeen)}`
       : dark
         // Still the live window's own count — say when it stopped growing, and
         // keep the register beside it. The window's pieces are the comparable
@@ -760,7 +771,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
           {/* On a furnace the day-average sits under the live reading. */}
           {furnace && activity?.avgTemp != null && (
             <div className="text-[10px] mt-1">
-              <span className="text-steel">{dark && lastRow && lastDay ? `${fmtDate(lastDay.from)} avg ` : 'today avg '}</span>
+              <span className="text-steel">{dark && lastRow && lastDay ? `${lastLabel} avg ` : 'today avg '}</span>
               <span className="data font-bold text-idle">{fmtNum(activity.avgTemp)}</span>
               <span className="text-steel"> °C</span>
             </div>
@@ -815,7 +826,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
       <div className="mt-auto">
       {dark && lastRow && lastDay && (
         <div className="text-[10px] text-steel/70 mb-1 px-0.5">
-          {fmtDate(lastDay.from)} — last day with signal
+          {lastLabel} — last {lastUnit} with signal
         </div>
       )}
       <div className="grid grid-cols-4 gap-1.5">
