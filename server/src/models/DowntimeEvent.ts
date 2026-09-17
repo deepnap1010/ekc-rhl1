@@ -10,6 +10,13 @@ export interface IDowntimeEvent {
   durationMs: number;
   reason: string;       // operator-reported reason
   reportedBy: string;
+  // How the reason got here: the operator popup ('popup') or a later edit on
+  // the Downtime page ('edit'); '' while there is none.
+  reasonSource: '' | 'popup' | 'edit';
+  reasonAt: Date | null;
+  // The popup asked and its countdown ran out — the span leaves the ask queue
+  // without a reason (the Downtime page can still add one). null = not asked.
+  askedAt: Date | null;
   acknowledged: boolean;       // supervisor reviewed/accepted this event
   acknowledgedBy: string;
   acknowledgedAt: Date | null;
@@ -24,6 +31,9 @@ const downtimeSchema = new mongoose.Schema<IDowntimeEvent>(
     durationMs: { type: Number, default: 0 },
     reason: { type: String, default: '' },  // operator-reported reason
     reportedBy: { type: String, default: '' },
+    reasonSource: { type: String, enum: ['', 'popup', 'edit'], default: '' },
+    reasonAt: { type: Date, default: null },
+    askedAt: { type: Date, default: null },
     acknowledged: { type: Boolean, default: false, index: true },
     acknowledgedBy: { type: String, default: '' },
     acknowledgedAt: { type: Date, default: null },

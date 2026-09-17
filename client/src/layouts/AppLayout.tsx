@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { ProductionClassPopup } from '../components/ProductionClassPopup';
+import { DowntimeReasonPopup } from '../components/DowntimeReasonPopup';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
   Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target,
@@ -184,6 +185,7 @@ export default function AppLayout() {
               page, not just the dashboard. Self-gating: renders null unless
               the popup is enabled and this user operates machines. */}
           <ProductionClassPopup />
+          <DowntimeReasonPopup />
         </main>
       </div>
     </div>

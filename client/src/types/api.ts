@@ -249,11 +249,24 @@ export interface DowntimeEvent {
   durationMs?: number;
   reason?: string;
   reportedBy?: string;
+  reasonSource?: '' | 'popup' | 'edit';   // how the reason got here
+  reasonAt?: string | null;
+  askedAt?: string | null;                // the popup asked and timed out
   acknowledged?: boolean;
   acknowledgedBy?: string;
   acknowledgedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+// GET /downtime/reasons — where the downtime went. `reason` '' = none given.
+export interface DowntimeReasonRow { reason: string; events: number; totalMs: number }
+export interface DowntimeReasonsSummary {
+  totalMs: number;
+  byReason: DowntimeReasonRow[];
+  byShift: (DowntimeReasonRow & { shift: string })[];
+  byHour: (DowntimeReasonRow & { hour: number })[];
+  shifts: string[];
 }
 
 export interface DowntimeMachineRollup {
@@ -411,6 +424,20 @@ export interface ProdClassConfig {
   reasons: string[]; // admin's list of reasons for correcting a past classification
 }
 
+// Downtime-reason popup rules (admin-configured, operator-facing). Reasons are
+// plain words — what the operator picks is what the span records.
+export type DownAskType = 'idle' | 'stopped';
+export interface DowntimeReason { label: string; types: DownAskType[] }
+export interface DowntimeAskConfig {
+  enabled: boolean;
+  askAfterMin: number;   // ask once a span has lasted this long
+  timeoutSec: number;    // 0 = the popup waits for an answer; else a countdown
+  askIdle: boolean;
+  askStopped: boolean;
+  allowCustom: boolean;  // the operator may type a reason of their own
+  reasons: DowntimeReason[];
+}
+
 // Shared (server-side) config — same shifts/products/stages on every desktop.
 export interface AppConfigShape {
   shifts: { name: string; start: string; end: string }[];
@@ -419,6 +446,7 @@ export interface AppConfigShape {
   products: string[];
   processStages: string[];
   prodClass?: ProdClassConfig;   // production classification popup rules
+  downtimeAsk?: DowntimeAskConfig;   // downtime-reason popup rules
   defaultWindow?: 'shift' | 'day';   // what every screen opens on: the running shift or the full day
   stored: boolean;
   // True when this deployment only MIRRORS the plant: it is refreshed from the
@@ -468,6 +496,9 @@ export interface MachineEventRow {
   classifiedAt?: string | null;
   operatorName?: string | null;
   editReason?: string | null;   // why a past classification was corrected
+  // kind=state: the downtime reason the operator gave (echo of the span).
+  reason?: string | null;
+  reasonBy?: string | null;
 }
 
 // Minute-level change log row (machine History tab) — only real changes survive.

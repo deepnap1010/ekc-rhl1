@@ -91,7 +91,6 @@ export interface Settings {
     escalation: boolean;                          // operator → supervisor → manager
     quietHours: { enabled: boolean; from: string; to: string };
   };
-  downtime: { reasons: string[] };
   // 5 · Security & Access (preferences; real enforcement is server-side)
   security: {
     passwordMinLength: number;
@@ -174,9 +173,6 @@ function defaults(): Settings {
       escalation: true,
       quietHours: { enabled: false, from: '22:00', to: '06:00' },
     },
-    downtime: {
-      reasons: ['Planned Maintenance', 'Breakdown', 'Tool Change', 'Material Shortage', 'No Operator', 'Quality Hold', 'Power Failure', 'Changeover'],
-    },
     security: {
       passwordMinLength: 8,
       requireUppercase: true,
@@ -214,7 +210,6 @@ function withDefaults(raw: Partial<Settings> | null): Settings {
     company: { ...d.company, ...raw.company },
     shifts: raw.shifts?.length ? raw.shifts : d.shifts,
     alerts: { ...d.alerts, ...raw.alerts, quietHours: { ...d.alerts.quietHours, ...raw.alerts?.quietHours } },
-    downtime: { reasons: raw.downtime?.reasons?.length ? raw.downtime.reasons : d.downtime.reasons },
     security: { ...d.security, ...raw.security },
     production: { ...d.production, ...raw.production, oee: { ...d.production.oee, ...raw.production?.oee } },
     reports: { ...d.reports, ...raw.reports, schedule: { ...d.reports.schedule, ...raw.reports?.schedule } },

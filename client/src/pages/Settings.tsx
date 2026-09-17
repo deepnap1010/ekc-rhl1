@@ -17,6 +17,7 @@ import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
 import DiaStagesSettings from '../components/DiaStagesSettings';
 import ProdClassSettings from '../components/ProdClassSettings';
+import DowntimeAskSettings from '../components/DowntimeAskSettings';
 import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
@@ -584,9 +585,9 @@ function AlertsSection({ s }: { s: Settings }) {
         )}
       </Section>
 
-      <Section title="Downtime reasons" desc="The categories operators can pick when logging downtime." icon={Clock}>
-        <TagEditor tags={s.downtime.reasons} onChange={(next) => patchSettings((d) => { d.downtime.reasons = next; })} placeholder="e.g. Compressor Trip" />
-      </Section>
+      {/* Server-side, shared by every screen — replaces the old device-local
+          reason list, which nothing ever read. */}
+      <DowntimeAskSettings />
     </>
   );
 }

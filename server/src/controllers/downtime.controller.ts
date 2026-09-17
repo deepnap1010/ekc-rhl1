@@ -3,14 +3,20 @@ import type { FilterQuery, PipelineStage } from 'mongoose';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import type { IDowntimeEvent } from '../models/DowntimeEvent.js';
 import { Machine } from '../models/Machine.js';
+import { MachineEvent } from '../models/MachineEvent.js';
+import { AuditLog } from '../models/AuditLog.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
+import { refIn, refCandidates } from '../utils/machineRef.js';
+import { getDowntimeAskConfig, askedTypes, reasonsFor, shiftSwitchExpr } from '../utils/downtimeAsk.js';
+import { loadShifts } from './config.controller.js';
 
 type ScopeUser = { isSuperAdmin?: boolean; assignedMachines?: string[] } | undefined;
+type Actor = { _id?: unknown; name?: string; isSuperAdmin?: boolean; assignedMachines?: string[] } | undefined;
 
 const MAX_MS = 20000; // query-time ceiling so one slow scan can't hang a request
 // Only return the columns the table actually renders — keeps payloads small at scale.
-const LIST_FIELDS = 'machineId type startedAt endedAt durationMs reason reportedBy acknowledged acknowledgedBy acknowledgedAt';
+const LIST_FIELDS = 'machineId type startedAt endedAt durationMs reason reportedBy reasonSource reasonAt acknowledged acknowledgedBy acknowledgedAt';
 
 // GET /downtime — list events, paginated + filtered. Index-backed sort on startedAt.
 export const listDowntime = asyncHandler(async (req, res) => {
@@ -177,16 +183,213 @@ export const machineDowntime = asyncHandler(async (req, res) => {
   return ok(res, items, { total, page: Number(page), limit: Number(limit) });
 });
 
-// PATCH /downtime/:id/reason — operator logs a reason
+// ── downtime reasons ─────────────────────────────────────────────────────────
+// A reason is written to the span in downtime_reports (the record) and echoed
+// onto the machine_events state session the same sweep tick opened, so the
+// History Log and the Downtime page say the same words. Two ways in: the
+// operator popup (answerDowntime) and an edit on the Downtime page
+// (updateReason). Both audited.
+
+const MAX_REASON = 200;
+
+/** The state session that mirrors this span. The sweep stamps both with one
+ *  `now`, so the match is exact; ±60s covers a session the sweep opened a
+ *  tick apart (boot re-seeding), the nearest one wins. */
+async function mirrorReason(span: { machineId: string; type: string; startedAt: Date }, reason: string, by: string): Promise<void> {
+  try {
+    const at = new Date(span.startedAt).getTime();
+    const near = await MachineEvent.find({
+      machineId: span.machineId, kind: 'state', state: span.type,
+      startedAt: { $gte: new Date(at - 60_000), $lte: new Date(at + 60_000) },
+    }).select({ startedAt: 1 }).limit(3).lean();
+    if (!near.length) return;
+    const best = near.reduce((a, b) =>
+      Math.abs(new Date(b.startedAt).getTime() - at) < Math.abs(new Date(a.startedAt).getTime() - at) ? b : a);
+    await MachineEvent.updateOne({ _id: best._id }, { $set: { reason: reason || null, reasonBy: reason ? by : null } });
+  } catch { /* the span is the record; a missed echo is a display gap, not data loss */ }
+}
+
+const audit = (user: Actor, action: string, span: { _id: unknown; machineId: string; type: string }, before: unknown, after: unknown): void => {
+  // Fire-and-forget — an audit row must never be the reason a write fails.
+  AuditLog.create({
+    at: new Date(), user: { id: String(user?._id || ''), name: user?.name || '' }, action,
+    entity: { type: 'downtime_event', id: String(span._id), label: `${span.machineId} · ${span.type}` }, before, after,
+  }).catch(() => {});
+};
+
+// PATCH /downtime/:id/reason — add, change or clear a reason from the
+// Downtime page (downtime.update). Who wrote it is the signed-in user, not a
+// name the client sends.
 export const updateReason = asyncHandler(async (req, res) => {
-  const { reason, reportedBy } = req.body as { reason?: string; reportedBy?: string };
-  const event = await DowntimeEvent.findByIdAndUpdate(
-    req.params.id,
-    { $set: { reason: reason || '', reportedBy: reportedBy || '' } },
-    { new: true }
+  const user = req.user as Actor;
+  const body = req.body as { reason?: unknown; reportedBy?: unknown };
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (reason.length > MAX_REASON) return fail(res, 400, `Reason must be ${MAX_REASON} characters or fewer`);
+  const by = user?.name || (typeof body.reportedBy === 'string' ? body.reportedBy.trim() : '');
+  const now = new Date();
+  // An operator edits only their own machines' spans — the same row scope
+  // the list applies. Uniform 404, so nothing is learned about other rows.
+  const scope = machineScope(user);
+  // findOneAndUpdate (new:false) hands back the pre-image atomically for the audit.
+  const prev = await DowntimeEvent.findOneAndUpdate(
+    { _id: req.params.id, ...(scope ? { machineId: { $in: scope } } : {}) },
+    {
+      $set: reason
+        ? { reason, reportedBy: by, reasonSource: 'edit', reasonAt: now }
+        : { reason: '', reportedBy: '', reasonSource: '', reasonAt: null },
+    },
   ).lean();
-  if (!event) return fail(res, 404, 'Downtime event not found');
+  if (!prev) return fail(res, 404, 'Downtime event not found');
+  await mirrorReason(prev, reason, by);
+  audit(user, 'downtime.reason', prev, { reason: prev.reason || '' }, { reason });
+  const event = await DowntimeEvent.findById(prev._id).lean();
   return ok(res, event);
+});
+
+// How long after a span ENDS it is still worth asking about: the operator's
+// screen may have been closed while the machine was down; when it comes back
+// the ask is still fresh. Older unanswered spans stay on the Downtime page
+// with "Add reason".
+const QUEUE_RECENT_MS = 2 * 3600_000;
+
+// GET /production/downtime-queue — spans on MY machines that have lasted
+// long enough to ask about and nobody has answered: still open and past the
+// ask-after mark, or closed recently after lasting at least that long.
+// Operators only — an admin browsing the dashboard is not popped for the fleet.
+export const downtimeQueue = asyncHandler(async (req, res) => {
+  const cfg = await getDowntimeAskConfig();
+  const types = askedTypes(cfg);
+  if (!cfg.enabled || !types.length) return ok(res, []);
+  const user = req.user as ScopeUser;
+  const mine = user?.assignedMachines || [];
+  if (!mine.length) return ok(res, []);
+  const now = Date.now();
+  const minMs = cfg.askAfterMin * 60_000;
+  const rows = await DowntimeEvent.find({
+    machineId: { $in: [...new Set(mine.flatMap(refCandidates))] },
+    type: { $in: types },
+    reason: { $in: ['', null] },
+    askedAt: null,
+    $or: [
+      { endedAt: null, startedAt: { $lte: new Date(now - minMs) } },
+      { endedAt: { $ne: null, $gte: new Date(now - QUEUE_RECENT_MS) }, durationMs: { $gte: minMs } },
+    ],
+  }).select(LIST_FIELDS).sort({ startedAt: 1 }).limit(10).maxTimeMS(MAX_MS).lean();
+  return ok(res, rows);
+});
+
+// POST /production/downtime/:id/reason — the popup's answer, or its timeout.
+// Body: { reason } for a choice (a button, or typed when the admin allows it),
+// { timeout: true } when a countdown ran out. Atomic filtered writes, so two
+// screens for one machine can never both win: an answer lands only while the
+// span has no reason; a timeout only marks "asked" and leaves the reason empty.
+export const answerDowntime = asyncHandler(async (req, res) => {
+  const user = req.user as Actor;
+  const body = req.body as { reason?: unknown; timeout?: unknown };
+  const span = await DowntimeEvent.findById(req.params.id).lean();
+  // Uniform 404: an out-of-scope caller learns nothing about other machines.
+  if (!span || (!user?.isSuperAdmin && !refIn(user?.assignedMachines, span.machineId))) {
+    return fail(res, 404, 'Downtime event not found');
+  }
+  const now = new Date();
+  if (body.timeout) {
+    const r = await DowntimeEvent.updateOne({ _id: span._id, reason: { $in: ['', null] }, askedAt: null }, { $set: { askedAt: now } });
+    return ok(res, { handled: r.modifiedCount > 0 });
+  }
+  const cfg = await getDowntimeAskConfig();
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) return fail(res, 400, 'A reason is required');
+  if (reason.length > MAX_REASON) return fail(res, 400, `Reason must be ${MAX_REASON} characters or fewer`);
+  const listed = reasonsFor(cfg, span.type).some((l) => l.toLowerCase() === reason.toLowerCase());
+  if (!listed && !cfg.allowCustom) return fail(res, 400, 'Pick one of the listed reasons');
+  const by = user?.name || '';
+  const r = await DowntimeEvent.updateOne(
+    { _id: span._id, reason: { $in: ['', null] } },
+    { $set: { reason, reportedBy: by, reasonSource: 'popup', reasonAt: now, askedAt: now } },
+  );
+  // matchedCount 0 = someone else already answered — their word stands.
+  if (r.matchedCount > 0) {
+    await mirrorReason(span, reason, by);
+    audit(user, 'downtime.reason', span, { reason: '' }, { reason, source: 'popup' });
+  }
+  return ok(res, { handled: r.matchedCount > 0 });
+});
+
+// GET /downtime/reasons?from&to&machineId&plant&type&tz — where the downtime
+// went, by reason: totals, per shift and per hour of the day. One
+// index-backed pass with $facet, like /downtime/summary; durations are
+// clipped to the window and spans without a reason are a bucket of their
+// own (the unexplained share is the number a supervisor wants first).
+// `tz` = minutes east of UTC on the plant clock (the client's), so a span
+// that started at 14:58 IST lands in Shift A / hour 14, not UTC's 09.
+export const downtimeReasons = asyncHandler(async (req, res) => {
+  const { from, to, plant, machineId, type, tz } = req.query as Record<string, string | undefined>;
+  const match: FilterQuery<IDowntimeEvent> = {};
+  if (machineId && machineId !== 'all') match.machineId = machineId;
+  if (type && type !== 'all') match.type = type as IDowntimeEvent['type'];
+  const winTo = to ? new Date(to) : new Date();
+  const winFrom = from ? new Date(from) : null;
+  if (from || to) {
+    match.startedAt = { $lte: winTo };
+    if (winFrom) match.$or = [{ endedAt: null }, { endedAt: { $gte: winFrom } }];
+  }
+  if (plant && plant !== 'all') {
+    const codes = await Machine.find({ plant }).select('code').lean();
+    match.machineId = { $in: codes.map((m) => m.code) };
+  }
+  const scope = machineScope(req.user as ScopeUser);
+  const empty = { totalMs: 0, byReason: [], byShift: [], byHour: [], shifts: [] };
+  if (scope) {
+    if (typeof match.machineId === 'string') {
+      if (!scope.includes(match.machineId)) return ok(res, empty);
+    } else if (match.machineId && typeof match.machineId === 'object') {
+      const requested = (match.machineId as { $in?: string[] }).$in || [];
+      match.machineId = { $in: requested.filter((c) => scope.includes(c)) };
+    } else {
+      match.machineId = { $in: scope };
+    }
+  }
+
+  const clip = {
+    $max: [0, {
+      $subtract: [
+        { $min: [{ $ifNull: ['$endedAt', '$$NOW'] }, winTo] },
+        winFrom ? { $max: ['$startedAt', winFrom] } : '$startedAt',
+      ],
+    }],
+  };
+  const offsetMs = Math.max(-840, Math.min(840, Math.round(Number(tz) || 0))) * 60_000;
+  const DAY = 86_400_000;
+  // ms since local midnight of the span's start — $mod of a positive number.
+  const sinceMidnight = { $mod: [{ $add: [{ $toLong: '$startedAt' }, offsetMs, DAY] }, DAY] };
+  const shifts = await loadShifts();
+  const reasonKey = { $ifNull: ['$reason', ''] };
+  const rollup = (key: Record<string, unknown>): PipelineStage.FacetPipelineStage[] => [
+    { $group: { _id: { reason: reasonKey, ...key }, events: { $sum: 1 }, totalMs: { $sum: '$_clip' } } },
+    { $sort: { totalMs: -1 } },
+  ];
+  const [agg] = await DowntimeEvent.aggregate([
+    { $match: match as PipelineStage.Match['$match'] },
+    { $addFields: { _clip: clip, _min: { $floor: { $divide: [sinceMidnight, 60_000] } } } },
+    { $addFields: { _shift: shiftSwitchExpr(shifts, '$_min'), _hour: { $floor: { $divide: ['$_min', 60] } } } },
+    {
+      $facet: {
+        total: [{ $group: { _id: null, totalMs: { $sum: '$_clip' } } }],
+        byReason: rollup({}),
+        byShift: rollup({ shift: '$_shift' }),
+        byHour: rollup({ hour: '$_hour' }),
+      },
+    },
+  ]).option({ allowDiskUse: true, maxTimeMS: MAX_MS });
+  type Row = { _id: { reason: string; shift?: string; hour?: number }; events: number; totalMs: number };
+  const flat = (rows: Row[]) => rows.map((r) => ({ ...r._id, events: r.events, totalMs: r.totalMs }));
+  return ok(res, {
+    totalMs: agg?.total?.[0]?.totalMs || 0,
+    byReason: flat(agg?.byReason || []),
+    byShift: flat(agg?.byShift || []),
+    byHour: flat(agg?.byHour || []),
+    shifts: shifts.map((s) => s.name),
+  });
 });
 
 // PATCH /downtime/:id/ack — supervisor acknowledges (or un-acknowledges) an event.

@@ -61,6 +61,7 @@ r.patch('/events/:id/classification', events.editClassification); // correct a p
 // Downtime
 r.get('/downtime', authorize('downtime'), downtime.listDowntime);
 r.get('/downtime/summary', authorize('downtime'), downtime.downtimeSummary);
+r.get('/downtime/reasons', authorize('downtime'), downtime.downtimeReasons);   // where the downtime went — by reason, shift, hour
 r.patch('/downtime/:id/reason', authorize('downtime', 'update'), downtime.updateReason);
 r.patch('/downtime/:id/ack', authorize('downtime', 'update'), downtime.acknowledgeDowntime);
 
@@ -83,6 +84,10 @@ r.post('/production/schedule/:id/ack', authorize('production'), prod.ackSchedule
 r.get('/production/class-queue', authorize('production'), events.classQueue);          // operator popup: unanswered production events
 r.get('/production/events', authorize('production'), events.listEvents);               // production-count history (operators: their machines)
 r.post('/production/events/:id/classify', authorize('production'), events.classifyEvent); // operator popup answer / timeout
+// Downtime-reason popup — same operator surface as the classification popup
+// (own machines only, checked inside), so an operator who gets one gets both.
+r.get('/production/downtime-queue', authorize('production'), downtime.downtimeQueue);       // spans long enough to ask about, unanswered
+r.post('/production/downtime/:id/reason', authorize('production'), downtime.answerDowntime); // operator popup answer / timeout
 r.put('/production/breaks', authorize('production', 'update'), prod.setBreaks);
 r.get('/production/orders', authorize('production'), prod.listOrders);
 r.post('/production/orders', authorize('production', 'create'), prod.createOrder);

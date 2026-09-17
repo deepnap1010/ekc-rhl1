@@ -43,6 +43,12 @@ export interface IMachineEvent {
   classifiedAt?: Date | null;
   operatorName?: string | null;         // who was on the machine when the counter moved
   editReason?: string | null;           // why a past classification was changed (classSource 'edit')
+  // kind=state only: the downtime reason the operator gave for this session —
+  // a mirror of the matching downtime_reports span (same sweep tick opened
+  // both), written by the downtime controller so History and Downtime say
+  // the same words. The span stays the record; this is its echo.
+  reason?: string | null;
+  reasonBy?: string | null;
 }
 
 const machineEventSchema = new mongoose.Schema<IMachineEvent>(
@@ -65,6 +71,8 @@ const machineEventSchema = new mongoose.Schema<IMachineEvent>(
     classifiedAt:   { type: Date, default: null },
     operatorName:   { type: String, default: null },
     editReason:     { type: String, default: null },
+    reason:         { type: String, default: null },
+    reasonBy:       { type: String, default: null },
   },
   { collection: 'machine_events', versionKey: false }
 );

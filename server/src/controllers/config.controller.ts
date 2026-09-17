@@ -8,12 +8,17 @@ import { MachineEvent } from '../models/MachineEvent.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
 import { normalizeProdClass, invalidateProdClassCache, invalidateProductionReads, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
+import { normalizeDowntimeAsk, invalidateDowntimeAskCache, DEFAULT_DOWNTIME_ASK, type DowntimeAskConfig } from '../utils/downtimeAsk.js';
 
 // A stored prodClass that fails today's rules (or was never saved) reads as
 // the defaults — same before/after-first-write contract as every other field.
 const prodClassOf = (raw: unknown): ProdClassConfig => {
   const norm = normalizeProdClass(raw);
   return typeof norm === 'string' ? DEFAULT_PROD_CLASS : norm;
+};
+const downtimeAskOf = (raw: unknown): DowntimeAskConfig => {
+  const norm = normalizeDowntimeAsk(raw);
+  return typeof norm === 'string' ? DEFAULT_DOWNTIME_ASK : norm;
 };
 
 // Canonical seeds (mirror the client's previous hard-coded lists).
@@ -46,9 +51,17 @@ const DEFAULTS: Record<string, unknown> & { shifts: IShift[]; products: string[]
     { name: 'Furnace', defaultSec: 0 },
   ] as IStageTemplate[],
   prodClass: DEFAULT_PROD_CLASS,
+  downtimeAsk: DEFAULT_DOWNTIME_ASK,
 };
 
 const TIME_RE = /^\d{2}:\d{2}$/;
+
+/** The plant's shifts as every screen sees them — stored, or the seed until
+ *  an admin saves. For server-side bucketing (downtime by shift). */
+export async function loadShifts(): Promise<IShift[]> {
+  const doc = await AppConfig.findOne({ key: 'global' }).select({ shifts: 1 }).lean();
+  return doc?.shifts?.length ? doc.shifts : DEFAULTS.shifts;
+}
 
 // GET /config — the shared lists every device uses.
 export const getConfig = asyncHandler(async (_req, res) => {
@@ -60,6 +73,7 @@ export const getConfig = asyncHandler(async (_req, res) => {
     products: doc?.products?.length ? doc.products : DEFAULTS.products,
     processStages: doc?.processStages?.length ? doc.processStages : DEFAULTS.processStages,
     prodClass: prodClassOf(doc?.prodClass),
+    downtimeAsk: downtimeAskOf(doc?.downtimeAsk),
     defaultWindow: doc?.defaultWindow === 'day' ? 'day' : 'shift',
     stored: !!doc,
     // The client shows a banner and hides its edit controls on a review copy.
@@ -71,9 +85,16 @@ export const getConfig = asyncHandler(async (_req, res) => {
 export const updateConfig = asyncHandler(async (req, res) => {
   const body = req.body as {
     shifts?: IShift[]; products?: string[]; processStages?: string[];
-    stageTemplates?: IStageTemplate[]; prodClass?: unknown; defaultWindow?: unknown;
+    stageTemplates?: IStageTemplate[]; prodClass?: unknown; downtimeAsk?: unknown; defaultWindow?: unknown;
   };
   const set: Record<string, unknown> = {};
+  let askBefore: DowntimeAskConfig | null = null;
+  if (body.downtimeAsk !== undefined) {
+    const norm = normalizeDowntimeAsk(body.downtimeAsk);
+    if (typeof norm === 'string') return fail(res, 400, norm);
+    askBefore = downtimeAskOf((await AppConfig.findOne({ key: 'global' }).select({ downtimeAsk: 1 }).lean())?.downtimeAsk);
+    set.downtimeAsk = norm;
+  }
   if (body.defaultWindow !== undefined) {
     if (body.defaultWindow !== 'shift' && body.defaultWindow !== 'day') return fail(res, 400, 'default window must be "shift" or "day"');
     set.defaultWindow = body.defaultWindow;
@@ -158,11 +179,21 @@ export const updateConfig = asyncHandler(async (req, res) => {
       before, after: set.prodClass,
     }).catch(() => {});
   }
+  if (set.downtimeAsk !== undefined) {
+    invalidateDowntimeAskCache();
+    const u = req.user as { _id?: unknown; name?: string } | undefined;
+    AuditLog.create({
+      at: new Date(), user: { id: String(u?._id || ''), name: u?.name || '' },
+      action: 'settings.downtimeask', entity: { type: 'config', label: 'Downtime reason popup rules' },
+      before: askBefore, after: set.downtimeAsk,
+    }).catch(() => {});
+  }
   return ok(res, {
     shifts: doc.shifts, products: doc.products, processStages: doc.processStages,
     breaks: doc.breaks || [],
     stageTemplates: doc.stageTemplates?.length ? doc.stageTemplates : DEFAULTS.stageTemplates,
     prodClass: prodClassOf(doc.prodClass),
+    downtimeAsk: downtimeAskOf(doc.downtimeAsk),
     defaultWindow: doc.defaultWindow === 'day' ? 'day' : 'shift',
     stored: true,
   });

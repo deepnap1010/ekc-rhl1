@@ -321,7 +321,17 @@ function GlobalEventRow({ e }: { e: MachineEventRow }): JSX.Element {
       <td className="px-4 py-2.5 text-xs text-steel">
         {isProd
           ? (reset ? (e.paramKey ? prettyKey(e.paramKey) : '—') : <ClassCell e={e} />)
-          : (e.prevState ? `from ${e.prevState}` : 'first observation')}
+          : (
+            <>
+              {e.prevState ? `from ${e.prevState}` : 'first observation'}
+              {/* The operator's downtime reason — the same words the Downtime page shows. */}
+              {e.reason && (
+                <span className="ml-1.5 pill bg-line text-primary font-medium" title={e.reasonBy ? `Reason given by ${e.reasonBy}` : 'Reason given'}>
+                  {e.reason}{e.reasonBy ? <span className="text-steel font-normal"> · {e.reasonBy}</span> : null}
+                </span>
+              )}
+            </>
+          )}
       </td>
       <td className="px-4 py-2.5 data text-xs text-right">
         {isProd

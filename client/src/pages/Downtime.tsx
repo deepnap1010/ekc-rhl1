@@ -8,7 +8,9 @@ import { StatCard, Spinner } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import RangeFilter from '../components/RangeFilter';
 import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
+import DowntimeReasons from '../components/DowntimeReasons';
 import { useRangeFilter } from '../hooks/useRangeFilter';
+import { useAppConfig } from '../hooks/useAppConfig';
 import { presetLabel } from '../store/filters';
 import { fmtDuration, fmtTime, fmtNum, prettyType } from '../lib/format';
 import type { ApiMeta, DowntimeEvent } from '../types/api';
@@ -157,6 +159,9 @@ export default function Downtime() {
           <FilterGroup label="Review" value={review} opts={REVIEW_OPTS} onChange={(v) => { setReview(v); setPage(1); }} />
         </div>
 
+        {/* Where the downtime went — by reason, shift and hour of the day. */}
+        <DowntimeReasons from={from} to={to} machineId={machineId} type={type} enabled={customReady} />
+
         {/* Events table */}
         {isLoading ? <Spinner /> : (
           <>
@@ -203,11 +208,15 @@ export default function Downtime() {
                             className="group/r text-left"
                             title="Click to edit reason"
                           >
-                            <span className="inline-flex items-center gap-1.5 text-xs text-steel group-hover/r:text-accent">
+                            <span className="inline-flex items-center gap-1.5 text-xs text-primary group-hover/r:text-accent">
                               {e.reason}
                               <Pencil size={11} className="shrink-0 opacity-0 transition-opacity group-hover/r:opacity-100" />
                             </span>
-                            {e.reportedBy && <span className="block text-[10px] text-steel/50">— {e.reportedBy}</span>}
+                            {(e.reportedBy || e.reasonAt) && (
+                              <span className="block text-[10px] text-steel/60" title={e.reasonSource === 'popup' ? 'Answered in the operator popup' : e.reasonSource === 'edit' ? 'Entered on this page' : undefined}>
+                                — {e.reportedBy || 'unknown'}{e.reasonAt ? ` · ${fmtTime(e.reasonAt)}` : ''}{e.reasonSource === 'popup' ? ' · popup' : ''}
+                              </span>
+                            )}
                           </button>
                         ) : (
                           <button
@@ -298,6 +307,10 @@ function ReasonModal({ event, onClose, onSaved }: ReasonModalProps) {
   const mName = useMachineName();
   const [reason, setReason] = useState(event.reason || '');
   const user = useAuthStore((s) => s.user);
+  // The admin's reasons for this kind of span — the same buttons the operator
+  // popup offers — with the text box for anything else.
+  const { downtimeAsk } = useAppConfig();
+  const listed = (downtimeAsk?.reasons || []).filter((r) => r.types.includes(event.type as 'idle' | 'stopped')).map((r) => r.label);
   const mut = useMutation({
     mutationFn: () => downtimeApi.updateReason(event._id, { reason, reportedBy: user?.name || 'Operator' }),
     onSuccess: onSaved,
@@ -308,6 +321,14 @@ function ReasonModal({ event, onClose, onSaved }: ReasonModalProps) {
       <div className="card p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-semibold mb-1">{event.reason ? 'Edit' : 'Log'} Downtime Reason</h3>
         <p className="text-xs text-steel mb-4">{mName(event.machineId)} — {event.type}</p>
+        {listed.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {listed.map((l) => (
+              <button key={l} type="button" onClick={() => setReason(l)}
+                className={`pill border transition-colors ${reason.trim().toLowerCase() === l.toLowerCase() ? 'bg-accent/10 text-accent border-accent/30' : 'border-line text-steel hover:text-primary'}`}>{l}</button>
+            ))}
+          </div>
+        )}
         <textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}

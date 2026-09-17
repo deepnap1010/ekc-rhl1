@@ -43,6 +43,7 @@ import type {
   DiaTraceRow,
   MachineLabel,
   ScheduledDia,
+  DowntimeReasonsSummary,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -85,7 +86,7 @@ export const eventsApi = {
 
 export const configApi = {
   get: () => get<AppConfigShape>('/config'),
-  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass' | 'defaultWindow'>>) =>
+  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass' | 'downtimeAsk' | 'defaultWindow'>>) =>
     api.put('/config', body) as unknown as Promise<ApiResponse<AppConfigShape>>,
 };
 
@@ -114,6 +115,8 @@ export const machineApi = {
 export const downtimeApi = {
   list: (params?: Params) => get<DowntimeEvent[]>('/downtime', params),
   summary: (params?: Params) => get<DowntimeSummary>('/downtime/summary', params),
+  // Where the downtime went — by reason, per shift and per hour (tz = plant clock offset, minutes).
+  reasons: (params?: Params) => get<DowntimeReasonsSummary>('/downtime/reasons', params),
   updateReason: (id: string, body: { reason: string; reportedBy?: string }) =>
     patch<DowntimeEvent>(`/downtime/${id}/reason`, body),
   acknowledge: (id: string, body: { acknowledged: boolean; acknowledgedBy?: string }) =>
@@ -167,6 +170,10 @@ export const productionApi = {
   events: (params?: Params) => get<MachineEventRow[]>('/production/events', params),
   classifyEvent: (id: string, body: { value?: string; timeout?: boolean }) =>
     post<{ handled: boolean }>(`/production/events/${id}/classify`, body),
+  // Operator downtime-reason popup: spans long enough to ask about + the answer.
+  downtimeQueue: () => get<DowntimeEvent[]>('/production/downtime-queue'),
+  answerDowntime: (id: string, body: { reason?: string; timeout?: boolean }) =>
+    post<{ handled: boolean }>(`/production/downtime/${id}/reason`, body),
   setBreaks: (breaks: BreakWindow[]) => api.put('/production/breaks', { breaks }) as unknown as Promise<ApiResponse<{ breaks: BreakWindow[] }>>,
   orders: () => get<ProductionOrder[]>('/production/orders'),
   createOrder: (b: { orderNo: string; diaId: string; quantity: number; notes?: string }) => post<ProductionOrder>('/production/orders', b),
