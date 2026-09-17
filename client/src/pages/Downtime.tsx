@@ -11,7 +11,7 @@ import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import DowntimeReasons from '../components/DowntimeReasons';
 import { useRangeFilter } from '../hooks/useRangeFilter';
 import { useAppConfig } from '../hooks/useAppConfig';
-import { presetLabel } from '../store/filters';
+import { presetLabel, shiftApplies } from '../store/filters';
 import { fmtDuration, fmtTime, fmtNum, prettyType } from '../lib/format';
 import type { ApiMeta, DowntimeEvent } from '../types/api';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
@@ -36,6 +36,10 @@ export default function Downtime() {
   // popup as everywhere else, instead of this page's own 7D/30D/90D buttons.
   const win = useRangeFilter('month');
   const [machineId, setMachineId] = useState('');
+  const { shifts } = useAppConfig();
+  // The shift narrows a single day (Today / Yesterday) to that shift's window
+  // — the cards, the reasons panel and the table all follow it.
+  const shiftOn = shiftApplies(win.value.preset) && !!win.shiftName;
 
   // Machine selector options — the real machine dataset.
   const { data: machineList } = useQuery({
@@ -50,7 +54,7 @@ export default function Downtime() {
   const customReady = win.value.preset !== 'custom' || (!!from && !!to);
   const winLabel = win.value.preset === 'custom'
     ? (customReady ? 'custom range' : 'pick start & end')
-    : presetLabel(win.value.preset).toLowerCase();
+    : `${shiftOn ? `${win.shiftName} · ` : ''}${presetLabel(win.value.preset).toLowerCase()}`;
 
   const ackMut = useMutation({
     mutationFn: ({ id, acknowledged }: { id: string; acknowledged: boolean }) =>
@@ -154,6 +158,16 @@ export default function Downtime() {
           </select>
           <RangeFilter value={win.value} onChange={(v) => { win.setValue(v); setPage(1); }} range={win.range}
             title="Which period this log covers" />
+          <select
+            value={shiftApplies(win.value.preset) ? win.shiftName : ''}
+            onChange={(e) => { win.setShiftName(e.target.value); setPage(1); }}
+            disabled={!shiftApplies(win.value.preset)}
+            className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 disabled:opacity-45 disabled:cursor-not-allowed ${shiftOn ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
+            title={shiftApplies(win.value.preset) ? 'Scope to one shift' : 'Shift filtering applies to Today / Yesterday'}
+          >
+            <option value="">All Shifts</option>
+            {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
+          </select>
           <FilterGroup label="Type" value={type} opts={typeOpts} onChange={(v) => { setType(v); setPage(1); }} />
           <FilterGroup label="Status" value={status} opts={STATUS_OPTS} onChange={(v) => { setStatus(v); setPage(1); }} />
           <FilterGroup label="Review" value={review} opts={REVIEW_OPTS} onChange={(v) => { setReview(v); setPage(1); }} />

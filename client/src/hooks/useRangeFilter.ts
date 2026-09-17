@@ -14,6 +14,10 @@ import { useAppConfig } from './useAppConfig';
 export interface RangeFilterState {
   value: RangeValue;
   setValue: (v: RangeValue) => void;
+  /** One shift of a single-day preset ('' = the full production day). Only
+   *  narrows Today / Yesterday — see store/filters#shiftApplies. */
+  shiftName: string;
+  setShiftName: (name: string) => void;
   /** Resolved window, or null while a custom range is half-filled. */
   range: { from: Date; to: Date } | null;
   fromISO?: string;
@@ -25,13 +29,16 @@ export function useRangeFilter(initial: DatePreset = 'week'): RangeFilterState {
   // to midnight — resolveRange needs them to answer "today" the way the plant does.
   const { shifts } = useAppConfig();
   const [value, setValue] = useState<RangeValue>({ preset: initial, customFrom: '', customTo: '' });
+  const [shiftName, setShiftName] = useState('');
   const range = resolveRange(
-    { preset: value.preset, shiftName: '', customFrom: value.customFrom, customTo: value.customTo },
+    { preset: value.preset, shiftName, customFrom: value.customFrom, customTo: value.customTo },
     shifts,
   );
   return {
     value,
     setValue,
+    shiftName,
+    setShiftName,
     range,
     fromISO: range?.from.toISOString(),
     toISO: range?.to.toISOString(),
