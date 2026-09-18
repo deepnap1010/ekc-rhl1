@@ -21,11 +21,8 @@ import type {
   DowntimeEvent,
   DowntimeSummary,
   AlertsResponse,
-  ProductionReport,
-  DowntimeReport,
   FleetReport,
   ReliabilityReport,
-  OverviewReport,
   RbacMeta,
   Role,
   PermissionMatrix,
@@ -127,10 +124,9 @@ export const alertsApi = {
   list: (params?: Params) => get<AlertsResponse>('/alerts', params),
 };
 
+// Production, downtime and the overview are no longer separate reports: the
+// Reports page reads them off /machines/activity, the Dashboard's dataset.
 export const reportsApi = {
-  overview: (params?: Params) => get<OverviewReport>('/reports/overview', params),
-  production: (params?: Params) => get<ProductionReport>('/reports/production', params),
-  downtime: (params?: Params) => get<DowntimeReport>('/reports/downtime', params),
   fleet: (params?: Params) => get<FleetReport>('/reports/fleet', params),
   reliability: (params?: Params) => get<ReliabilityReport>('/reports/reliability', params),
 };

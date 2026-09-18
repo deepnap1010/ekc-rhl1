@@ -344,8 +344,6 @@ export interface FleetReportMachine {
   ioCount: number;
   registers: number;
   faultCount: number;
-  downtimeMs: number;
-  downtimeEvents: number;
 }
 export interface FleetReportClass { class: string; machines: number; readings: number; faults: number; avgScore: number; }
 export interface FleetReport {
@@ -363,25 +361,6 @@ export interface ReliabilityMachine {
   mtbfMs: number;
 }
 export interface ReliabilityReport { windowDays: number; machines: ReliabilityMachine[]; }
-
-// ─── Reports: Overview (live downtime & error analysis console) ──────────────
-export interface OverviewKpis {
-  machines: number;
-  running: number; idle: number; stopped: number; offline: number;
-  faults: number; errors: number;
-  criticalMachines: number; warningMachines: number;
-  avgHealth: number;
-  downtimeMs: number; downtimeEvents: number; openDowntime: number;
-}
-export interface OverviewCount { key: string; label: string; count: number; }
-export interface OverviewDowntimeMachine { machineId: string; events: number; totalMs: number; open: number; }
-export interface OverviewReport {
-  windowDays: number;
-  kpis: OverviewKpis;
-  statusMix: OverviewCount[];
-  errorsByStatus: OverviewCount[];
-  downtimeByMachine: OverviewDowntimeMachine[];
-}
 
 // ─── Dashboard ─────────────────────────────────────────────────────────────
 export interface StatusCounts {
@@ -562,48 +541,6 @@ export interface ReportByPlant {
   machines: number;
   running: number;
 } 
-
-export interface ProductionReport {
-  from: string;
-  to: string;
-  totalOutput: number;
-  reported: number;                 // machines that report a counter at all
-  machines: {
-    code: string;
-    name: string;
-    type: string | null;
-    status: string;
-    live: boolean;
-    readings: number;
-    output: number | null;          // null = this machine counts nothing
-    productionKey: string | null;
-    productionFrom: string | null;
-    productionLagMs: number;
-  }[];
-}
-
-export interface DowntimeReportTotals {
-  totalEvents: number;
-  totalMs: number;
-}
-
-export interface DowntimeReportTypeRow {
-  _id: string;
-  events: number;
-  totalMs: number;
-}
-
-export interface DowntimeReportMachineRow {
-  _id: string;
-  events: number;
-  totalMs: number;
-}
-
-export interface DowntimeReport {
-  totals: DowntimeReportTotals;
-  byType: DowntimeReportTypeRow[];
-  byMachine: DowntimeReportMachineRow[];
-}
 
 // ─── Production targets (DIA) ─────────────────────────────────────────────
 export interface MachineTime { machineRef: string; processingSec: number }

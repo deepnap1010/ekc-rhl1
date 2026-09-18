@@ -1,20 +1,18 @@
 // server/src/controllers/reports.controller.ts
-// READ-ONLY reporting over the real collections. OEE = efficiency, totalOutput = output.
-// Plant ids are resolved to names via a lookup against `plants` (null until that
-// collection exists — reported as "Unassigned").
-import type { FilterQuery, PipelineStage } from 'mongoose';
+// READ-ONLY reporting over the real collections. Two reports remain server-side:
+// the fleet signal inventory (a live snapshot) and reliability (MTBF / MTTR over
+// a window). Production, downtime and the overview are read by the Reports page
+// straight off /machines/activity — the Dashboard's dataset — so a report can
+// never disagree with the screen it was printed from.
+import type { PipelineStage } from 'mongoose';
 import { Machine }       from '../models/Machine.js';
-import type { IMachine } from '../models/Machine.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
-import type { IDowntimeEvent } from '../models/DowntimeEvent.js';
 import { ok, asyncHandler } from '../utils/http.js';
 import { getFleetSnapshot } from '../services/fleet.service.js';
 import { computeActivity } from '../services/activity.service.js';
 import { machineScope } from '../utils/scope.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
-
-const num = (p: string): { $ifNull: [string, number] } => ({ $ifNull: [p, 0] });
 
 /** The window a report covers. A page-level filter speaks in real edges — a
  *  "previous week" or "yesterday" cannot be said with "last N days" — so from/to
@@ -52,207 +50,21 @@ async function requestedMachine(
   return { refs, denied: false };
 }
 
-// A machine row projected for the report (plant is populated to its name).
-type PopulatedMachine = Omit<IMachine, 'plant'> & { plant?: { name?: string } | null };
-
-// Resolve a grouped-by-plant pipeline tail: _id is a plant ObjectId.
-
-// Human labels for the health-engine alert categories (the "error statuses").
-const ERROR_LABELS: Record<string, string> = {
-  fault:     'Sensor fault',
-  range:     'Out of range',
-  deviation: 'Set / actual drift',
-  stale:     'Stale (running, no data)',
-  offline:   'Offline',
-  other:     'Other',
-};
-
-// GET /reports/overview — single-call downtime & error analysis console.
-// Composes the live health snapshot (status mix + categorised errors) with the
-// recorded downtime events (per-machine breakdown) over a rolling window. All real.
-export const overviewReport = asyncHandler(async (req, res) => {
-  const scope = machineScope(req.user as ScopedUser | undefined);
-  const rq = req.query as Record<string, string | undefined>;
-  const { refs, denied } = await requestedMachine(rq, scope);
-  if (denied) return ok(res, { windowDays: 0, kpis: {}, statusMix: [], errorsByStatus: [], downtimeByMachine: [] });
-  const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
-  const { since, until, windowDays } = reportWindow(rq);
-
-  const [snapshotAll, totals, byMachine] = await Promise.all([
-    getFleetSnapshot(scope),
-    DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: since, $lte: until }, ...sm } as PipelineStage.Match['$match'] },
-      { $group: { _id: null, events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') }, open: { $sum: { $cond: [{ $eq: ['$endedAt', null] }, 1, 0] } } } },
-    ]),
-    DowntimeEvent.aggregate([
-      { $match: { startedAt: { $gte: since, $lte: until }, ...sm } as PipelineStage.Match['$match'] },
-      { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') }, open: { $sum: { $cond: [{ $eq: ['$endedAt', null] }, 1, 0] } } } },
-      { $sort: { totalMs: -1 } },
-    ]),
-  ]);
-
-  // Machine filter applies to the health-snapshot sections too, so a "Machine
-  // Report" never shows fleet-wide values.
-  const snapshot = refs ? snapshotAll.filter((m) => refs.includes(m.machineId)) : snapshotAll;
-
-  // Live status mix + categorised errors, from the same health engine the whole app
-  // uses — so the donut and the KPI counts always agree with Alerts/Dashboard.
-  const status: Record<string, number> = { running: 0, idle: 0, stopped: 0, offline: 0 };
-  const cat: Record<string, number> = { fault: 0, range: 0, deviation: 0, stale: 0, offline: 0, other: 0 };
-  let faults = 0, critical = 0, warning = 0, scoreSum = 0;
-  for (const m of snapshot) {
-    status[m.status] = (status[m.status] || 0) + 1;
-    faults += m.faultCount || 0;
-    scoreSum += m.health.score;
-    if (m.health.status === 'critical') critical += 1;
-    else if (m.health.status === 'warning') warning += 1;
-    for (const a of m.health.alerts) cat[a.category] = (cat[a.category] || 0) + 1;
-  }
-  const errors = Object.values(cat).reduce((s, n) => s + n, 0);
-
-  const errorsByStatus = Object.entries(cat)
-    .filter(([, v]) => v > 0)
-    .map(([k, v]) => ({ key: k, label: ERROR_LABELS[k] || k, count: v }))
-    .sort((a, b) => b.count - a.count);
-
-  const statusMix = [
-    { key: 'running', label: 'Running', count: status.running ?? 0 },
-    { key: 'idle',    label: 'Idle',    count: status.idle ?? 0 },
-    { key: 'stopped', label: 'Stopped', count: status.stopped ?? 0 },
-    { key: 'offline', label: 'Offline', count: status.offline ?? 0 },
-  ].filter((s) => s.count > 0);
-
-  return ok(res, {
-    windowDays,
-    kpis: {
-      machines: snapshot.length,
-      running: status.running ?? 0, idle: status.idle ?? 0, stopped: status.stopped ?? 0, offline: status.offline ?? 0,
-      faults, errors, criticalMachines: critical, warningMachines: warning,
-      avgHealth: snapshot.length ? Math.round(scoreSum / snapshot.length) : 0,
-      downtimeMs: totals[0]?.totalMs || 0,
-      downtimeEvents: totals[0]?.events || 0,
-      openDowntime: totals[0]?.open || 0,
-    },
-    statusMix,
-    errorsByStatus,
-    downtimeByMachine: byMachine.map((m) => ({ machineId: m._id as string, events: m.events as number, totalMs: m.totalMs as number, open: m.open as number })),
-  });
-});
-
-// GET /reports/production?from&to — what the fleet actually MADE in a window.
-//
-// This used to sum machine.totalOutput and average machine.oee — fields the
-// factory's own system would fill and that nothing in this plant ever sets. So
-// every figure on the page was 0: total output, per-machine output, OEE, and a
-// bar chart with no bars. Production now comes from the same activity engine as
-// the dashboard and the machine pages (telemetry counters, stepped), so the
-// report and the rest of the app can never disagree.
-//
-// OEE is not returned at all. Its inputs (cycle time, good/reject counts) do not
-// exist in this telemetry, and a column of zeroes reads as "we measured nothing"
-// rather than "this cannot be measured".
-export const productionReport = asyncHandler(async (req, res) => {
-  const rq = req.query as Record<string, string | undefined>;
-  const scope = machineScope(req.user as ScopedUser | undefined);
-  const { refs, denied } = await requestedMachine(rq, scope);
-  if (denied) return ok(res, { from: '', to: '', totalOutput: 0, reported: 0, machines: [] });
-
-  const { since, until } = reportWindow(rq);
-  const act = await computeActivity(scope, since, until, refs);
-
-  const machines = act.rows
-    .map((r) => ({
-      code: r.code,
-      name: r.name,
-      type: r.type,
-      status: r.status,
-      live: r.live,
-      readings: r.readings,
-      output: r.production,          // null = this machine counts nothing
-      productionKey: r.productionKey,
-      productionFrom: r.productionFrom,
-      productionLagMs: r.productionLagMs,
-    }))
-    .sort((a, b) => (b.output ?? -1) - (a.output ?? -1) || a.code.localeCompare(b.code));
-
-  return ok(res, {
-    from: act.from.toISOString(),
-    to: act.to.toISOString(),
-    totalOutput: machines.reduce((n, m) => n + (m.output ?? 0), 0),
-    reported: machines.filter((m) => m.output != null).length,
-    machines,
-  });
-});
-
-export const downtimeReport = asyncHandler(async (req, res) => {
-  const { plant, from, to, machineId } = req.query as Record<string, string | undefined>;
-  const scope = machineScope(req.user as ScopedUser | undefined);
-  const { refs, denied } = await requestedMachine({ machineId }, scope);
-  if (denied) return ok(res, { totals: { totalEvents: 0, totalMs: 0 }, byType: [], byMachine: [] });
-
-  const match: FilterQuery<IDowntimeEvent> = {};
-  if (refs) match.machineId = { $in: refs };
-  else if (scope) match.machineId = { $in: scope };
-  if (from || to) {
-    const range: { $gte?: Date; $lte?: Date } = {};
-    if (from) range.$gte = new Date(from);
-    if (to)   range.$lte = new Date(to);
-    match.startedAt = range;
-  }
-  if (plant && plant !== 'all' && !refs) {
-    const codes = await Machine.find({ plant }).select('code').lean();
-    const plantCodes = codes.map((m) => m.code as string);
-    match.machineId = { $in: scope ? plantCodes.filter((c) => scope.includes(c)) : plantCodes };
-  }
-
-  const [byMachine, byType, totals] = await Promise.all([
-    DowntimeEvent.aggregate([
-      { $match: match as PipelineStage.Match['$match'] },
-      { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') } } },
-      { $sort: { totalMs: -1 } },
-      { $limit: 20 },
-    ]),
-    DowntimeEvent.aggregate([
-      { $match: match as PipelineStage.Match['$match'] },
-      { $group: { _id: '$type', events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') } } },
-    ]),
-    DowntimeEvent.aggregate([
-      { $match: match as PipelineStage.Match['$match'] },
-      { $group: { _id: null, totalEvents: { $sum: 1 }, totalMs: { $sum: num('$durationMs') } } },
-    ]),
-  ]);
-
-  return ok(res, { totals: totals[0] || { totalEvents: 0, totalMs: 0 }, byType, byMachine });
-});
-
 // GET /reports/fleet — per-machine performance (health-scored) + per-class rollup.
 export const fleetReport = asyncHandler(async (req, res) => {
   const scope = machineScope(req.user as ScopedUser | undefined);
   const { refs, denied } = await requestedMachine(req.query as Record<string, string | undefined>, scope);
   if (denied) return ok(res, { machines: [], byClass: [], totals: { machines: 0, readings: 0, signals: 0, registers: 0, faults: 0 } });
-  const sm = refs ? { machineId: { $in: refs } } : (scope ? { machineId: { $in: scope } } : {});
-
-  const [snapshotAll, downByMachine] = await Promise.all([
-    getFleetSnapshot(scope),
-    DowntimeEvent.aggregate([
-      { $match: sm as PipelineStage.Match['$match'] },
-      { $group: { _id: '$machineId', events: { $sum: 1 }, totalMs: { $sum: num('$durationMs') } } },
-    ]),
-  ]);
-  const dt: Record<string, { events: number; totalMs: number }> = Object.fromEntries(
-    downByMachine.map((d) => [d._id as string, { events: d.events as number, totalMs: d.totalMs as number }]),
-  );
-
+  // Downtime is not a column here any more: the page reads it, window-clipped,
+  // from the activity dataset — an all-time sum beside window figures was the
+  // one number on the report that no other screen could reproduce.
+  const snapshotAll = await getFleetSnapshot(scope);
   const snapshot = refs ? snapshotAll.filter((m) => refs.includes(m.machineId)) : snapshotAll;
-  const machines = snapshot.map((m) => {
-    const d = dt[m.machineId] || { events: 0, totalMs: 0 };
-    return {
-      machineId: m.machineId, name: m.name, type: m.type, class: m.class, status: m.status,
-      health: m.health.status, score: m.health.score, readings: m.readings || 0,
-      namedCount: m.namedCount || 0, ioCount: m.ioCount || 0, registers: m.registers || 0, faultCount: m.faultCount || 0,
-      downtimeMs: d.totalMs, downtimeEvents: d.events,
-    };
-  });
+  const machines = snapshot.map((m) => ({
+    machineId: m.machineId, name: m.name, type: m.type, class: m.class, status: m.status,
+    health: m.health.status, score: m.health.score, readings: m.readings || 0,
+    namedCount: m.namedCount || 0, ioCount: m.ioCount || 0, registers: m.registers || 0, faultCount: m.faultCount || 0,
+  }));
 
   const byClass: Record<string, { class: string; machines: number; readings: number; faults: number; scoreSum: number }> = {};
   for (const m of machines) {

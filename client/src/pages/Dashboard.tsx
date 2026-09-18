@@ -12,26 +12,23 @@ import { Link } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import {
   Bell, AlertTriangle,
-  Gauge, Clock, ArrowUpRight, CalendarRange,
+  Gauge, Clock, ArrowUpRight,
   Boxes,
   Sparkles, Wrench, TrendingUp, Zap,
-  Factory, Trophy, TrendingDown, RotateCcw, ListOrdered,
+  Factory, Trophy, TrendingDown, ListOrdered,
 } from 'lucide-react';
 import { ProductionHistoryModal } from '../components/ProductionHistory';
 import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
-import { CustomRangeModal } from '../components/RangeFilter';
+import GlobalFilters, { useGlobalWindow } from '../components/GlobalFilters';
 import ProductionVsTarget from '../components/ProductionVsTarget';
 import { ScheduledDiaPopup } from '../components/ScheduleDia';
 import { Donut, Legend } from '../components/charts';
-import { fmtNum, fmtDuration, fmtTime, fmtRangeLabel } from '../lib/format';
-import { prettyType } from '../lib/format';
+import { fmtNum, fmtDuration, fmtTime, prettyType } from '../lib/format';
 import { sumActivity } from '../lib/metrics';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAuthStore } from '../store/auth';
 import { liveStatus } from '../lib/machineStatus';
-import { useFilters, resolveRange, shiftApplies, presetLabel, DATE_PRESETS, useCurrentShiftDefault } from '../store/filters';
-import { useAppConfig } from '../hooks/useAppConfig';
 import type { MachineActivityRow } from '../types/api';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 
@@ -41,13 +38,9 @@ export default function Dashboard() {
   const mName = useMachineName();
   const live = useDashboardLive();
   const can = useAuthStore((s) => s.can);
-  const { shifts, defaultWindow } = useAppConfig();   // shared server-side shift config
-  const f = useFilters();
-
-  // Shared filter selection → one concrete window every query below uses.
-  const range = resolveRange(f, shifts);
-  const fromISO = range?.from.toISOString();
-  const toISO = range?.to.toISOString();
+  // Shared filter selection (the same bar the Reports page renders) → one
+  // concrete window every query below uses.
+  const { f, fromISO, toISO, windowLabel } = useGlobalWindow();
   // THE dataset: what every machine did in the window. Drives the output/time
   // chart, the groups and the rankings — one fetch, one truth.
   const { data: actData } = useQuery({
@@ -119,10 +112,6 @@ export default function Dashboard() {
 
   const alerts = ov?.alerts || { total: 0, critical: 0, warning: 0, info: 0, byCategory: {} as Record<string, number> };
 
-  useCurrentShiftDefault(shifts, defaultWindow === 'shift');
-  // The shift default is not a filter the user set, so it does not count as dirty.
-  const atDefaults = !f.machineId && !f.shiftPicked && f.preset === 'today';
-  const [pickRange, setPickRange] = useState(false);
   const [prodHistory, setProdHistory] = useState(false);
   // True while ProductionVsTarget has ONE machine's board open — the fleet
   // panels step aside for it (see the render below).
@@ -137,11 +126,6 @@ export default function Dashboard() {
     ? (machineList || []).find((m) => (m.code || m.machineId) === f.machineId)
     : null;
   const scopeLabel = f.machineId ? mName(f.machineId) : 'All machines';
-  const windowLabel = f.preset === 'custom' && range
-    ? fmtRangeLabel(range.from, range.to)
-    : f.shiftName && shiftApplies(f.preset)
-      ? `${f.shiftName} · ${presetLabel(f.preset)}`
-      : presetLabel(f.preset);
 
   // Freshest reading across the selection — "last updated" for the dashboard.
   const lastReading = useMemo(() => {
@@ -197,67 +181,18 @@ export default function Dashboard() {
       />
 
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
-        {/* Shared filters — every figure on the page derives from this selection */}
-        <div className="panel p-3 space-y-2.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <select
-              value={f.machineId}
-              onChange={(e) => f.set({ machineId: e.target.value })}
-              className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 max-w-[240px] ${f.machineId ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
-              title="Scope the dashboard to one machine"
-            >
-              <option value="">All Machines</option>
-              {(machineList || []).map((m) => {
-                const code = m.code || m.machineId || m._id;
-                return <option key={code} value={code}>{mName(code)}{m.type ? ` · ${prettyType(m.type)}` : ''}</option>;
-              })}
-            </select>
-
-            <select
-              value={shiftApplies(f.preset) ? f.shiftName : ''}
-              onChange={(e) => f.set({ shiftName: e.target.value })}
-              disabled={!shiftApplies(f.preset)}
-              className={`rounded-xl border px-3 py-2 text-sm outline-none cursor-pointer transition-colors hover:border-accent/40 disabled:opacity-45 disabled:cursor-not-allowed ${f.shiftName && shiftApplies(f.preset) ? 'border-accent/40 bg-accent/5 text-accent font-medium' : 'border-line bg-base text-primary'}`}
-              title={shiftApplies(f.preset) ? 'Scope to a shift window' : 'Shift filtering applies to Today / Yesterday'}
-            >
-              <option value="">All Shifts</option>
-              {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
-            </select>
-
-            <span className="ml-auto text-[11px] text-steel">
-              {range ? `${fmtTime(range.from)} → ${fmtTime(range.to)}` : 'Pick a valid start & end to apply the range.'}
-            </span>
-          </div>
-
-          {/* Date window — buttons, with the custom picker behind a popup */}
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {DATE_PRESETS.map((p) => (
-              <PresetButton key={p.value} active={f.preset === p.value} onClick={() => f.set({ preset: p.value })}>
-                {p.label}
-              </PresetButton>
-            ))}
-            <PresetButton active={f.preset === 'custom'} onClick={() => setPickRange(true)}>
-              <CalendarRange size={13} /> {f.preset === 'custom' && range ? windowLabel : 'Custom…'}
-            </PresetButton>
-            {/* Always present, never a surprise: a control that appears only once
-                you've changed something is a control nobody knows exists. */}
-            <button
-              onClick={() => f.reset()}
-              disabled={atDefaults}
-              title={atDefaults ? 'Filters are already at their defaults' : 'Back to All Machines · the running shift · Today, and clear every group’s own window'}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-xs font-medium text-steel hover:text-accent hover:border-accent/40 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-steel disabled:hover:border-line"
-            >
-              <RotateCcw size={13} /> Reset
-            </button>
-            {/* Every counter advance in this window, with its classification —
-                and the place to correct one that was really a dry run. */}
-            {can('production', 'view') && <button onClick={() => setProdHistory(true)}
+        {/* Shared filters — every figure on the page derives from this
+            selection, and the Reports page shows the same one. */}
+        <GlobalFilters modalSubtitle="Every figure on the dashboard uses this window"
+          extra={can('production', 'view') && (
+            /* Every counter advance in this window, with its classification —
+               and the place to correct one that was really a dry run. */
+            <button onClick={() => setProdHistory(true)}
               title="Every production count change in this window — and where to correct one"
               className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/10 transition-colors shrink-0">
               <ListOrdered size={13} /> Production history{historyMachine ? ` · ${mName(historyMachine)}` : ''}
-            </button>}
-          </div>
-        </div>
+            </button>
+          )} />
         {prodHistory && (
           <ProductionHistoryModal from={fromISO} to={toISO} machineId={historyMachine}
             windowLabel={windowLabel} onClose={() => setProdHistory(false)} />
@@ -361,30 +296,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {pickRange && (
-        <CustomRangeModal
-          from={f.customFrom} to={f.customTo}
-          subtitle="Every figure on the dashboard uses this window"
-          onClose={() => setPickRange(false)}
-          onApply={(customFrom, customTo) => { f.set({ preset: 'custom', customFrom, customTo }); setPickRange(false); }}
-        />
-      )}
     </div>
   );
 }
 
 // ── building blocks ──────────────────────────────────────────────────────────
-function PresetButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }): JSX.Element {
-  return (
-    <button onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-        active ? 'border-accent bg-accent text-white' : 'border-line bg-base text-steel hover:text-accent hover:border-accent/40'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
 
 function SectionHead({ icon: Icon, title, sub }: { icon: LucideIcon; title: string; sub?: string }): JSX.Element {
   return (
