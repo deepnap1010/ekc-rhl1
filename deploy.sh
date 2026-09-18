@@ -7,7 +7,10 @@ cd "$(dirname "$0")"
 
 echo "== pulling latest =="
 git checkout -- client/package-lock.json server/package-lock.json
-git pull --ff-only
+# The factory box sits behind a firewall that sometimes holds it at a login
+# page; then the code arrives by git bundle instead (git pull <file> main) and
+# this pull cannot reach GitHub. Say so loudly and build what is checked out.
+git pull --ff-only || echo "!! git pull failed — building the commit already checked out: $(git log --oneline -1)"
 
 # Dependencies BEFORE the build: a pull can bring a new package (fonts, a lib),
 # and without this the build dies with "Unable to resolve" while the old dist
