@@ -53,29 +53,29 @@ export function DowntimeReasonCard({ span, reasons, allowCustom, initial = '', b
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border px-4 py-3" style={{ borderColor: `${color}55`, background: `${color}0F` }}>
+      <div className="rounded-xl border px-5 py-4" style={{ borderColor: `${color}55`, background: `${color}0F` }}>
         <div className="flex items-baseline justify-between gap-3">
-          <span className="font-semibold text-primary truncate">{mName(span.machineId)}</span>
+          <span className="text-lg font-semibold text-primary truncate">{mName(span.machineId)}</span>
           <span className="pill font-bold uppercase" style={{ background: `${color}1A`, color }}>{span.type}</span>
         </div>
-        <div className="mt-1 flex items-baseline gap-2">
-          <span className="data text-2xl font-bold text-primary tabular-nums">{fmtDuration(lastedMs)}</span>
-          <span className="text-[11px] text-steel">
+        <div className="mt-1 flex items-baseline gap-3">
+          <span className="data text-4xl font-bold text-primary tabular-nums">{fmtDuration(lastedMs)}</span>
+          <span className="text-sm text-steel">
             {open ? `since ${fmtTime(span.startedAt)} · still ${span.type}` : `${fmtTime(span.startedAt)} → ${fmtTime(span.endedAt)}`}
           </span>
         </div>
         {span.reason && (
-          <div className="text-[11px] text-steel mt-1">Recorded reason: <span className="font-semibold text-primary">{span.reason}</span>{span.reportedBy ? ` — ${span.reportedBy}` : ''}</div>
+          <div className="text-sm text-steel mt-1">Recorded reason: <span className="font-semibold text-primary">{span.reason}</span>{span.reportedBy ? ` — ${span.reportedBy}` : ''}</div>
         )}
       </div>
 
       {reasons.length > 0 && (
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {reasons.map((label) => {
             const chosen = label.toLowerCase() === current;
             return (
               <button key={label} disabled={busy} onClick={() => onAnswer(label)}
-                className="rounded-xl border-2 py-3.5 px-3 text-sm font-semibold transition-colors hover:opacity-90 active:scale-[0.98] disabled:opacity-60"
+                className="rounded-xl border-2 py-5 px-4 text-base sm:text-lg font-semibold leading-tight transition-colors hover:opacity-90 active:scale-[0.98] disabled:opacity-60"
                 style={{ borderColor: chosen ? color : `${color}55`, background: chosen ? `${color}33` : `${color}14`, color }}>
                 {label}
               </button>
@@ -89,9 +89,9 @@ export function DowntimeReasonCard({ span, reasons, allowCustom, initial = '', b
           <input value={custom} maxLength={200} disabled={busy} onChange={(e) => setCustom(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && typed) { e.preventDefault(); onAnswer(typed); } }}
             placeholder={reasons.length ? 'Another reason…' : 'Type the reason…'}
-            className="flex-1 border border-line rounded-lg px-3 py-2 text-sm bg-base text-primary outline-none focus:border-accent disabled:opacity-60" />
+            className="flex-1 border border-line rounded-lg px-4 py-3 text-base bg-base text-primary outline-none focus:border-accent disabled:opacity-60" />
           <button disabled={!typed || busy} onClick={() => onAnswer(typed)}
-            className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-semibold disabled:opacity-50">{busy ? 'Saving…' : 'Save'}</button>
+            className="px-6 py-3 rounded-lg bg-accent text-white text-base font-semibold disabled:opacity-50">{busy ? 'Saving…' : 'Save'}</button>
         </div>
       )}
     </div>
@@ -161,7 +161,7 @@ export function DowntimeReasonPopup(): JSX.Element | null {
 
   return (
     <Modal title={`Machine ${current.type}${open ? '' : ' earlier'}`} subtitle="What was the reason?" icon={PauseCircle}
-      onClose={() => setHandled((h) => [...h, current._id])} maxW="max-w-md">
+      onClose={() => setHandled((h) => [...h, current._id])} maxW="max-w-2xl">
       <div className="space-y-4">
         <DowntimeReasonCard span={current} reasons={reasonsFor(downtimeAsk, current.type)} allowCustom={!!downtimeAsk?.allowCustom}
           onAnswer={(reason) => answer(current._id, reason)} />

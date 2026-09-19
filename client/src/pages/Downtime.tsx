@@ -331,7 +331,7 @@ function ReasonModal({ event, onClose, onSaved }: ReasonModalProps) {
   });
   return (
     <Modal title={event.reason ? 'Change downtime reason' : 'Log downtime reason'} subtitle="The same choices the operator's popup offers" icon={PauseCircle}
-      onClose={onClose} maxW="max-w-md">
+      onClose={onClose} maxW="max-w-2xl">
       <div className="space-y-3">
         <DowntimeReasonCard span={event} reasons={reasonsFor(downtimeAsk, event.type)} allowCustom initial={event.reason || ''}
           busy={mut.isPending} onAnswer={(reason) => mut.mutate(reason)} />
