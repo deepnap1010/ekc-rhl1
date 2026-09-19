@@ -1,14 +1,13 @@
 // server/src/controllers/reports.controller.ts
-// READ-ONLY reporting over the real collections. Two reports remain server-side:
-// the fleet signal inventory (a live snapshot) and reliability (MTBF / MTTR over
-// a window). Production, downtime and the overview are read by the Reports page
-// straight off /machines/activity — the Dashboard's dataset — so a report can
-// never disagree with the screen it was printed from.
+// READ-ONLY reporting over the real collections. One report remains
+// server-side: reliability (MTBF / MTTR over a window). Production, downtime
+// and the overview are read by the Reports page straight off
+// /machines/activity — the Dashboard's dataset — so a report can never
+// disagree with the screen it was printed from.
 import type { PipelineStage } from 'mongoose';
 import { Machine }       from '../models/Machine.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { ok, asyncHandler } from '../utils/http.js';
-import { getFleetSnapshot } from '../services/fleet.service.js';
 import { computeActivity } from '../services/activity.service.js';
 import { machineScope } from '../utils/scope.js';
 
@@ -49,44 +48,6 @@ async function requestedMachine(
   if (scope && !refs.some((r) => scope.includes(r))) return { refs, denied: true };
   return { refs, denied: false };
 }
-
-// GET /reports/fleet — per-machine performance (health-scored) + per-class rollup.
-export const fleetReport = asyncHandler(async (req, res) => {
-  const scope = machineScope(req.user as ScopedUser | undefined);
-  const { refs, denied } = await requestedMachine(req.query as Record<string, string | undefined>, scope);
-  if (denied) return ok(res, { machines: [], byClass: [], totals: { machines: 0, readings: 0, signals: 0, registers: 0, faults: 0 } });
-  // Downtime is not a column here any more: the page reads it, window-clipped,
-  // from the activity dataset — an all-time sum beside window figures was the
-  // one number on the report that no other screen could reproduce.
-  const snapshotAll = await getFleetSnapshot(scope);
-  const snapshot = refs ? snapshotAll.filter((m) => refs.includes(m.machineId)) : snapshotAll;
-  const machines = snapshot.map((m) => ({
-    machineId: m.machineId, name: m.name, type: m.type, class: m.class, status: m.status,
-    health: m.health.status, score: m.health.score, readings: m.readings || 0,
-    namedCount: m.namedCount || 0, ioCount: m.ioCount || 0, registers: m.registers || 0, faultCount: m.faultCount || 0,
-  }));
-
-  const byClass: Record<string, { class: string; machines: number; readings: number; faults: number; scoreSum: number }> = {};
-  for (const m of machines) {
-    const c = m.class || 'unclassified';
-    const g = byClass[c] || (byClass[c] = { class: c, machines: 0, readings: 0, faults: 0, scoreSum: 0 });
-    g.machines += 1; g.readings += m.readings; g.faults += m.faultCount; g.scoreSum += m.score;
-  }
-
-  return ok(res, {
-    machines,
-    byClass: Object.values(byClass)
-      .map((g) => ({ class: g.class, machines: g.machines, readings: g.readings, faults: g.faults, avgScore: Math.round(g.scoreSum / g.machines) }))
-      .sort((a, b) => b.machines - a.machines),
-    totals: {
-      machines: machines.length,
-      readings: machines.reduce((s, m) => s + m.readings, 0),
-      signals: machines.reduce((s, m) => s + m.namedCount + m.ioCount, 0),
-      registers: machines.reduce((s, m) => s + m.registers, 0),
-      faults: machines.reduce((s, m) => s + m.faultCount, 0),
-    },
-  });
-});
 
 // GET /reports/reliability — MTBF / MTTR / availability over a rolling window.
 export const reliabilityReport = asyncHandler(async (req, res) => {

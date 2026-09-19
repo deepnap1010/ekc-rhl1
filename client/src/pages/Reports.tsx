@@ -4,8 +4,8 @@
 // is what you see here, and every production / time / downtime figure comes
 // from the SAME activity dataset (/machines/activity) the Dashboard and the
 // machine cards read — one engine, so a report can never disagree with the
-// screen it was printed from. Only the Fleet tab (signal inventory) and
-// Reliability (MTBF/MTTR) fetch anything of their own.
+// screen it was printed from. Only Reliability (MTBF/MTTR) fetches anything
+// of its own.
 import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -37,7 +37,7 @@ const STEEL  = '#64748B';
 const SLATE  = '#94A3B8';
 const DEEP_RED = '#991B1B';
 const PIE_COLORS = [ACCENT, '#6366F1', '#EC4899', '#8B5CF6', '#3B82F6', IDLE];
-const TABS = ['overview', 'production', 'targets', 'dia', 'downtime', 'fleet', 'reliability'];
+const TABS = ['overview', 'production', 'targets', 'dia', 'downtime', 'reliability'];
 
 const downOf = (r: MachineActivityRow): number => r.idleMs + r.stoppedMs;   // signal lost is darkness, not downtime (lib/metrics)
 
@@ -83,12 +83,6 @@ export default function Reports() {
     enabled: !!fromISO && !!toISO,
     refetchInterval: 60_000,
   });
-  const { data: fleetData, isLoading: fleetLoading } = useQuery({
-    queryKey: ['reports', 'fleet', machineId],
-    queryFn: () => reportsApi.fleet({ machineId: mid }).then((r) => r.data),
-    refetchInterval: 60_000,
-    enabled: tab === 'fleet',
-  });
   const { data: relData, isLoading: relLoading } = useQuery({
     queryKey: ['reports', 'reliability', machineId, fromISO, toISO],
     queryFn: () => reportsApi.reliability({ machineId: mid, from: fromISO, to: toISO }).then((r) => r.data),
@@ -103,7 +97,6 @@ export default function Reports() {
     .sort((a, b) => b.output - a.output), [rows]);
   const prodRows = useMemo(() => [...rows].sort((a, b) => (b.production ?? -1) - (a.production ?? -1) || a.code.localeCompare(b.code)), [rows]);
   const downRows = useMemo(() => rows.filter((r) => downOf(r) > 0).sort((a, b) => downOf(b) - downOf(a)), [rows]);
-  const downBy = useMemo(() => new Map(rows.map((r) => [r.code.toUpperCase(), downOf(r)])), [rows]);
 
   // Export the ACTIVE tab's (already filtered) dataset — never the whole database.
   const exportCsv = () => {
@@ -116,10 +109,6 @@ export default function Reports() {
       const header = 'Machine,Idle (ms),Stopped (ms),Downtime (ms),Signal lost (ms)';
       const lines = downRows.map((m) => [m.code, m.idleMs, m.stoppedMs, downOf(m), m.offlineMs].join(','));
       download([header, ...lines].join('\n'), `downtime_report${suffix}.csv`);
-    } else if (tab === 'fleet' && fleetData?.machines?.length) {
-      const header = 'Machine,Type,Status,Health,Score,Readings,Faults,Downtime (ms)';
-      const lines = fleetData.machines.map((m) => [m.machineId, m.type, m.status, m.health, m.score, m.readings, m.faultCount, downBy.get(m.machineId.toUpperCase()) ?? 0].join(','));
-      download([header, ...lines].join('\n'), `fleet_report${suffix}.csv`);
     } else if (tab === 'reliability' && relData?.machines?.length) {
       const header = 'Machine,Events,Downtime (ms),Availability (%),MTTR (ms),MTBF (ms)';
       const lines = relData.machines.map((m) => [m.machineId, m.events, m.downtimeMs, m.availability, m.mttrMs, m.mtbfMs].join(','));
@@ -298,65 +287,6 @@ export default function Reports() {
             )}
           </div>
         ))}
-
-        {/* ---- FLEET ---- */}
-        {tab === 'fleet' && (
-          fleetLoading ? <Spinner /> : (
-            <div className="space-y-5">
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <StatCard label="Machines" value={fleetData?.totals?.machines || 0} sub="In fleet" accent={STEEL} icon={FileBarChart} />
-                <StatCard label="Signals" value={fmtNum(fleetData?.totals?.signals || 0)} sub="Named + I/O" accent={ACCENT} />
-                <StatCard label="Raw Registers" value={fmtNum(fleetData?.totals?.registers || 0)} sub="Unmapped" accent={STEEL} />
-                <StatCard label="Faults" value={fleetData?.totals?.faults || 0} sub="Sentinel readings" accent={STOPPED} />
-              </div>
-
-              {(fleetData?.byClass?.length ?? 0) > 0 && (
-                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {(fleetData?.byClass || []).map((c) => (
-                    <div key={c.class} className="panel p-4">
-                      <div className="text-sm font-medium text-primary">{prettyType(c.class)}</div>
-                      <div className="data text-2xl font-bold mt-1" style={{ color: c.avgScore >= 80 ? ACCENT : c.avgScore >= 50 ? IDLE : STOPPED }}>{c.avgScore}<span className="text-xs text-steel">/100</span></div>
-                      <div className="text-[11px] text-steel mt-0.5">{c.machines} machine{c.machines > 1 ? 's' : ''} · {c.faults} fault{c.faults === 1 ? '' : 's'}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="panel overflow-x-auto">
-                <div className="px-4 py-3 bg-base"><h2 className="font-semibold text-sm">Per-Machine Fleet Report</h2></div>
-                <table className="w-full text-sm">
-                  <thead className="bg-base border-t border-line">
-                    <tr className="text-steel">
-                      <th className="text-left label px-4 py-2.5">Machine</th>
-                      <th className="text-left label px-4 py-2.5">Health</th>
-                      <th className="text-right label px-4 py-2.5">Signals</th>
-                      <th className="text-right label px-4 py-2.5">Registers</th>
-                      <th className="text-right label px-4 py-2.5" title={`Idle + stopped · ${windowLabel}`}>Downtime</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(fleetData?.machines || []).map((m) => {
-                      const d = downBy.get(m.machineId.toUpperCase()) ?? 0;
-                      return (
-                        <tr key={m.machineId} className="border-t border-line hover:bg-base/60">
-                          <td className="px-4 py-2.5 data font-medium text-xs" title={mTitle(m.machineId)}>{mName(m.machineId)}</td>
-                          <td className="px-4 py-2.5">
-                            <span className="data text-xs font-semibold" style={{ color: m.health === 'critical' ? STOPPED : m.health === 'warning' ? IDLE : m.health === 'healthy' ? ACCENT : STEEL }}>{m.score}</span>
-                            <span className="text-[10px] text-steel capitalize ml-1">{m.health}</span>
-                          </td>
-                          <td className="px-4 py-2.5 data text-xs text-right">{fmtNum(m.namedCount + m.ioCount)}</td>
-                          <td className="px-4 py-2.5 data text-xs text-right text-steel">{fmtNum(m.registers)}</td>
-                          <td className="px-4 py-2.5 data text-xs text-right text-idle">{d ? fmtDuration(d) : '—'}</td>
-                        </tr>
-                      );
-                    })}
-                    {(fleetData?.machines || []).length === 0 && <tr><td colSpan={5} className="text-center text-steel py-8">No machines.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )
-        )}
 
         {/* ---- RELIABILITY ---- */}
         {tab === 'reliability' && (

@@ -330,27 +330,7 @@ export interface AlertsResponse {
   machines: AlertMachineHealth[];
 }
 
-// ─── Fleet & reliability reports ─────────────────────────────────────────────
-export interface FleetReportMachine {
-  machineId: string;
-  name: string;
-  type: string | null;
-  class: string | null;
-  status: string;
-  health: string;
-  score: number;
-  readings: number;
-  namedCount: number;
-  ioCount: number;
-  registers: number;
-  faultCount: number;
-}
-export interface FleetReportClass { class: string; machines: number; readings: number; faults: number; avgScore: number; }
-export interface FleetReport {
-  machines: FleetReportMachine[];
-  byClass: FleetReportClass[];
-  totals: { machines: number; readings: number; signals: number; registers: number; faults: number };
-}
+// ─── Reliability report ──────────────────────────────────────────────────────
 
 export interface ReliabilityMachine {
   machineId: string;

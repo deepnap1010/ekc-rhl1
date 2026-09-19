@@ -100,7 +100,6 @@ r.get('/production/audit', authorize('production', 'admin'), prod.listAudit);
 // Reports
 // Production / downtime / overview reports read /machines/activity — the
 // Dashboard's dataset — so the page and the report can never disagree.
-r.get('/reports/fleet', authorize('reports'), reports.fleetReport);
 r.get('/reports/reliability', authorize('reports'), reports.reliabilityReport);
 
 // Alerts — fleet-wide, derived live from the anomaly engine
