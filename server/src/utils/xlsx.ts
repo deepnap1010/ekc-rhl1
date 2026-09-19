@@ -14,18 +14,26 @@
 //
 // Strings go inline (t="inlineStr") — no shared-string table to build, and a
 // 20,000-row sheet is still a few hundred KB once deflated.
+//
+// Formula tokens: {row} this row, {first}/{last} the block's first and last
+// DATA rows (rows styled 'total' or 'grand' are excluded, so a TOTAL row
+// summing {first}:{last} never includes itself), {col:KEY} the letter of the
+// column with that key (an unknown key throws — a silent column A would sum
+// the label column and ship a wrong workbook). A block that interleaves
+// section subtotals must NOT sum {first}:{last} for its grand total — that
+// counts every subtotal again; list the subtotal rows explicitly instead.
 import { deflateRawSync } from 'node:zlib';
 
 export type Fmt = 'text' | 'int' | 'dec' | 'dec1' | 'pct' | 'pct0' | 'dur' | 'datetime' | 'date';
 // How a cell looks. 'cell' is the bordered default; 'plain' has no border;
 // 'input' is the plant's yellow for typed figures, 'avg' its green for
-// averages; 'total' is bold on grey for subtotal rows.
-export type Style = 'plain' | 'cell' | 'input' | 'calc' | 'bold' | 'total' | 'avg' | 'delay' | 'header';
+// averages, 'delay' its light red for idle hours; 'total' is bold on grey
+// for section subtotals and 'grand' bold on yellow for the plant TOTAL.
+export type Style = 'plain' | 'cell' | 'input' | 'calc' | 'bold' | 'total' | 'avg' | 'delay' | 'header' | 'grand';
 export type Scalar = string | number | boolean | Date | null | undefined;
 /** A cell: a value, or a value/formula with its own format and style. A
- *  formula is written without '=' and may use tokens the writer resolves
- *  when it knows the row: {row} this row, {first}/{last} the block's first
- *  and last data rows, {col:KEY} the letter of the column with that key. */
+ *  formula is written without '='; a value beside it is the cached result
+ *  a reader that does not recalculate on load still shows. */
 export type Cell = Scalar | { v?: Scalar; f?: string; fmt?: Fmt; style?: Style };
 export type Row = Record<string, Cell> & { __style?: Style };
 export interface Column { header: string | Cell; key: string; width?: number; fmt?: Fmt; style?: Style }
@@ -35,29 +43,35 @@ export interface Block {
   note?: string;
   /** A row of merged labels above the headers, e.g. [{label:'Production', span:3}, …]. */
   bands?: Band[];
+  /** No columns = a note-only block (title/note, no header row). */
   columns: Column[];
   rows: Row[];
-  /** Freeze this many leading columns (single-block sheets only). */
+  /** Freeze this many leading columns (first block of the sheet only). */
   freezeCols?: number;
+  /** Single-block sheets get a filter on the data rows unless told not to —
+   *  a grid with interleaved subtotal rows must not be sortable. */
+  autoFilter?: boolean;
 }
 export interface Sheet {
   name: string;
   blocks: Block[];
   landscape?: boolean;
-  /** Keep a blank row between blocks (default true). */
 }
 
 const FMTS: Fmt[] = ['text', 'int', 'dec', 'dec1', 'pct', 'pct0', 'dur', 'datetime', 'date'];
-const STYLES: Style[] = ['plain', 'cell', 'input', 'calc', 'bold', 'total', 'avg', 'delay', 'header'];
+const STYLES: Style[] = ['plain', 'cell', 'input', 'calc', 'bold', 'total', 'avg', 'delay', 'header', 'grand'];
 const NUM_FMT: Record<Fmt, number> = { text: 0, int: 164, dec: 168, dec1: 170, pct: 165, pct0: 171, dur: 166, datetime: 167, date: 169 };
 // cellXfs layout: 0 default, 1 title, 2 note, then STYLES × FMTS.
 const XF_TITLE = 1, XF_NOTE = 2, XF_BASE = 3;
 const xfOf = (style: Style, fmt: Fmt): number => XF_BASE + STYLES.indexOf(style) * FMTS.length + FMTS.indexOf(fmt);
+const isTotal = (s?: Style): boolean => s === 'total' || s === 'grand';
 const DAY_MS = 86_400_000;
 const EXCEL_EPOCH_DAYS = 25_569;   // 1970-01-01 as an Excel serial
 
+// Characters XML cannot carry (control characters other than tab/newline).
+const CONTROL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(8) + String.fromCharCode(11) + String.fromCharCode(12) + String.fromCharCode(14) + '-' + String.fromCharCode(31) + ']', 'g');
 const esc = (s: string): string => s
-  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+  .replace(CONTROL, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** A1-style column letters for a 0-based index. */
@@ -73,6 +87,17 @@ export const excelDate = (d: Date | string | number, tzMin: number): number | nu
   return Number.isFinite(t) ? (t + tzMin * 60_000) / DAY_MS + EXCEL_EPOCH_DAYS : null;
 };
 
+/** A calendar date as a date cell whose serial is a whole number on the
+ *  plant clock — so =A5=DATE(2026,9,1) is TRUE and pivots group by day. */
+export const dateCell = (y: number, m: number, d: number, tzMin: number): Cell =>
+  ({ v: new Date(Date.UTC(y, m - 1, d) - tzMin * 60_000), fmt: 'date' });
+
+/** Where a block's first data row lands when it is the FIRST block on its
+ *  sheet: title, note, bands, header, then data. The writer's contract, for
+ *  callers that write subtotal formulas with real row numbers. */
+export const firstDataRow = (b: Pick<Block, 'title' | 'note' | 'bands'>): number =>
+  1 + (b.title ? 1 : 0) + (b.note ? 1 : 0) + (b.bands?.length ? 1 : 0) + 1;
+
 interface Ctx { row: number; first: number; last: number; col: (key: string) => string }
 const resolveFormula = (f: string, ctx: Ctx): string => f
   .replace(/\{col:([^}]+)\}/g, (_, k: string) => ctx.col(k))
@@ -86,17 +111,20 @@ function cellXml(ref: string, cell: Cell, colFmt: Fmt | undefined, defStyle: Sty
   const xf = xfOf(style, fmt || (isDate ? 'datetime' : 'text'));
   if (f) {
     const ff = esc(resolveFormula(f, ctx));
-    const cached = typeof v === 'number' && Number.isFinite(v) ? `<v>${fmt === 'dur' ? v / DAY_MS : v}</v>` : '';
-    return `<c r="${ref}" s="${xf}"><f>${ff}</f>${cached}</c>`;
+    const cached = typeof v === 'number' && Number.isFinite(v) ? `<v>${fmt === 'dur' ? v / DAY_MS : v}</v>`
+      : typeof v === 'string' && v !== '' ? `<v>${esc(v)}</v>` : '';
+    return `<c r="${ref}" s="${xf}"${typeof v === 'string' && v !== '' ? ' t="str"' : ''}><f>${ff}</f>${cached}</c>`;
   }
-  if (v == null || v === '') return style === defStyle && style !== 'input' ? '' : `<c r="${ref}" s="${xf}"/>`;
+  // A blank keeps its border and fill: a table with holes in it is not a
+  // table, and the plant's TOTAL rows are shaded end to end.
+  if (v == null || v === '') return style === 'plain' ? '' : `<c r="${ref}" s="${xf}"/>`;
   if (typeof v === 'boolean') v = v ? 'Yes' : 'No';
   if (isDate) {
     const n = excelDate(v as Date | string | number, tzMin);
-    return n == null ? '' : `<c r="${ref}" s="${xf}"><v>${n}</v></c>`;
+    return n == null ? `<c r="${ref}" s="${xf}"/>` : `<c r="${ref}" s="${xf}"><v>${n}</v></c>`;
   }
   if (typeof v === 'number') {
-    if (!Number.isFinite(v)) return '';
+    if (!Number.isFinite(v)) return `<c r="${ref}" s="${xf}"/>`;
     return `<c r="${ref}" s="${xf}"><v>${fmt === 'dur' ? v / DAY_MS : v}</v></c>`;
   }
   return `<c r="${ref}" t="inlineStr" s="${xf}"><is><t xml:space="preserve">${esc(String(v))}</t></is></c>`;
@@ -114,6 +142,10 @@ function sheetXml(sheet: Sheet, tzMin: number): { xml: string; printTitleRows: n
     if (bi > 0) r += 1;   // a blank row between tables
     const nCols = b.columns.length;
     const lastCol = colLetters(Math.max(0, nCols - 1));
+    b.columns.forEach((c, i) => {
+      const hdr = typeof c.header === 'string' ? c.header : '';
+      widths[i] = Math.max(widths[i] || 0, c.width || Math.min(40, Math.max(8, hdr.length + 2)));
+    });
     if (b.title) {
       r += 1;
       rows.push(`<row r="${r}" ht="21" customHeight="1"><c r="A${r}" t="inlineStr" s="${XF_TITLE}"><is><t xml:space="preserve">${esc(b.title)}</t></is></c></row>`);
@@ -121,40 +153,47 @@ function sheetXml(sheet: Sheet, tzMin: number): { xml: string; printTitleRows: n
     }
     if (b.note) {
       r += 1;
-      rows.push(`<row r="${r}"><c r="A${r}" t="inlineStr" s="${XF_NOTE}"><is><t xml:space="preserve">${esc(b.note)}</t></is></c></row>`);
+      // A merged cell never spills into its neighbours, so the note wraps and
+      // the row grows to fit — roughly one line per (total width) characters.
+      const chars = Math.max(40, b.columns.reduce((n, _, i) => n + (widths[i] || 10), 0));
+      const lines = Math.max(1, Math.ceil(b.note.length / chars));
+      rows.push(`<row r="${r}" ht="${Math.min(120, 14 * lines + 2)}" customHeight="1"><c r="A${r}" t="inlineStr" s="${XF_NOTE}"><is><t xml:space="preserve">${esc(b.note)}</t></is></c></row>`);
       if (nCols > 1) merges.push(`A${r}:${lastCol}${r}`);
     }
-    if (b.bands?.length) {
+    if (b.bands?.length && nCols) {
       r += 1;
       let c = 0; const cells: string[] = [];
       for (const band of b.bands) {
         const span = Math.max(1, band.span);
+        if (c + span > nCols) throw new Error(`xlsx: sheet ${sheet.name}: bands span ${c + span} columns, the block has ${nCols}`);
         cells.push(`<c r="${colLetters(c)}${r}" t="inlineStr" s="${xfOf(band.style || 'header', 'text')}"><is><t xml:space="preserve">${esc(band.label)}</t></is></c>`);
         // Bordered blanks so the merged band keeps its outline.
         for (let k = 1; k < span; k++) cells.push(`<c r="${colLetters(c + k)}${r}" s="${xfOf(band.style || 'header', 'text')}"/>`);
         if (span > 1) merges.push(`${colLetters(c)}${r}:${colLetters(c + span - 1)}${r}`);
         c += span;
       }
+      for (; c < nCols; c++) cells.push(`<c r="${colLetters(c)}${r}" s="${xfOf('header', 'text')}"/>`);   // a short band list is padded
       rows.push(`<row r="${r}">${cells.join('')}</row>`);
     }
+    if (!nCols) { if (bi === 0) printTitleRows = r; continue; }   // note-only block
     r += 1;
     const headerRow = r;
     if (bi === 0) printTitleRows = r;
-    const ctxHeader: Ctx = { row: r, first: r + 1, last: r + b.rows.length, col: (k) => colLetters(Math.max(0, b.columns.findIndex((c) => c.key === k))) };   // header cells rarely carry formulas; full span
+    const col = (k: string): string => {
+      const i = b.columns.findIndex((c) => c.key === k);
+      if (i < 0) throw new Error(`xlsx: sheet ${sheet.name}: a formula refers to unknown column key "${k}"`);
+      return colLetters(i);
+    };
+    const ctxHeader: Ctx = { row: r, first: r + 1, last: r + b.rows.length, col };
     rows.push(`<row r="${r}">${b.columns.map((c, i) => {
       const h = typeof c.header === 'string' ? { v: c.header, style: 'header' as Style } : { style: 'header' as Style, ...(c.header as object) };
       return cellXml(`${colLetters(i)}${r}`, h, undefined, 'header', tzMin, ctxHeader);
     }).join('')}</row>`);
-    b.columns.forEach((c, i) => {
-      const hdr = typeof c.header === 'string' ? c.header : '';
-      widths[i] = Math.max(widths[i] || 0, c.width || Math.min(40, Math.max(8, hdr.length + 2)));
-    });
     // {first}/{last} span the DATA rows: a TOTAL row summing {first}:{last}
     // must not include itself (Excel would flag the circular reference).
     const first = r + 1;
-    const lastDataIdx = b.rows.reduce((n, row, i) => (row.__style === 'total' ? n : i), -1);
+    const lastDataIdx = b.rows.reduce((n, row, i) => (isTotal(row.__style) ? n : i), -1);
     const last = lastDataIdx < 0 ? first : r + 1 + lastDataIdx;
-    const col = (k: string): string => colLetters(Math.max(0, b.columns.findIndex((c) => c.key === k)));
     for (const row of b.rows) {
       r += 1;
       const ctx: Ctx = { row: r, first, last, col };
@@ -164,12 +203,15 @@ function sheetXml(sheet: Sheet, tzMin: number): { xml: string; printTitleRows: n
     }
     if (bi === 0) {
       freezeRow = headerRow; freezeCol = Math.max(0, Math.min(nCols - 1, b.freezeCols || 0));
-      if (single && b.rows.length) filter = `A${headerRow}:${lastCol}${r}`;
+      // The filter covers the data rows only — sorting must never drag a
+      // TOTAL row into the data.
+      if (single && b.rows.length && b.autoFilter !== false) filter = `A${headerRow}:${lastCol}${last}`;
     }
   }
   const cols = widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('');
+  const active = freezeRow && freezeCol ? 'bottomRight' : freezeRow ? 'bottomLeft' : 'topRight';
   const pane = freezeRow || freezeCol
-    ? `<pane ${freezeCol ? `xSplit="${freezeCol}" ` : ''}${freezeRow ? `ySplit="${freezeRow}" ` : ''}topLeftCell="${colLetters(freezeCol)}${freezeRow + 1}" activePane="bottomRight" state="frozen"/><selection pane="bottomRight"/>`
+    ? `<pane ${freezeCol ? `xSplit="${freezeCol}" ` : ''}${freezeRow ? `ySplit="${freezeRow}" ` : ''}topLeftCell="${colLetters(freezeCol)}${freezeRow + 1}" activePane="${active}" state="frozen"/><selection pane="${active}"/>`
     : '';
   const view = `<sheetViews><sheetView workbookViewId="0"${sheet.landscape ? ' zoomScale="90"' : ''}>${pane}</sheetView></sheetViews>`;
   const pageSetup = sheet.landscape
@@ -182,8 +224,21 @@ function sheetXml(sheet: Sheet, tzMin: number): { xml: string; printTitleRows: n
 
 // ── styles.xml ───────────────────────────────────────────────────────────────
 // fonts: 0 normal · 1 bold · 2 title · 3 note
-// fills: 0 none · 1 gray125 (required) · 2 header grey · 3 input yellow · 4 avg green · 5 total grey · 6 delay red
-// borders: 0 none · 1 thin all round
+const FILLS = [
+  '<fill><patternFill patternType="none"/></fill>',                                                       // 0 none
+  '<fill><patternFill patternType="gray125"/></fill>',                                                    // 1 (required by the spec)
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill>',   // 2 header
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFFCC"/><bgColor indexed="64"/></patternFill></fill>',   // 3 input yellow
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill>',   // 4 avg green
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/><bgColor indexed="64"/></patternFill></fill>',   // 5 total grey
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill>',   // 6 delay red
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill>',   // 7 grand yellow
+];
+const NUM_FMTS = [
+  '<numFmt numFmtId="164" formatCode="#,##0"/>', '<numFmt numFmtId="165" formatCode="0.0%"/>', '<numFmt numFmtId="166" formatCode="[h]:mm"/>',
+  '<numFmt numFmtId="167" formatCode="dd-mmm-yyyy hh:mm"/>', '<numFmt numFmtId="168" formatCode="#,##0.0"/>', '<numFmt numFmtId="169" formatCode="d-mmm"/>',
+  '<numFmt numFmtId="170" formatCode="0.0"/>', '<numFmt numFmtId="171" formatCode="0%"/>',
+];
 const STYLE_DEF: Record<Style, { font: number; fill: number; border: number; align?: string }> = {
   plain: { font: 0, fill: 0, border: 0 },
   cell: { font: 0, fill: 0, border: 1 },
@@ -194,12 +249,13 @@ const STYLE_DEF: Record<Style, { font: number; fill: number; border: number; ali
   avg: { font: 1, fill: 4, border: 1 },
   delay: { font: 0, fill: 6, border: 1 },
   header: { font: 1, fill: 2, border: 1, align: '<alignment horizontal="center" vertical="center" wrapText="1"/>' },
+  grand: { font: 1, fill: 7, border: 1 },
 };
 function stylesXml(): string {
   const xfs: string[] = [
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>',
     '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
-    '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
+    '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>',
   ];
   for (const st of STYLES) {
     const d = STYLE_DEF[st];
@@ -209,9 +265,9 @@ function stylesXml(): string {
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="8"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="0.0%"/><numFmt numFmtId="166" formatCode="[h]:mm"/><numFmt numFmtId="167" formatCode="dd-mmm-yyyy hh:mm"/><numFmt numFmtId="168" formatCode="#,##0.0"/><numFmt numFmtId="169" formatCode="d-mmm"/><numFmt numFmtId="170" formatCode="0.0"/><numFmt numFmtId="171" formatCode="0%"/></numFmts>
+<numFmts count="${NUM_FMTS.length}">${NUM_FMTS.join('')}</numFmts>
 <fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font><font><i/><sz val="10"/><color rgb="FF64748B"/><name val="Calibri"/></font></fonts>
-<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9E1F2"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFFCC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill></fills>
+<fills count="${FILLS.length}">${FILLS.join('')}</fills>
 <borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FF9E9E9E"/></left><right style="thin"><color rgb="FF9E9E9E"/></right><top style="thin"><color rgb="FF9E9E9E"/></top><bottom style="thin"><color rgb="FF9E9E9E"/></bottom><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
 <cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>
@@ -233,9 +289,14 @@ function parts(sheets: Sheet[], tzMin: number): { name: string; data: Buffer }[]
     .join('');
   return [
     { name: '[Content_Types].xml', data: xml(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`) },
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`) },
     { name: '_rels/.rels', data: xml(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`) },
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`) },
+    // Naming the application lets LibreOffice apply its "recalculate Excel
+    // files on load" rule; formulas also carry cached values where the
+    // caller had the number.
+    { name: 'docProps/app.xml', data: xml(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application><AppVersion>16.0300</AppVersion></Properties>`) },
     // calcPr fullCalcOnLoad: formulas we wrote without cached values get computed the moment the file opens.
     { name: 'xl/workbook.xml', data: xml(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((n, i) => `<sheet name="${esc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>${printTitles ? `<definedNames>${printTitles}</definedNames>` : ''}<calcPr fullCalcOnLoad="1"/></workbook>`) },

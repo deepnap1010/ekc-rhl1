@@ -220,8 +220,12 @@ export function resolveRange(
     if (shift) return shiftWindowOn(shift, prev);
     return shiftDayOn(shifts, prev);
   }
-  // Completed period → fixed end; running period → up to now.
-  if (f.preset === 'prevWeek') return { from: weekStart(-1), to: weekStart(0) };
-  const from = f.preset === 'week' ? weekStart(0) : f.preset === 'month' ? monthStart() : yearStart();
+  // Completed period → fixed end; running period → up to now. Every period
+  // starts where its first PRODUCTION day starts (07:00), not at midnight:
+  // "This Month" from 00:00 on the 1st would open with seven hours of the
+  // previous month's night shift, and the export's month sheet would carry
+  // a stray last-day-of-last-month column.
+  if (f.preset === 'prevWeek') return { from: shiftDayOn(shifts, weekStart(-1)).from, to: shiftDayOn(shifts, weekStart(0)).from };
+  const from = shiftDayOn(shifts, f.preset === 'week' ? weekStart(0) : f.preset === 'month' ? monthStart() : yearStart()).from;
   return { from, to: new Date(Math.max(nowRounded().getTime(), from.getTime() + 60_000)) };
 }

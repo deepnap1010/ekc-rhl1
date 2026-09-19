@@ -50,7 +50,22 @@ export async function productionEventsBy(
   const keyed = await counterKeys(machines);
   const registered = new Set(keyed.map((k) => k.ref));
   const fallback = machines.filter((m) => !registered.has(m) && derivedCounterFor(m));
-  for (const [ref, evs] of await derivedEventsBy(fallback, from, to)) out.set(ref, evs);
+  // Classified-away pieces come OFF the step that made them — for a derived
+  // counter exactly as for a register (see below); an operator's "dry cycle"
+  // on BOTTOMMILLING03 is not production either.
+  const excl = await excludedPiecesBy([...keyed.map((k) => k.ref), ...fallback], from ?? new Date(0), to ?? new Date());
+  const takeOff = (ref: string, evs: { t: number; made: number }[]): { t: number; made: number }[] => {
+    for (const x of excl.get(ref.toUpperCase()) || []) {
+      let n = x.n;
+      for (let i = evs.length - 1; i >= 0 && n > 0; i -= 1) {
+        if (evs[i].t > x.t) continue;
+        const take = Math.min(n, evs[i].made);
+        evs[i].made -= take; n -= take;
+      }
+    }
+    return evs.filter((e) => e.made > 0);
+  };
+  for (const [ref, evs] of await derivedEventsBy(fallback, from, to)) out.set(ref, takeOff(ref, evs));
   if (!keyed.length) return out;
 
   // Bin width scales with the span — 5-minute bins keep a month's pipeline
@@ -85,21 +100,11 @@ export async function productionEventsBy(
   // two can then never credit one row and debit another. A piece the bins never
   // credited (first bin, a physics-capped preload) has nothing to come off and
   // is dropped, so no row can go below zero.
-  const excl = await excludedPiecesBy(keyed.map((k) => k.ref), from ?? new Date(0), to ?? new Date());
   for (const s of series) {
     const pts = s.rows.map((p) => ({ t: +new Date(p._id), v: Number(p.pv) }))
       .filter((p) => Number.isFinite(p.v))
       .sort((a, b) => a.t - b.t);
-    const evs = stepEvents(pts, PROD_STEP_PER_MIN);
-    for (const x of excl.get(s.ref.toUpperCase()) || []) {
-      let n = x.n;
-      for (let i = evs.length - 1; i >= 0 && n > 0; i -= 1) {
-        if (evs[i].t > x.t) continue;
-        const take = Math.min(n, evs[i].made);
-        evs[i].made -= take; n -= take;
-      }
-    }
-    out.set(s.ref, evs.filter((e) => e.made > 0));
+    out.set(s.ref, takeOff(s.ref, stepEvents(pts, PROD_STEP_PER_MIN)));
   }
   return out;
 }

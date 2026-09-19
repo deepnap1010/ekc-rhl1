@@ -36,16 +36,20 @@ export const DEFAULT_DOWNTIME_ASK: DowntimeAskConfig = {
   askIdle: true,
   askStopped: true,
   allowCustom: true,
+  // The plant's own ten idle-hour categories, as its daily review sheet
+  // heads them — so the popup, the Downtime page and the exported PDWIP band
+  // all speak the words the floor already uses. Admins rename freely.
   reasons: [
-    { label: 'Waiting for material', types: ['idle'] },
-    { label: 'No order / job', types: ['idle'] },
-    { label: 'Operator break', types: ['idle'] },
-    { label: 'Setup / changeover', types: ['idle', 'stopped'] },
-    { label: 'Tool change', types: ['idle', 'stopped'] },
-    { label: 'Quality hold', types: ['idle', 'stopped'] },
-    { label: 'Breakdown', types: ['stopped'] },
-    { label: 'Power failure', types: ['stopped'] },
-    { label: 'Planned maintenance', types: ['stopped'] },
+    { label: 'No Plan', types: ['idle'] },
+    { label: 'NL / UN-LOADING JAM', types: ['idle', 'stopped'] },
+    { label: 'No Opr', types: ['idle'] },
+    { label: 'New Setting', types: ['idle', 'stopped'] },
+    { label: 'No Power', types: ['stopped'] },
+    { label: 'No Utility', types: ['stopped'] },
+    { label: 'B/D', types: ['stopped'] },
+    { label: 'Quality Set up', types: ['idle', 'stopped'] },
+    { label: 'No Consumable', types: ['idle'] },
+    { label: 'Other', types: ['idle', 'stopped'] },
   ],
 };
 

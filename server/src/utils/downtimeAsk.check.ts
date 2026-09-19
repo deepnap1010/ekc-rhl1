@@ -51,7 +51,8 @@ eq('too many rejected', errOf({ ...base(), reasons: Array.from({ length: 31 }, (
 eq('no reasons and no free text = nothing to answer with', errOf({ ...base(), reasons: [], allowCustom: false }), 'add at least one reason, or allow operators to type their own');
 eq('no reasons but free text is fine', okOf({ ...base(), reasons: [] }).reasons, []);
 eq('reasons per type', reasonsFor(DEFAULT_DOWNTIME_ASK, 'stopped'),
-  ['Setup / changeover', 'Tool change', 'Quality hold', 'Breakdown', 'Power failure', 'Planned maintenance']);
+  ['NL / UN-LOADING JAM', 'New Setting', 'No Power', 'No Utility', 'B/D', 'Quality Set up', 'Other']);
+eq('the plant\'s ten categories ship as defaults', DEFAULT_DOWNTIME_ASK.reasons.length, 10);
 eq('offline gets no buttons', reasonsFor(DEFAULT_DOWNTIME_ASK, 'offline'), []);
 
 // Shift bucketing — the plant's real rotation, with the overnight shift wrapping.
