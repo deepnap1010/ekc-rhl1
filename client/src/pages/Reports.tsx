@@ -27,6 +27,7 @@ import TargetsReport from '../components/TargetsReport';
 import DiaScheduleReport from '../components/DiaScheduleReport';
 import { ScheduleDiaModal } from '../components/ScheduleDia';
 import { useAuthStore } from '../store/auth';
+import { toast } from '../store/toast';
 import type { MachineActivityRow, MetricValue } from '../types/api';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 
@@ -98,25 +99,22 @@ export default function Reports() {
   const prodRows = useMemo(() => [...rows].sort((a, b) => (b.production ?? -1) - (a.production ?? -1) || a.code.localeCompare(b.code)), [rows]);
   const downRows = useMemo(() => rows.filter((r) => downOf(r) > 0).sort((a, b) => downOf(b) - downOf(a)), [rows]);
 
-  // Export the ACTIVE tab's (already filtered) dataset — never the whole database.
-  const exportCsv = () => {
-    const suffix = machineId ? `_${machineId}` : '';
-    if (tab === 'production' && prodRows.length) {
-      const header = 'Machine,Type,Counter,State,Readings,Output';
-      const lines = prodRows.map((m) => [m.code, m.type ?? '', m.productionKey ?? '', m.status, m.readings, m.production ?? ''].join(','));
-      download([header, ...lines].join('\n'), `production_report${suffix}.csv`);
-    } else if (tab === 'downtime' && downRows.length) {
-      const header = 'Machine,Idle (ms),Stopped (ms),Downtime (ms),Signal lost (ms)';
-      const lines = downRows.map((m) => [m.code, m.idleMs, m.stoppedMs, downOf(m), m.offlineMs].join(','));
-      download([header, ...lines].join('\n'), `downtime_report${suffix}.csv`);
-    } else if (tab === 'reliability' && relData?.machines?.length) {
-      const header = 'Machine,Events,Downtime (ms),Availability (%),MTTR (ms),MTBF (ms)';
-      const lines = relData.machines.map((m) => [m.machineId, m.events, m.downtimeMs, m.availability, m.mttrMs, m.mtbfMs].join(','));
-      download([header, ...lines].join('\n'), `reliability_report${suffix}.csv`);
+  // The whole review — every sheet, this selection — as one workbook built
+  // server-side from the same engines these tabs read.
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async (): Promise<void> => {
+    if (!fromISO || !toISO) return;
+    setExporting(true);
+    try {
+      const blob = await reportsApi.exportWorkbook({ from: fromISO, to: toISO, machineId: mid, tz: -new Date().getTimezoneOffset(), label: windowLabel });
+      const day = (iso: string): string => iso.slice(0, 10);
+      saveBlob(blob, `EKC_SmartFactory_${machineId ? `${machineId.replace(/[^A-Za-z0-9]+/g, '_')}_` : ''}${day(fromISO)}_to_${day(toISO)}.xlsx`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not build the workbook');
+    } finally {
+      setExporting(false);
     }
   };
-  // Targets carries its own export (its CSV depends on tab-local state).
-  const exportable = tab !== 'overview' && tab !== 'targets' && tab !== 'dia';
   const scopeLabel = machineId ? mName(machineId) : 'All machines';
 
   return (
@@ -124,11 +122,13 @@ export default function Reports() {
       <PageHeader
         title="Reports"
         subtitle={`${scopeLabel} · ${windowLabel}`}
-        right={exportable ? (
-          <button onClick={exportCsv} className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20">
-            <Download size={14} /> Export CSV
+        right={(
+          <button onClick={() => { void exportExcel(); }} disabled={exporting || !fromISO}
+            title="Every sheet of this review — summary, machines, targets, downtime events and reasons, production events, reliability — for the selected window"
+            className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20 disabled:opacity-60">
+            <Download size={14} /> {exporting ? 'Preparing workbook…' : 'Export Excel'}
           </button>
-        ) : undefined}
+        )}
       />
 
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
@@ -510,8 +510,7 @@ function AnalysisCard({ title, subtitle, icon: Icon, children }: { title: string
   );
 }
 
-function download(content: string, filename: string) {
-  const blob = new Blob([content], { type: 'text/csv' });
+function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

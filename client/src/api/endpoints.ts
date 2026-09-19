@@ -127,6 +127,10 @@ export const alertsApi = {
 // Reports page reads them off /machines/activity, the Dashboard's dataset.
 export const reportsApi = {
   reliability: (params?: Params) => get<ReliabilityReport>('/reports/reliability', params),
+  // The whole review as one .xlsx — a Blob the caller saves (the response
+  // interceptor hands back `data`, which for a blob request IS the file).
+  exportWorkbook: (params: Params) =>
+    api.get('/reports/export', { params, responseType: 'blob' }) as unknown as Promise<Blob>,
 };
 
 export interface DiaWritePayload {

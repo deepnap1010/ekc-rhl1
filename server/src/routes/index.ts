@@ -8,6 +8,7 @@ import * as dash from '../controllers/dashboard.controller.js';
 import * as rbac from '../controllers/rbac.controller.js';
 import * as downtime from '../controllers/downtime.controller.js';
 import * as reports from '../controllers/reports.controller.js';
+import * as exp from '../controllers/export.controller.js';
 import * as alerts from '../controllers/alerts.controller.js';
 import * as events from '../controllers/events.controller.js';
 import * as config from '../controllers/config.controller.js';
@@ -101,6 +102,7 @@ r.get('/production/audit', authorize('production', 'admin'), prod.listAudit);
 // Production / downtime / overview reports read /machines/activity — the
 // Dashboard's dataset — so the page and the report can never disagree.
 r.get('/reports/reliability', authorize('reports'), reports.reliabilityReport);
+r.get('/reports/export', authorize('reports'), exp.exportWorkbook);   // the whole review as one .xlsx
 
 // Alerts — fleet-wide, derived live from the anomaly engine
 r.get('/alerts', authorize('alerts'), alerts.listAlerts);
