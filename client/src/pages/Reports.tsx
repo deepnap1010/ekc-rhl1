@@ -124,7 +124,7 @@ export default function Reports() {
         subtitle={`${scopeLabel} · ${windowLabel}`}
         right={(
           <button onClick={() => { void exportExcel(); }} disabled={exporting || !fromISO}
-            title="Every sheet of this review — summary, machines, targets, downtime events and reasons, production events, reliability — for the selected window"
+            title="The plant's review workbook for the selected window — PRODUCTION ANALYSIS day-matrix, PER SHIFT, the daily PRODUCTION REPORT with norms and idle hours by reason, plus machines, by-dia, targets, downtime and production detail"
             className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20 disabled:opacity-60">
             <Download size={14} /> {exporting ? 'Preparing workbook…' : 'Export Excel'}
           </button>
