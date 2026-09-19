@@ -8,7 +8,7 @@ import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, fmtDate } from '../lib/format';
+import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
@@ -21,8 +21,8 @@ import { statusCounts, liveStatus, isStale } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
-import { resolveRange, todayWindow, clampToNow, dayWindowAt } from '../store/filters';
-import { currentShift, shiftWindowAt } from '../lib/settings';
+import { resolveRange, todayWindow, clampToNow } from '../store/filters';
+import { currentShift } from '../lib/settings';
 import { useMachineName, useMachineTitle, hasCustomName, useAdoptLocalNames } from '../lib/machineName';
 import ParametersModal from '../components/machine/MachineParameters';
 import type { Machine, MachineTick, MachineActivityRow, MachineAssignment } from '../types/api';
@@ -444,7 +444,7 @@ export default function Machines() {
             {machines.map((m) => {
               const ref = m.code || m.machineId || '';
               return (
-                <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]} shiftName={shiftName}
+                <MachineCard key={m.code || m._id} machine={m} liveTick={live[m.code || m._id]}
                   activity={actBy.get(ref)}
                   assignment={asgBy.get(String(ref).toUpperCase())}
                   dayFrom={dayFromISO} dayTo={dayToISO} breaks={cfgBreaks} winLabel={winLabel}
@@ -481,12 +481,11 @@ interface MachineCardProps {
   dayFrom?: string;                     // the window `activity` covers — a shift, or the production day
   dayTo?: string;
   winLabel?: string;                    // what to call it: "Shift A", "Today"
-  shiftName?: string;                   // '' = full day; set = the page is shift-wise, so a dark card answers for its last SHIFT 
   breaks?: { name: string; start: string; end: string }[];   // planned pauses — off the target
   onParams: () => void;                 // open the parameters modal IN PLACE
 }
 
-function MachineCard({ machine, liveTick, activity: liveActivity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', shiftName = '', onParams }: MachineCardProps) {
+function MachineCard({ machine, liveTick, activity: liveActivity, assignment, dayFrom, dayTo, breaks, winLabel = 'Today', onParams }: MachineCardProps) {
   const nav       = useNavigate();
   const cp        = liveTick?.currentParameters || machine.currentParameters || {};
   // Flatten — raw/nested socket payloads must not reach the card unflattened.
@@ -495,50 +494,16 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   const status    = liveStatus(machine, liveTick);
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
 
-  // ── A dark machine answers for its LAST ACTIVE DAY ───────────────────────
-  // Signal gone means the selected window holds nothing: today's card read
-  // "49 pcs" (a frozen register) over four tiles of zero. What a supervisor
-  // actually wants of a dead collector is the last day it was heard — that
-  // day's REAL production and its REAL runtime — clearly dated as that day.
-  // One extra activity fetch per dark machine, for a day that is finished and
-  // cached hard; healthy machines take none of this path.
+  // ── The card answers for the shift on the floor, dark or not ─────────────
+  // A machine that lost signal reads the CURRENT window like every card beside
+  // it: the pieces counted since the shift began — 0 when nothing was heard —
+  // under the Signal-lost badge and the time it went quiet. Showing the last
+  // shift it was heard in, dated, was tried: at handover a supervisor read
+  // "189 pcs" on a machine that had made nothing this shift. That figure is
+  // History's, not the board's.
   const dark = status === 'network' || status === 'offline';
-  const { shifts: cardShifts } = useAppConfig();
-  // Only a FINISHED day. A machine that went quiet twenty minutes ago has
-  // "today" as its last active day — a window whose end would have to be
-  // clamped to a moving now, which walks the react-query key forward every
-  // minute: a fresh key each minute means staleTime never applies and every
-  // dark card would re-run a full-fleet day reconstruction sixty times an hour,
-  // flickering between two windows while each fetch was in flight. And the
-  // label would lie: a 15-minute collector hiccup is not a finished historical
-  // day. Dark-today machines keep the live window plus the Last-known wrapper.
-  //
-  // In SHIFT mode the unit is the shift, not the day: a machine that went
-  // quiet in Shift A, looked at during Shift B, has a finished window with
-  // real figures — Shift A — and showing "today's day" (unfinished) instead
-  // dropped it to the lifetime register and four zero tiles. The shift that
-  // contains the last reading is the honest answer, dated and named.
-  const lastAt = dark && lastSeen ? new Date(lastSeen) : null;
-  const lastShiftWin = lastAt && shiftName ? shiftWindowAt(cardShifts, lastAt) : null;
-  const lastWin = lastAt ? (lastShiftWin ? { from: lastShiftWin.from, to: lastShiftWin.to } : dayWindowAt(cardShifts, lastAt)) : null;
-  const lastDay = lastWin && lastWin.to.getTime() <= Date.now() ? lastWin : null;
-  const lastUnit = lastShiftWin ? 'shift' : 'day';
-  const lastLabel = lastDay ? (lastShiftWin ? `${lastShiftWin.shift.name} · ${fmtDate(lastDay.from)}` : fmtDate(lastDay.from)) : '';
-  const lastFromISO = lastDay?.from.toISOString();
-  const lastToISO = lastDay?.to.toISOString();
-  const { data: lastDayAct } = useQuery({
-    queryKey: ['machine-activity-today', lastFromISO, lastToISO],
-    queryFn: () => machineApi.activity({ from: lastFromISO as string, to: lastToISO as string }),
-    enabled: !!lastDay,
-    staleTime: 10 * 60_000,        // a finished day does not change
-    retry: false,
-  });
-  const cardRef = String(machine.code || machine.machineId || machine._id || '');
-  const lastRow = dark
-    ? (lastDayAct?.data || []).find((r) => r.code.toUpperCase() === cardRef.toUpperCase())
-    : undefined;
   // Every figure below — headline, target bar, the four tiles — reads THIS.
-  const activity = dark && lastRow ? lastRow : liveActivity;
+  const activity = liveActivity;
   const id        = machine.code || machine._id;
   const code      = machine.code || machine.machineId || machine.name || '—';
   const nameLabel = machine.name || machine.machineName;
@@ -623,54 +588,31 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // was the reset value anyway. So the window's pieces are the headline and the
   // raw counter drops to the sub-line. Furnaces keep their live temperature:
   // heat now is the thing you act on, and their average already sits below it.
-  // Dark, the hero may ONLY carry the last day's own number. The label above it
-  // is dated, and until the last-day row has actually arrived (or if its fetch
-  // failed) `activity` still holds the LIVE window's row — a machine that died
-  // mid-shift has real pieces there, and printing them under a dated
-  // "last day with signal" header pairs today's count with yesterday's name.
-  // While the row is missing, madeToday stays null and the Last-known wrapper
-  // covers the card honestly.
-  //
-  // The gate is lastDAY, not lastRow. A machine that went quiet ten minutes ago
-  // has no FINISHED last day to fall back to, so it keeps the live window —
-  // which still holds the pieces it made this morning before it went quiet, the
-  // most useful number on the card. Gating on lastRow instead threw that away
-  // for every short outage and dropped the headline to the machine's lifetime
-  // register: SPG02, eleven minutes dark, read "1,977 pcs" where every card
-  // beside it read this shift's twenty-odd.
-  const madeToday = furnace ? null
-    : dark && lastDay ? lastRow?.production ?? null
-      : activity?.production ?? null;
+  // A register machine nobody heard this shift made nothing anyone counted:
+  // that is 0 pcs under the Signal-lost badge, not a "Last known" register —
+  // SPG05 went quiet in Shift A and at handover still read Shift A's 189.
   const counterNow = furnace ? null : productionValue(params);
+  const madeToday = furnace ? null
+    : activity?.production ?? (counterNow != null ? 0 : null);
   const dayHero: Headline | null = madeToday == null ? null : {
-    // Dark, the headline is DATED — its window is the last day with signal,
-    // not the one everyone else on the page is answering for.
-    label: `Production · ${dark && lastDay ? lastLabel : winLabel}`,
+    label: `Production · ${winLabel}`,
     value: fmtNum(madeToday),
     unit: 'pcs',
     tone: dark ? 'neutral' : madeToday > 0 ? 'good' : 'neutral',
-    // A borrowed count says so instead of quoting a counter this machine
-    // doesn't have.
-    // A derived count has no register to quote: the server counted edges of a
-    // signal (config/derivedCounters), so the sub-line says that instead.
-    sub: dark && lastDay
-      ? `last ${lastUnit} with signal — lost ${fmtTime(lastSeen)}`
-      : dark
-        // Still the live window's own count — say when it stopped growing, and
-        // keep the register beside it. The window's pieces are the comparable
-        // number and belong in the headline; the lifetime counter answers a
-        // different question and belongs here, where its scale cannot be
-        // mistaken for this shift's output.
-        ? `${counterNow != null ? `counter reads ${fmtNum(counterNow)} · ` : ''}signal lost ${fmtTime(lastSeen)}`
-        : borrowedFrom(activity)
-        ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
-          : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
+    // Dark: the window's own count — say when it stopped growing, and keep the
+    // register beside it, where its scale cannot be mistaken for this shift's
+    // output. Live: a borrowed count says so instead of quoting a counter this
+    // machine doesn't have; a derived count has no register to quote, so the
+    // sub-line names the signal the server counted edges of.
+    sub: dark
+      ? `${counterNow != null ? `counter reads ${fmtNum(counterNow)} · ` : ''}signal lost ${fmtTime(lastSeen)}`
+      : borrowedFrom(activity)
+      ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
+        : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
   };
-  // A dark machine with NO reconstructable last day (never reported, or its
-  // last-day fetch found nothing) still must not pass off a frozen register as
-  // the present: its fallback hero goes out as "Last known", with the time. A
-  // dark machine WITH a last-day row already built an honest, dated headline
-  // above and needs no wrapper.
+  // A dark machine with no counter at all still must not pass off a frozen
+  // signal as the present: its fallback hero goes out as "Last known", with
+  // the time.
   const base = dayHero ?? hero;
   const show = dark && !dayHero
     ? { ...base, label: `Last known · ${base.label}`, tone: 'neutral' as const, sub: `as of ${fmtTime(lastSeen)}` }
@@ -771,7 +713,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
           {/* On a furnace the day-average sits under the live reading. */}
           {furnace && activity?.avgTemp != null && (
             <div className="text-[10px] mt-1">
-              <span className="text-steel">{dark && lastRow && lastDay ? `${lastLabel} avg ` : 'today avg '}</span>
+              <span className="text-steel">today avg </span>
               <span className="data font-bold text-idle">{fmtNum(activity.avgTemp)}</span>
               <span className="text-steel"> °C</span>
             </div>
@@ -824,11 +766,6 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
       {/* TODAY's breakdown: uptime, idle, stopped, and the downtime TOTAL
           (idle + stopped + signal-lost). */}
       <div className="mt-auto">
-      {dark && lastRow && lastDay && (
-        <div className="text-[10px] text-steel/70 mb-1 px-0.5">
-          {lastLabel} — last {lastUnit} with signal
-        </div>
-      )}
       <div className="grid grid-cols-4 gap-1.5">
         <TimeStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
         <TimeStat label="Idle" ms={activity?.idleMs} color={AMBER} />
