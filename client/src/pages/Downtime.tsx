@@ -1,7 +1,7 @@
 // client/src/pages/Downtime.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { Clock, AlertTriangle, Activity, Pencil, Check } from 'lucide-react';
+import { Clock, AlertTriangle, Activity, Pencil, Check, PauseCircle } from 'lucide-react';
 import { downtimeApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { StatCard, Spinner } from '../components/ui';
@@ -9,6 +9,8 @@ import PageHeader from '../components/PageHeader';
 import RangeFilter from '../components/RangeFilter';
 import Pager, { DEFAULT_PAGE_SIZE } from '../components/Pager';
 import DowntimeReasons from '../components/DowntimeReasons';
+import Modal from '../components/Modal';
+import { DowntimeReasonCard, reasonsFor } from '../components/DowntimeReasonPopup';
 import { useRangeFilter } from '../hooks/useRangeFilter';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { presetLabel, shiftApplies } from '../store/filters';
@@ -318,49 +320,29 @@ interface ReasonModalProps {
 }
 
 function ReasonModal({ event, onClose, onSaved }: ReasonModalProps) {
-  const mName = useMachineName();
-  const [reason, setReason] = useState(event.reason || '');
-  const user = useAuthStore((s) => s.user);
-  // The admin's reasons for this kind of span — the same buttons the operator
-  // popup offers — with the text box for anything else.
+  // The operator's popup, opened by hand: same card, same big buttons for this
+  // kind of span, same free-text box — a supervisor filling in a reason sees
+  // exactly what the operator would have. Free text is always allowed here;
+  // the admin's switch only governs operators.
   const { downtimeAsk } = useAppConfig();
-  const listed = (downtimeAsk?.reasons || []).filter((r) => r.types.includes(event.type as 'idle' | 'stopped')).map((r) => r.label);
   const mut = useMutation({
-    mutationFn: () => downtimeApi.updateReason(event._id, { reason, reportedBy: user?.name || 'Operator' }),
+    mutationFn: (reason: string) => downtimeApi.updateReason(event._id, { reason }),
     onSuccess: onSaved,
   });
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="card p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
-        <h3 className="font-semibold mb-1">{event.reason ? 'Edit' : 'Log'} Downtime Reason</h3>
-        <p className="text-xs text-steel mb-4">{mName(event.machineId)} — {event.type}</p>
-        {listed.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {listed.map((l) => (
-              <button key={l} type="button" onClick={() => setReason(l)}
-                className={`pill border transition-colors ${reason.trim().toLowerCase() === l.toLowerCase() ? 'bg-accent/10 text-accent border-accent/30' : 'border-line text-steel hover:text-primary'}`}>{l}</button>
-            ))}
-          </div>
-        )}
-        <textarea
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="e.g. Planned maintenance, material shortage, operator break…"
-          rows={3}
-          className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent resize-none"
-        />
-        <div className="flex gap-2 mt-4">
-          <button onClick={onClose} className="flex-1 py-2 rounded-lg border border-line text-sm text-steel hover:bg-white/5">Cancel</button>
-          <button
-            onClick={() => mut.mutate()}
-            disabled={mut.isPending || !reason.trim()}
-            className="flex-1 py-2 rounded-lg bg-accent text-base text-sm font-medium disabled:opacity-60"
-          >
-            {mut.isPending ? 'Saving…' : 'Save'}
-          </button>
+    <Modal title={event.reason ? 'Change downtime reason' : 'Log downtime reason'} subtitle="The same choices the operator's popup offers" icon={PauseCircle}
+      onClose={onClose} maxW="max-w-md">
+      <div className="space-y-3">
+        <DowntimeReasonCard span={event} reasons={reasonsFor(downtimeAsk, event.type)} allowCustom initial={event.reason || ''}
+          busy={mut.isPending} onAnswer={(reason) => mut.mutate(reason)} />
+        <div className="flex items-center justify-between text-[11px] text-steel">
+          <span>Tap a reason to save it{event.reason ? ' in place of the recorded one' : ''}.</span>
+          {event.reason && (
+            <button disabled={mut.isPending} onClick={() => mut.mutate('')} className="hover:text-stopped disabled:opacity-50">Remove the reason</button>
+          )}
         </div>
+        {mut.isError && <div className="text-xs text-stopped">{mut.error instanceof Error ? mut.error.message : 'Could not save — try again'}</div>}
       </div>
-    </div>
+    </Modal>
   );
 }

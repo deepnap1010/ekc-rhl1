@@ -11,6 +11,10 @@
 //     still be there when they come back;
 //   · Esc / backdrop is a local skip: the ask returns after a reload or on
 //     another device. Only a real answer or a real timeout is written.
+//
+// The card itself (machine, how long, the big reason buttons, the free-text
+// box) is exported: the Downtime page's "Add reason" opens the very same
+// screen for a supervisor, so both sides of the plant learn one dialog.
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { PauseCircle } from 'lucide-react';
@@ -21,14 +25,83 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { toast } from '../store/toast';
 import { fmtDuration, fmtTime } from '../lib/format';
 import { useMachineName } from '../lib/machineName';
+import type { DowntimeEvent, DowntimeAskConfig } from '../types/api';
 
-const TYPE_COLOR: Record<string, string> = { idle: '#D97706', stopped: '#DC2626' };
+const TYPE_COLOR: Record<string, string> = { idle: '#D97706', stopped: '#DC2626', offline: '#64748B' };
+
+/** The admin's reason buttons for a span of this kind. */
+export const reasonsFor = (cfg: DowntimeAskConfig | null, type: string): string[] =>
+  (cfg?.reasons || []).filter((r) => r.types.includes(type as 'idle' | 'stopped')).map((r) => r.label);
+
+/** One downtime span asking for its reason — the operator popup's body,
+ *  shared with the Downtime page. Big touch targets: read at arm's length
+ *  on a shop floor. `onAnswer` gets the chosen or typed words. */
+export function DowntimeReasonCard({ span, reasons, allowCustom, initial = '', busy = false, onAnswer }: {
+  span: DowntimeEvent; reasons: string[]; allowCustom: boolean; initial?: string; busy?: boolean;
+  onAnswer: (reason: string) => void;
+}): JSX.Element {
+  const mName = useMachineName();
+  const [custom, setCustom] = useState(initial);
+  // A new span (the popup advancing, another row on the Downtime page) starts
+  // from its own words, not the previous one's half-typed text.
+  useEffect(() => { setCustom(initial); }, [initial, span._id]);
+  const color = TYPE_COLOR[span.type] || '#64748B';
+  const open = !span.endedAt;
+  const lastedMs = open ? Date.now() - new Date(span.startedAt).getTime() : (span.durationMs || 0);
+  const typed = custom.trim();
+  const current = (span.reason || '').trim().toLowerCase();
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border px-4 py-3" style={{ borderColor: `${color}55`, background: `${color}0F` }}>
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="font-semibold text-primary truncate">{mName(span.machineId)}</span>
+          <span className="pill font-bold uppercase" style={{ background: `${color}1A`, color }}>{span.type}</span>
+        </div>
+        <div className="mt-1 flex items-baseline gap-2">
+          <span className="data text-2xl font-bold text-primary tabular-nums">{fmtDuration(lastedMs)}</span>
+          <span className="text-[11px] text-steel">
+            {open ? `since ${fmtTime(span.startedAt)} · still ${span.type}` : `${fmtTime(span.startedAt)} → ${fmtTime(span.endedAt)}`}
+          </span>
+        </div>
+        {span.reason && (
+          <div className="text-[11px] text-steel mt-1">Recorded reason: <span className="font-semibold text-primary">{span.reason}</span>{span.reportedBy ? ` — ${span.reportedBy}` : ''}</div>
+        )}
+      </div>
+
+      {reasons.length > 0 && (
+        <div className="grid grid-cols-2 gap-2.5">
+          {reasons.map((label) => {
+            const chosen = label.toLowerCase() === current;
+            return (
+              <button key={label} disabled={busy} onClick={() => onAnswer(label)}
+                className="rounded-xl border-2 py-3.5 px-3 text-sm font-semibold transition-colors hover:opacity-90 active:scale-[0.98] disabled:opacity-60"
+                style={{ borderColor: chosen ? color : `${color}55`, background: chosen ? `${color}33` : `${color}14`, color }}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {allowCustom && (
+        <div className="flex gap-2">
+          <input value={custom} maxLength={200} disabled={busy} onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && typed) { e.preventDefault(); onAnswer(typed); } }}
+            placeholder={reasons.length ? 'Another reason…' : 'Type the reason…'}
+            className="flex-1 border border-line rounded-lg px-3 py-2 text-sm bg-base text-primary outline-none focus:border-accent disabled:opacity-60" />
+          <button disabled={!typed || busy} onClick={() => onAnswer(typed)}
+            className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-semibold disabled:opacity-50">{busy ? 'Saving…' : 'Save'}</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function DowntimeReasonPopup(): JSX.Element | null {
   const user = useAuthStore((s) => s.user);
   const can = useAuthStore((s) => s.can);
   const { downtimeAsk } = useAppConfig();
-  const mName = useMachineName();
   const qc = useQueryClient();
   const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
   const active = !!downtimeAsk?.enabled && isOperator && can('production', 'view');
@@ -44,7 +117,6 @@ export function DowntimeReasonPopup(): JSX.Element | null {
   const rows = (data || []).filter((r) => !handled.includes(r._id));
   const current = rows[0];
   const currentId = current?._id;
-  const [custom, setCustom] = useState('');
 
   const mut = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string | null }) =>
@@ -65,7 +137,6 @@ export function DowntimeReasonPopup(): JSX.Element | null {
   });
   const answer = (id: string, reason: string | null): void => {
     setHandled((h) => [...h, id]);
-    setCustom('');
     mut.mutate({ id, reason });
   };
 
@@ -85,55 +156,17 @@ export function DowntimeReasonPopup(): JSX.Element | null {
 
   if (!active || !current) return null;
 
-  const color = TYPE_COLOR[current.type] || '#64748B';
   const open = !current.endedAt;
-  const lastedMs = open ? Date.now() - new Date(current.startedAt).getTime() : (current.durationMs || 0);
-  const reasons = (downtimeAsk?.reasons || []).filter((r) => r.types.includes(current.type as 'idle' | 'stopped')).map((r) => r.label);
   const pct = timeoutSec > 0 ? Math.max(0, Math.min(100, (left / timeoutSec) * 100)) : 0;
-  const typed = custom.trim();
 
   return (
     <Modal title={`Machine ${current.type}${open ? '' : ' earlier'}`} subtitle="What was the reason?" icon={PauseCircle}
       onClose={() => setHandled((h) => [...h, current._id])} maxW="max-w-md">
       <div className="space-y-4">
-        <div className="rounded-xl border px-4 py-3" style={{ borderColor: `${color}55`, background: `${color}0F` }}>
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="font-semibold text-primary truncate">{mName(current.machineId)}</span>
-            <span className="pill font-bold uppercase" style={{ background: `${color}1A`, color }}>{current.type}</span>
-          </div>
-          <div className="mt-1 flex items-baseline gap-2">
-            <span className="data text-2xl font-bold text-primary tabular-nums">{fmtDuration(lastedMs)}</span>
-            <span className="text-[11px] text-steel">
-              {open ? `since ${fmtTime(current.startedAt)} · still ${current.type}` : `${fmtTime(current.startedAt)} → ${fmtTime(current.endedAt)}`}
-            </span>
-          </div>
-          {rows.length > 1 && (
-            <div className="text-[11px] text-steel mt-1">{rows.length - 1} more waiting — each gets its own turn</div>
-          )}
-        </div>
-
-        {/* Big touch targets: this is read at arm's length on a shop floor. */}
-        {reasons.length > 0 && (
-          <div className="grid grid-cols-2 gap-2.5">
-            {reasons.map((label) => (
-              <button key={label} onClick={() => answer(current._id, label)}
-                className="rounded-xl border-2 py-3.5 px-3 text-sm font-semibold transition-colors hover:opacity-90 active:scale-[0.98]"
-                style={{ borderColor: `${color}55`, background: `${color}14`, color }}>
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {downtimeAsk?.allowCustom && (
-          <div className="flex gap-2">
-            <input value={custom} maxLength={200} onChange={(e) => setCustom(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && typed) { e.preventDefault(); answer(current._id, typed); } }}
-              placeholder={reasons.length ? 'Another reason…' : 'Type the reason…'}
-              className="flex-1 border border-line rounded-lg px-3 py-2 text-sm bg-base text-primary outline-none focus:border-accent" />
-            <button disabled={!typed} onClick={() => answer(current._id, typed)}
-              className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-semibold disabled:opacity-50">Save</button>
-          </div>
+        <DowntimeReasonCard span={current} reasons={reasonsFor(downtimeAsk, current.type)} allowCustom={!!downtimeAsk?.allowCustom}
+          onAnswer={(reason) => answer(current._id, reason)} />
+        {rows.length > 1 && (
+          <div className="text-[11px] text-steel">{rows.length - 1} more waiting — each gets its own turn</div>
         )}
 
         {timeoutSec > 0 ? (
