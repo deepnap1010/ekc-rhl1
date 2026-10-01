@@ -24,6 +24,7 @@ import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { clipSpans, type Span } from './activity.service.js';
 import { productionEventsBy } from './counters.service.js';
+import { loadCorrections, stateCuts, cutOut } from '../utils/corrections.js';
 
 const IST_MS = 5.5 * 3_600_000;
 const HOUR = 3_600_000;
@@ -215,7 +216,13 @@ export async function computeTargets(
     arr.push({ type: ev.type as Span['type'], s, e });
     rawSpans.set(ev.machineId, arr);
   }
-  const spansBy = new Map([...rawSpans].map(([ref, sp]) => [ref, clipSpans(sp)]));
+  // A period the error-correction book says was something else is nobody's
+  // downtime: cut it out of the spans, as the cards and the plant report do.
+  const corrT = await loadCorrections(machines, fromD, toD);
+  const spansBy = new Map([...rawSpans].map(([ref, sp]) => {
+    const cuts = stateCuts(corrT.get(ref.toUpperCase()), fromD.getTime(), toD.getTime());
+    return [ref, clipSpans(sp).flatMap((s) => cutOut(s.s, s.e, cuts).map((p) => ({ ...s, ...p })))] as [string, Span[]];
+  }));
 
   // Planned daily breaks (targets exclude them) and operator sessions (rows are
   // labelled — and split — by who was on the machine).

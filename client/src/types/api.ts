@@ -232,6 +232,27 @@ export interface MachineActivityRow {
   productionLagMs: number;        // how far behind that count runs here
   avgTemp: number | null;         // mean MEASURED temperature over the range (furnaces)
   tempZones: number;              // work zones that mean was taken over (0 = no temp signal)
+  corrected?: boolean;            // a correction from the error-correction book overlaps the range
+}
+
+// The error-correction book: what a machine really did over a period, said
+// by someone the admin trusts with it. Never edits the PLC's data; every
+// figure overlapping the period reads this instead.
+export type CorrectionState = 'running' | 'idle' | 'stopped';
+export interface MachineCorrection {
+  _id: string;
+  machineRef: string;
+  from: string;
+  to: string;
+  state: CorrectionState | null;   // null = as recorded
+  pieces: number | null;           // null = as recorded
+  downtimeReason: string;
+  reason: string;
+  createdBy: { id: string; name: string };
+  createdAt: string;
+  revokedAt: string | null;
+  revokedBy: { id: string; name: string } | null;
+  revokeReason: string;
 }
 
 // ─── Telemetry ─────────────────────────────────────────────────────────────

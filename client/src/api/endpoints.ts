@@ -13,6 +13,8 @@ import type {
   AppConfigShape,
   NotifyFlowConfig,
   DepartmentRow,
+  MachineCorrection,
+  CorrectionState,
   ProductionByType,
   Machine,
   MachineSummary,
@@ -200,6 +202,14 @@ export const rbacApi = {
   departments: () => get<DepartmentRow[]>('/rbac/departments'),
   updateDepartments: (departments: Pick<DepartmentRow, 'key' | 'name' | 'accent'>[]) =>
     api.put('/rbac/departments', { departments }) as unknown as Promise<ApiResponse<DepartmentRow[]>>,
+};
+
+// The error-correction book — needs the `corrections` module (view / create / delete).
+export const correctionApi = {
+  list: (params?: { machineId?: string; from?: string; to?: string; revoked?: '1' }) => get<MachineCorrection[]>('/corrections', params),
+  create: (body: { machineRef: string; from: string; to: string; state: CorrectionState | null; pieces: number | null; downtimeReason?: string; reason: string }) =>
+    post<MachineCorrection>('/corrections', body),
+  revoke: (id: string, reason?: string) => post<{ revoked: boolean }>(`/corrections/${id}/revoke`, { reason: reason || '' }),
 };
 
 export const userApi = {

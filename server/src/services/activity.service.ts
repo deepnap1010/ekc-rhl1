@@ -18,6 +18,7 @@ import { cached } from '../utils/cache.js';
 import { lineLinkFor, normRef } from '../config/lineLinks.js';
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEvents } from './derivedCounter.service.js';
+import { loadCorrections, overlapOf, piecesWithin } from '../utils/corrections.js';
 
 export interface ActivityRow {
   code: string;
@@ -44,6 +45,10 @@ export interface ActivityRow {
   // furnace shows this where a press shows production.
   avgTemp: number | null;
   tempZones: number;         // how many zones that mean was taken over
+  // True when a correction from the error-correction book overlaps the
+  // window: some of these figures are what a person said, not what the
+  // machine sent.
+  corrected: boolean;
 }
 
 export interface ActivityResult {
@@ -210,7 +215,10 @@ export async function computeActivity(
   scope: string[] | null,
   fromD: Date,
   toD: Date,
-  only?: string[] | null
+  only?: string[] | null,
+  // raw: what the telemetry says, with no correction applied — what the
+  // correction layer itself asks for, to know what it is replacing.
+  opts?: { raw?: boolean },
 ): Promise<ActivityResult> {
   // Only elapsed time counts — a "today 00:00–23:59" range picked at 14:00 must
   // not report the future 10 hours as running time.
@@ -607,6 +615,7 @@ export async function computeActivity(
       productionLagMs: 0,
       avgTemp: heat ? Math.round(heat.avgTemp * 10) / 10 : null,
       tempZones: heat?.zones ?? 0,
+      corrected: false,
     };
   });
 
@@ -668,5 +677,92 @@ export async function computeActivity(
     row.productionLagMs = link.delayMs;
   }
 
+  if (!opts?.raw) {
+    // The register's own steps inside a part of the window, net of the pieces
+    // classified away there — the exact mirror of what correctSteps drops, so
+    // the card and the report replace the same pieces. A machine that counts
+    // some other way (derived counter, line link) has no series here; its raw
+    // figure for the part comes from the engine run the time buckets use.
+    const rawPiecesIn = (ref: string, s: number, e: number): number | null => {
+      const pts = seriesNorm.get(normRef(ref));
+      if (!pts || derivedCounterFor(ref) || lineLinkFor(ref)) return null;
+      const steps = stepEvents(pts.filter((x) => x.v != null).map((x) => ({ t: x.t, v: x.v as number })), PROD_STEP_PER_MIN)
+        .filter((ev) => ev.t >= s && ev.t < e).reduce((n, ev) => n + ev.made, 0);
+      const off = (excl.get(ref.toUpperCase()) || []).filter((x) => x.t >= s && x.t < e).reduce((n, x) => n + x.n, 0);
+      return Math.max(0, steps - off);
+    };
+    await applyCorrections(rows, scope, fromD, endD, { rawPiecesIn, binMs });
+  }
   return { rows, windowMs, from: fromD, to: endD };
+}
+
+// ── The error-correction book ─────────────────────────────────────────────────
+// A correction says what a machine really did over a period (models/
+// MachineCorrection). For the part of the period inside this window, the
+// engine's own figure for exactly that part is taken out and the correction
+// put in: the pieces that fall in the window (the same evenly laid steps the
+// report splits, so card and report agree) and, when it names a state, that
+// state for the whole part — including the part's DARK time, which the
+// engine booked as signal lost and the correction says was not. Everything
+// else the engine worked out stays. The four buckets are then held inside
+// the window again, the buckets no correction named paying first, so a
+// correction can never be trimmed away by the figure it replaces; and the
+// state is re-voted over observed time only, as the engine votes.
+// ponytail: the raw time for the part is a second (cached) engine run per
+// correction; the bridging grace at the part's edges can move a minute or
+// two between buckets. Corrections are rare and a minute is below what the
+// book is for.
+async function applyCorrections(
+  rows: ActivityRow[], scope: string[] | null, fromD: Date, endD: Date,
+  ctx: { rawPiecesIn: (ref: string, s: number, e: number) => number | null; binMs: number },
+): Promise<void> {
+  const corr = await loadCorrections(rows.map((r) => r.code), fromD, endD);
+  if (!corr.size) return;
+  const fromMs = fromD.getTime(), endMs = endD.getTime(), windowMs = endMs - fromMs;
+  const bucketOf = (state: 'running' | 'idle' | 'stopped'): 'runningMs' | 'idleMs' | 'stoppedMs' =>
+    state === 'running' ? 'runningMs' : state === 'idle' ? 'idleMs' : 'stoppedMs';
+  for (const row of rows) {
+    const list = corr.get(row.code.toUpperCase());
+    if (!list?.length) continue;
+    const fixed = new Set<'runningMs' | 'idleMs' | 'stoppedMs'>();
+    // The engine's envelope for this row: outside it the part was dark.
+    const es = row.firstSeen ? Math.max(new Date(row.firstSeen).getTime(), fromMs) : null;
+    const ee = row.lastSeen ? Math.min(new Date(row.lastSeen).getTime() + ctx.binMs + GRACE_MS, endMs) : null;
+    const hadRemainder = row.readings > 0 || row.offlineMs > 0;
+    for (const c of list) {
+      const o = overlapOf(c, fromMs, endMs);
+      if (!o) continue;
+      const raw = (await computeActivity(scope, new Date(o.s), new Date(o.e), [row.code], { raw: true })).rows.find((r) => r.code === row.code);
+      if (c.pieces != null) {
+        const was = ctx.rawPiecesIn(row.code, o.s, o.e) ?? raw?.production ?? 0;
+        row.production = Math.max(0, (row.production ?? 0) - was + piecesWithin(c, fromMs, endMs));
+      }
+      if (c.state) {
+        row.runningMs -= raw?.runningMs ?? 0; row.idleMs -= raw?.idleMs ?? 0;
+        row.stoppedMs -= raw?.stoppedMs ?? 0; row.offlineMs -= raw?.offlineMs ?? 0;
+        // The part's dark time is booked in the window's remainder, not in the
+        // raw run (which saw nothing and said nothing): take it out here.
+        if (hadRemainder) {
+          const seen = es != null && ee != null ? Math.max(0, Math.min(o.e, ee) - Math.max(o.s, es)) : 0;
+          row.offlineMs -= (o.e - o.s) - seen;
+        }
+        const k = bucketOf(c.state);
+        row[k] += o.e - o.s;
+        fixed.add(k);
+      }
+      row.corrected = true;
+    }
+    if (!row.corrected) continue;
+    for (const k of ['runningMs', 'idleMs', 'stoppedMs', 'offlineMs'] as const) row[k] = Math.max(0, Math.round(row[k]));
+    let excess = row.runningMs + row.idleMs + row.stoppedMs + row.offlineMs - windowMs;
+    const order = ([...(['offlineMs', 'idleMs', 'stoppedMs', 'runningMs'] as const).filter((k) => !(fixed as Set<string>).has(k)), ...fixed]);
+    for (const k of order) {
+      if (excess <= 0) break;
+      const cut = Math.min(row[k], excess);
+      row[k] -= cut; excess -= cut;
+    }
+    const observed: [string, number][] = [['running', row.runningMs], ['idle', row.idleMs], ['stopped', row.stoppedMs]];
+    observed.sort((a, b) => b[1] - a[1]);
+    if (observed[0][1] > 0) row.status = observed[0][0];
+  }
 }

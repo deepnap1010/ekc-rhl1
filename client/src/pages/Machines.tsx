@@ -2,7 +2,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Ruler, Waypoints, type LucideIcon } from 'lucide-react';
+import { Search, Filter, Layers, Activity, Pause, Square, ArrowRight, Calendar, X, Pencil, Eye, Ruler, Waypoints, Wrench, type LucideIcon } from 'lucide-react';
 import { machineApi , productionApi } from '../api/endpoints';
 import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
@@ -15,6 +15,7 @@ import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } fr
 import { useAuthStore } from '../store/auth';
 import { AssignDiaModal } from '../components/machine/AssignDia';
 import DiaTraceModal from '../components/machine/DiaTraceModal';
+import CorrectionModal from '../components/machine/CorrectionModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
 import { statusCounts, liveStatus, isStale } from '../lib/machineStatus';
@@ -371,6 +372,9 @@ export default function Machines() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <StatusPill status={r.status} />
+                          {r.corrected && (
+                            <span className="pill bg-idle/10 text-idle !text-[9px]" title="A correction from the error-correction book overlaps this range">corrected</span>
+                          )}
                           {r.live && (
                             <span className="inline-flex items-center gap-1 text-[10px] text-accent font-medium">
                               <span className="w-1.5 h-1.5 rounded-full bg-accent" /> Live data
@@ -520,6 +524,12 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   const [editing, setEditing] = useState(false);
   const [diaOpen, setDiaOpen] = useState(false);          // Assign-DIA modal, right from the card
   const [traceOpen, setTraceOpen] = useState(false);      // this machine's dia trail
+  // The error-correction book — its own RBAC module, nobody's until ticked.
+  // Any of its permissions opens the book; the modal itself knows which.
+  const [correctOpen, setCorrectOpen] = useState(false);
+  const canOf = useAuthStore((st) => st.can);
+  const canWriteCorrection = canOf('corrections', 'create');
+  const canCorrect = canWriteCorrection || canOf('corrections', 'view') || canOf('corrections', 'delete');
   const canSetDia = useAuthStore((st) => st.can)('production', 'update');
   // Renaming is an admin act: one name reaches every user, so one person owns it.
   const canRename = useAuthStore((st) => st.can)('machines', 'admin');
@@ -704,7 +714,12 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
       {/* Hero metric + inline sparkline */}
       <div className="mb-3 rounded-xl border border-line bg-base px-3.5 py-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-wide text-steel">{show.label}</div>
+          <div className="text-[10px] uppercase tracking-wide text-steel flex items-center gap-1.5">
+            {show.label}
+            {activity?.corrected && (
+              <span className="pill bg-idle/10 text-idle normal-case tracking-normal !text-[9px]" title="A correction from the error-correction book overlaps this window: part of these figures is what a person recorded, not what the machine sent">corrected</span>
+            )}
+          </div>
           <div className="flex items-baseline gap-1">
             <span className="data text-2xl font-bold leading-none" style={{ color: HEADLINE_TONE[show.tone] }}>{show.value}</span>
             {show.unit && <span className="text-sm font-medium text-steel">{show.unit}</span>}
@@ -786,6 +801,17 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
           >
             View History <ArrowRight size={11} className="transition-transform group-hover:translate-x-0.5" />
           </span>
+          {canCorrect && (
+            <span
+              role="button" tabIndex={0}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setCorrectOpen(true); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); setCorrectOpen(true); } }}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-line text-steel hover:text-accent hover:border-accent/40 font-medium transition-colors cursor-pointer"
+              title={canWriteCorrection ? 'Correct what this machine really did over a period' : 'The error-correction book for this machine'}
+            >
+              <Wrench size={11} /> {canWriteCorrection ? 'Correct' : 'Corrections'}
+            </span>
+          )}
           <span
             role="button" tabIndex={0}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onParams(); }}
@@ -800,6 +826,11 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     </Link>
     {diaOpen && <AssignDiaModal code={String(code).toUpperCase()} current={assignment ?? null} onClose={() => setDiaOpen(false)} />}
     {traceOpen && <DiaTraceModal code={String(code).toUpperCase()} onClose={() => setTraceOpen(false)} />}
+    {correctOpen && (
+      <CorrectionModal code={String(code)} name={String(customName || nameLabel || code)}
+        from={dayFrom || new Date(new Date().setHours(0, 0, 0, 0)).toISOString()} to={dayTo || new Date().toISOString()}
+        onClose={() => setCorrectOpen(false)} />
+    )}
     </>
   );
 }

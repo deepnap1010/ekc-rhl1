@@ -289,6 +289,7 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           <div className="rounded-lg border border-line bg-base px-4 py-3 mb-4">
             <div className="text-[10px] uppercase tracking-wide text-steel">
               {furnace ? 'Avg temperature' : avgKey ? prettyKey(avgKey) : 'Production'} · {winLabel}
+              {actRow?.corrected && <span className="pill bg-idle/10 text-idle normal-case tracking-normal !text-[9px] ml-1.5" title="A correction from the error-correction book overlaps this window: part of these figures is what a person recorded, not what the machine sent">corrected</span>}
             </div>
             {furnace ? (
               <>

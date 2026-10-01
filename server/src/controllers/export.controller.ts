@@ -28,6 +28,7 @@ import { MachineLabel } from '../models/MachineLabel.js';
 import { MachineAssignment } from '../models/MachineAssignment.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { MachineEvent } from '../models/MachineEvent.js';
+import { MachineCorrection } from '../models/MachineCorrection.js';
 import { fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
 import { refCandidates } from '../utils/machineRef.js';
@@ -340,7 +341,10 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
   const dayCols: Column[] = days.map((d) => ({ header: dayCell(d), key: dayKey(d), fmt: 'int', style: 'input', width: 7 }));
   const firstDay = dayKey(days[0] || ''), lastDay = dayKey(days[days.length - 1] || '');
   // A day outside the window, or one the machine was never heard on, is blank — not 0.
-  const dayVal = (x: MachineDay | undefined, d: string, v: number): number | null => (inWindow.has(d) && (x?.readings || 0) > 0 ? v : null);
+  // A day outside the window, or one the machine was never heard on, is blank — not 0;
+  // a day a correction speaks for is a figure, however dark the machine was.
+  const heard = (x: MachineDay | undefined): boolean => (x?.readings || 0) > 0 || !!x?.corrected;
+  const dayVal = (x: MachineDay | undefined, d: string, v: number): number | null => (inWindow.has(d) && heard(x) ? v : null);
   const matrixBlockHead = {
     title: `PRODUCTION ANALYSIS - MONTH ${period}`,
     note: `Pieces per production day (${shifts[0]?.start || '07:00'} → ${shifts[0]?.start || '07:00'} next day, plant clock) · ${scopeText} · yellow = counted pieces, white = formulas · ACHIEVE % = pieces made inside assigned hours ÷ required · working days: ${workingDays} (the AVG divisor) · blank = outside the window, or no signal from the machine that day`,
@@ -479,7 +483,7 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
   /** One PDWIP row for a machine on a day — shared by the report page and the daily log. */
   const pdwipRow = (r: ActivityRow, d: string, cum: number | null, withStatus: boolean): Row => {
     const x = md(r.code, d);
-    const has = !!counted.get(r.code.toUpperCase()) && (x?.readings || 0) > 0;
+    const has = !!counted.get(r.code.toUpperCase()) && heard(x);
     const hrs = reasonMsOf(x).map(hoursOf);
     const row: Row = {
       name: nameOf(r.code), section: familyOf(r.code),
@@ -742,7 +746,29 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
     }),
   }] };
 
-  const book = buildXlsx([summary, analysis, perShift, report, daily, machines, diaSheet, targetSheet, reasonSheet, downtimeSheet, prodSheet, reliabilitySheet], tzMin);
+  // ═══ 13 · Corrections — what a person said a machine really did ═════════
+  // Every figure above that overlaps one of these periods reads the
+  // correction, not the telemetry; the reviewer is owed the list.
+  const corrections = await MachineCorrection.find({ machineRef: { $in: ids }, from: { $lt: act.to }, to: { $gt: from } })
+    .sort({ from: 1 }).limit(MAX_ROWS).lean();
+  const correctionSheet: Sheet = { name: 'Corrections', blocks: [{
+    title: `ERROR CORRECTIONS — ${period}`,
+    note: corrections.length
+      ? 'Periods for which a person corrected what the telemetry recorded (the error-correction book). Inside each period every sheet in this workbook uses the correction — pieces, running / idle / stopped — instead of the recorded data; "revoked" rows no longer apply and are listed for the record.'
+      : 'No corrections touch this window: every figure in this workbook is what the machines recorded.',
+    columns: [
+      { header: 'Machine', key: 'name', width: 18 }, { header: 'From', key: 'from', fmt: 'datetime', width: 18 }, { header: 'To', key: 'to', fmt: 'datetime', width: 18 },
+      { header: 'Was', key: 'state', width: 12 }, { header: 'Pieces made', key: 'pieces', fmt: 'int' }, { header: 'Downtime reason', key: 'downtimeReason', width: 22 },
+      { header: 'Why corrected', key: 'reason', width: 40 }, { header: 'By', key: 'by', width: 16 }, { header: 'Entered', key: 'at', fmt: 'datetime', width: 18 },
+      { header: 'Revoked', key: 'revoked', width: 10 }, { header: 'Revoked by', key: 'revokedBy', width: 16 }, { header: 'Revoked at', key: 'revokedAt', fmt: 'datetime', width: 18 },
+    ],
+    rows: corrections.map((c) => ({
+      name: nameOf(c.machineRef), from: c.from, to: c.to, state: c.state || 'as recorded', pieces: c.pieces, downtimeReason: c.downtimeReason || '',
+      reason: c.reason, by: c.createdBy?.name || '', at: c.createdAt, revoked: c.revokedAt ? 'yes' : '', revokedBy: c.revokedBy?.name || '', revokedAt: c.revokedAt,
+    })),
+  }] };
+
+  const book = buildXlsx([summary, analysis, perShift, report, daily, machines, diaSheet, targetSheet, reasonSheet, downtimeSheet, prodSheet, reliabilitySheet, correctionSheet], tzMin);
   const file = `EKC_SmartFactory_${one ? one.replace(/[^A-Za-z0-9]+/g, '_') + '_' : ''}${stamp(from, tzMin).slice(0, 10)}_to_${stamp(act.to, tzMin).slice(0, 10)}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${file}"`);

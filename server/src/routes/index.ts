@@ -12,6 +12,7 @@ import * as exp from '../controllers/export.controller.js';
 import * as alerts from '../controllers/alerts.controller.js';
 import * as events from '../controllers/events.controller.js';
 import * as config from '../controllers/config.controller.js';
+import * as corrections from '../controllers/corrections.controller.js';
 import * as prod from '../controllers/production.controller.js';
 
 const r = Router();
@@ -106,6 +107,13 @@ r.get('/reports/export', authorize('reports'), exp.exportWorkbook);   // the who
 
 // Alerts — fleet-wide, derived live from the anomaly engine
 r.get('/alerts', authorize('alerts'), alerts.listAlerts);
+
+// Error corrections — what a machine really did over a period, by someone the
+// admin trusts with it (its own RBAC module); every figure overlapping the
+// period reads the correction instead of the recorded data.
+r.get('/corrections', authorize('corrections'), corrections.listCorrections);
+r.post('/corrections', authorize('corrections', 'create'), corrections.createCorrection);
+r.post('/corrections/:id/revoke', authorize('corrections', 'delete'), corrections.revokeCorrection);
 
 // RBAC — roles
 r.get('/rbac/meta', authorize('roles'), rbac.rbacMeta);

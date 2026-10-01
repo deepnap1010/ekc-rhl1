@@ -18,6 +18,7 @@ import { pickProductionKey } from '../utils/production.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { computeActivity, stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
+import { loadCorrections, correctSteps, inPiecesPeriod } from '../utils/corrections.js';
 import { cached, invalidate } from '../utils/cache.js';
 import { readingSignature, pickColumns } from '../utils/history.js';
 import { MachineLabel } from '../models/MachineLabel.js';
@@ -305,9 +306,21 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     // looking at "Today" is owed today's arithmetic, ending on exactly the
     // total the Overview card shows.
     const madeAt = new Map<number, number>();
-    for (const e of stepEvents(minutes.filter((x) => x.production != null).map((x) => ({ t: x.t, v: x.production as number })), PROD_STEP_PER_MIN)) {
+    // The error-correction book replaces a corrected period's steps
+    // (utils/corrections). Its steps land at times no reading carried — a
+    // corrected morning may have no readings at all — so each one that
+    // matches no minute gets a row of its own, and the running total still
+    // ends on exactly the card's figure.
+    const corr = (await loadCorrections(refs, fromD, endD)).get(refs[0].toUpperCase());
+    const haveMinute = new Set(minutes.map((x) => x.t));
+    const place = (e: { t: number; made: number }): void => {
+      if (!haveMinute.has(e.t)) {
+        haveMinute.add(e.t);
+        minutes.push({ ts: new Date(e.t), t: e.t, production: null, status: statusAt(e.t) });
+      }
       madeAt.set(e.t, (madeAt.get(e.t) || 0) + e.made);
-    }
+    };
+    for (const e of correctSteps(stepEvents(minutes.filter((x) => x.production != null).map((x) => ({ t: x.t, v: x.production as number })), PROD_STEP_PER_MIN), corr, fromD.getTime(), endD.getTime())) place(e);
     // A machine with no register but a derived rule (config/derivedCounters)
     // still made pieces — the same edge events its card and hourly bars count,
     // dropped into the minute each one landed in, so the History shows "+1"
@@ -315,21 +328,28 @@ export const machineTimeline = asyncHandler(async (req, res) => {
     const dc = prodKey ? null : derivedCounterFor(refs[0]);
     if (dc) {
       const byMinute = new Map<number, number>();
-      for (const e of await derivedEvents(refs, dc, fromD, endD)) {
+      for (const e of correctSteps(await derivedEvents(refs, dc, fromD, endD), corr, fromD.getTime(), endD.getTime())) {
         const b = Math.floor(e.t / 60_000) * 60_000;
         byMinute.set(b, (byMinute.get(b) || 0) + e.made);
       }
-      // minutes[].t is the bin's last reading; match on the bin start.
+      // minutes[].t is the bin's last reading; match on the bin start — a
+      // minute nothing was read in (a corrected period) gets a row.
       for (const x of minutes) {
-        const n = byMinute.get(Math.floor(x.t / 60_000) * 60_000);
-        if (n) madeAt.set(x.t, (madeAt.get(x.t) || 0) + n);
+        const b = Math.floor(x.t / 60_000) * 60_000;
+        const n = byMinute.get(b);
+        if (n) { madeAt.set(x.t, (madeAt.get(x.t) || 0) + n); byMinute.delete(b); }
       }
+      for (const [b, n] of byMinute) place({ t: b, made: n });
     }
+    minutes.sort((a, b) => a.t - b.t);
     // Classified-away pieces come off the minute that made them; anything a
     // minute cannot absorb (the event stamped a bin later than the climb)
-    // carries to the next minute that made something.
+    // carries to the next minute that made something. Inside a period whose
+    // pieces a correction replaced, the register's pieces — and so what was
+    // classified away from them — are gone already.
     const exclAt = new Map<number, number>();
     for (const x of (await excludedPiecesBy(refs, fromD, toD)).get(refs[0].toUpperCase()) || []) {
+      if (inPiecesPeriod(corr, x.t)) continue;
       const b = Math.floor(x.t / 60_000) * 60_000;
       exclAt.set(b, (exclAt.get(b) || 0) + x.n);
     }
@@ -774,7 +794,8 @@ export const machineHourly = asyncHandler(async (req, res) => {
     const hours = await cached(`hourly:${refs.join('|')}:edge:${fromD.toISOString()}:${endD.toISOString()}`, 30_000, async () => {
       const offset = fromD.getTime();
       const byHour = new Map<number, number>();
-      for (const ev of await derivedEvents(refs, dc, fromD, endD)) {
+      const corr = (await loadCorrections(refs, fromD, endD)).get(refs[0].toUpperCase());
+      for (const ev of correctSteps(await derivedEvents(refs, dc, fromD, endD), corr, fromD.getTime(), endD.getTime())) {
         const b = Math.floor((ev.t - offset) / HOUR_MS) * HOUR_MS + offset;
         byHour.set(b, (byHour.get(b) || 0) + ev.made);
       }
@@ -802,7 +823,9 @@ export const machineHourly = asyncHandler(async (req, res) => {
     const series = rows.map((r) => ({ t: new Date(r._id).getTime(), v: Number(r.v) })).filter((p) => Number.isFinite(p.v));
     const offset = fromD.getTime();
     const byHour = new Map<number, number>();
-    for (const ev of stepEvents(series, PROD_STEP_PER_MIN)) {
+    // The error-correction book replaces a corrected period's steps (utils/corrections).
+    const corr = (await loadCorrections(refs, fromD, endD)).get(refs[0].toUpperCase());
+    for (const ev of correctSteps(stepEvents(series, PROD_STEP_PER_MIN), corr, fromD.getTime(), endD.getTime())) {
       const b = Math.floor((ev.t - offset) / HOUR) * HOUR + offset;
       byHour.set(b, (byHour.get(b) || 0) + ev.made);
     }
@@ -815,6 +838,9 @@ export const machineHourly = asyncHandler(async (req, res) => {
     const excl = await excludedPiecesBy(refs, fromD, endD);
     for (const list of excl.values()) {
       for (const x of list) {
+        // Inside a corrected period the register's pieces are gone with
+        // what was classified away from them.
+        if (inPiecesPeriod(corr, x.t)) continue;
         let n = x.n;
         for (let b = Math.floor((x.t - offset) / HOUR) * HOUR + offset; n > 0 && b >= offset; b -= HOUR) {
           const have = byHour.get(b) || 0;

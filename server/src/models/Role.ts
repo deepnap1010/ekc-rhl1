@@ -20,6 +20,10 @@ export const MODULES = [
   'orgchart',
   'alerts',
   'settings',
+  // The error-correction book: who may say what a machine really did over a
+  // period (view the book, create a correction, revoke one). Nobody until
+  // the admin ticks it.
+  'corrections',
 ];
 
 // Super Admin means "everything", so it is defined by a matrix, not by a flag a

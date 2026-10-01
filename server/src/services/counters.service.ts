@@ -12,6 +12,7 @@ import { excludedPiecesBy } from '../utils/prodclass.js';
 import { stepEvents, PROD_STEP_PER_MIN } from './activity.service.js';
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEventsBy } from './derivedCounter.service.js';
+import { loadCorrections, correctSteps } from '../utils/corrections.js';
 
 const NUMERIC = ['int', 'long', 'double', 'decimal'];
 const DAY = 24 * 3_600_000;
@@ -34,10 +35,31 @@ export function counterKeys(machines: string[]): Promise<{ ref: string; key: str
   });
 }
 
-/** Confirmed counter steps per machine within [from, to]. Machines that publish
- *  no counter are simply absent from the map — that is what lets a caller tell
- *  "made nothing" from "cannot count". */
+/** Confirmed counter steps per machine within [from, to], with the
+ *  error-correction book applied (utils/corrections): inside a corrected
+ *  period the register's steps give way to the correction's pieces, and a
+ *  machine with no counter at all still made what a correction says it did.
+ *  Machines that publish no counter and carry no correction are simply
+ *  absent from the map — that is what lets a caller tell "made nothing" from
+ *  "cannot count". */
 export async function productionEventsBy(
+  machines: string[], from: Date, to?: Date | null,
+): Promise<Map<string, { t: number; made: number }[]>> {
+  const out = await rawProductionEventsBy(machines, from, to);
+  const fromD = from ?? new Date(0), toD = to ?? new Date();
+  const corr = await loadCorrections(machines, fromD, toD);
+  if (!corr.size) return out;
+  const spelling = new Map(machines.map((m) => [m.toUpperCase(), m]));
+  for (const [k, list] of corr) {
+    const ref = [...out.keys()].find((x) => x.toUpperCase() === k) ?? spelling.get(k) ?? list[0].machineRef;
+    if (!list.some((c) => c.pieces != null) && !out.has(ref)) continue;
+    out.set(ref, correctSteps(out.get(ref) || [], list, fromD.getTime(), toD.getTime()));
+  }
+  return out;
+}
+
+/** The register's own steps, before any correction. */
+async function rawProductionEventsBy(
   machines: string[], from: Date, to?: Date | null,
 ): Promise<Map<string, { t: number; made: number }[]>> {
   const out = new Map<string, { t: number; made: number }[]>();

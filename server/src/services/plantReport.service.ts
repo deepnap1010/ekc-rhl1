@@ -27,6 +27,7 @@ import { MachineAssignment } from '../models/MachineAssignment.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { refCandidates } from '../utils/machineRef.js';
 import { productionEventsBy } from './counters.service.js';
+import { loadCorrections, overlapOf, stateCuts, cutOut } from '../utils/corrections.js';
 import { computeTargets, type TargetRow } from './targets.service.js';
 import type { Span } from './activity.service.js';
 
@@ -49,6 +50,7 @@ export interface MachineDay {
   reasonsText: string;                            // the distinct reasons, joined — the plant's REASONS column
   dia: { name: string; dims: string; stage: string; cycleSec: number } | null;   // the assignment covering most of the day
   diaNames: string[];                             // every dia assigned on the day, most time first
+  corrected: boolean;                             // a correction from the error-correction book touches this day
 }
 export interface PlantReport {
   from: Date; to: Date;
@@ -177,6 +179,7 @@ export async function computePlantReport(
   const blank = (code: string, day: string): MachineDay => ({
     code, day, readings: 0, pieces: {}, total: 0, target: {}, targetTotal: 0, assignedPieces: {}, assignedTotal: 0,
     downtimeMs: { idle: 0, stopped: 0, offline: 0 }, downtimeByReason: {}, reasonType: {}, reasonShift: {}, reasonEvents: {}, reasonsText: '', dia: null, diaNames: [],
+    corrected: false,
   });
   const get = (code: string, day: string): MachineDay => {
     const k = `${code.toUpperCase()}|${day}`;
@@ -209,8 +212,21 @@ export async function computePlantReport(
   }
   for (const env of envelope.values()) env.e = Math.min(toMs, env.e + NETWORK_LOST_MS);
 
+  // The error-correction book (utils/corrections): a corrected period is cut
+  // out of everything the telemetry and the spans say about it below, and
+  // booked as what the correction says instead; the days it touches are
+  // marked, so the review sheets can show a figure as a person's word.
+  const corrections = await loadCorrections(machines, from, to);
+  const cutsOf = (code: string) => stateCuts(corrections.get(code.toUpperCase()), fromMs, toMs);
+  for (const code of machines) {
+    for (const c of corrections.get(code.toUpperCase()) || []) {
+      const o = overlapOf(c, fromMs, toMs);
+      if (o) for (const piece of splitByBucket(o.s, o.e, tzMin, shifts)) get(code, piece.day).corrected = true;
+    }
+  }
+
   // Pieces — confirmed steps, net of classified-away pieces, filed by the
-  // reading that carried the step.
+  // reading that carried the step (corrections already applied).
   const events = await productionEventsBy(machines, from, to);
   for (const [ref, evs] of events) {
     for (const ev of evs) {
@@ -257,44 +273,62 @@ export async function computePlantReport(
     arr.push({ type: sp.type as Span['type'], s, e, reason: (sp.reason || '').trim() });
     byMachine.set(code, arr);
   }
-  const bookOffline = (code: string, s: number, e: number): void => {
-    for (const piece of splitByBucket(s, e, tzMin, shifts)) get(code, piece.day).downtimeMs.offline += piece.ms;
-  };
   const reasonSets = new Map<string, Set<string>>();
+  // One idle/stopped booking, whether from a span or a correction.
+  const bookDown = (code: string, type: 'idle' | 'stopped', reason: string, s: number, e: number, countEvent: boolean): void => {
+    let first = countEvent;
+    for (const piece of splitByBucket(s, e, tzMin, shifts)) {
+      const r = get(code, piece.day);
+      r.downtimeMs[type] += piece.ms;
+      r.downtimeByReason[reason] = (r.downtimeByReason[reason] || 0) + piece.ms;
+      const rt = r.reasonType[reason] || (r.reasonType[reason] = { idle: 0, stopped: 0 });
+      rt[type] += piece.ms;
+      const rs = r.reasonShift[reason] || (r.reasonShift[reason] = {});
+      rs[piece.shift] = (rs[piece.shift] || 0) + piece.ms;
+      if (first) { r.reasonEvents[reason] = (r.reasonEvents[reason] || 0) + 1; first = false; }
+      if (reason) {
+        const k = `${code.toUpperCase()}|${piece.day}`;
+        if (!reasonSets.has(k)) reasonSets.set(k, new Set());
+        reasonSets.get(k)!.add(reason);
+      }
+    }
+  };
   for (const code of machines) {
     const env = envelope.get(code.toUpperCase());
     const list = byMachine.get(code) || [];
+    // A corrected period is nobody else's to describe: cut it out of every
+    // interval below, then book it as the correction says.
+    const cuts = cutsOf(code);
+    const bookOffline = (s: number, e: number): void => {
+      for (const part of cutOut(s, e, cuts)) for (const piece of splitByBucket(part.s, part.e, tzMin, shifts)) get(code, piece.day).downtimeMs.offline += piece.ms;
+    };
     if (!env) {
       // Never heard in the window: nothing to say about idle or stopped; a
       // span that claims otherwise is a collector that died talking.
-      if (list.length) bookOffline(code, fromMs, toMs);
-      continue;
-    }
-    // The dark remainder before the first and after the last reading.
-    if (env.s > fromMs) bookOffline(code, fromMs, env.s);
-    if (env.e < toMs) bookOffline(code, env.e, toMs);
-    for (const sp of clipWithReason(list)) {
-      const { inside, outside } = splitByEnvelope(sp.s, sp.e, env.s, env.e);
-      for (const [s, e] of outside) if (sp.type !== 'offline') bookOffline(code, s, e);   // the envelope already booked offline spans' dark time
-      let firstPiece = true;
-      for (const [s, e] of inside) {
-        for (const piece of splitByBucket(s, e, tzMin, shifts)) {
-          const r = get(code, piece.day);
-          r.downtimeMs[sp.type] += piece.ms;
-          if (sp.type === 'offline') continue;
-          r.downtimeByReason[sp.reason] = (r.downtimeByReason[sp.reason] || 0) + piece.ms;
-          const rt = r.reasonType[sp.reason] || (r.reasonType[sp.reason] = { idle: 0, stopped: 0 });
-          rt[sp.type] += piece.ms;
-          const rs = r.reasonShift[sp.reason] || (r.reasonShift[sp.reason] = {});
-          rs[piece.shift] = (rs[piece.shift] || 0) + piece.ms;
-          if (firstPiece) { r.reasonEvents[sp.reason] = (r.reasonEvents[sp.reason] || 0) + 1; firstPiece = false; }
-          if (sp.reason) {
-            const k = `${code.toUpperCase()}|${piece.day}`;
-            if (!reasonSets.has(k)) reasonSets.set(k, new Set());
-            reasonSets.get(k)!.add(sp.reason);
+      if (list.length) bookOffline(fromMs, toMs);
+    } else {
+      // The dark remainder before the first and after the last reading.
+      if (env.s > fromMs) bookOffline(fromMs, env.s);
+      if (env.e < toMs) bookOffline(env.e, toMs);
+      for (const sp of clipWithReason(list)) {
+        const { inside, outside } = splitByEnvelope(sp.s, sp.e, env.s, env.e);
+        for (const [s, e] of outside) if (sp.type !== 'offline') bookOffline(s, e);   // the envelope already booked offline spans' dark time
+        let firstPiece = true;
+        for (const [s, e] of inside) {
+          for (const part of cutOut(s, e, cuts)) {
+            if (sp.type === 'offline') {
+              for (const piece of splitByBucket(part.s, part.e, tzMin, shifts)) get(code, piece.day).downtimeMs.offline += piece.ms;
+              continue;
+            }
+            bookDown(code, sp.type, sp.reason, part.s, part.e, firstPiece);
+            firstPiece = false;
           }
         }
       }
+    }
+    for (const cut of cuts) {
+      if (cut.c.state === 'idle' || cut.c.state === 'stopped') bookDown(code, cut.c.state, cut.c.downtimeReason || '', cut.s, cut.e, true);
+      // 'running' books nothing: the period simply is not downtime, nor dark.
     }
   }
   for (const [k, set] of reasonSets) { const r = byKey.get(k); if (r) r.reasonsText = [...set].join(', '); }
