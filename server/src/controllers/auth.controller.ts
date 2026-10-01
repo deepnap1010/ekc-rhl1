@@ -1,6 +1,6 @@
 // server/src/controllers/auth.controller.ts
 import { User } from '../models/User.js';
-import { signAccessToken, signRefreshToken } from '../utils/jwt.js';
+import { signAccessToken, signRefreshToken, verifyToken } from '../utils/jwt.js';
 import { sessionNeverExpires } from '../utils/session.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
@@ -62,6 +62,35 @@ export const login = asyncHandler(async (req, res) => {
     accessToken:  signAccessToken(payload, forever),
     refreshToken: signRefreshToken(payload, forever),
     user:         sanitize(user as unknown as SanitizableUser),
+  });
+});
+
+// POST /auth/refresh { refreshToken } — a new pair for a session whose access
+// token ran out (12 h for everyone but operators, whose tokens never expire).
+// Public: the refresh token IS the credential. The account is re-read, so a
+// switched-off user cannot renew, and the pair is reissued under today's
+// rules (role, never-expires). An access token presented here is refused —
+// only a token signed as a refresh token (typ:'refresh') buys a new pair.
+export const refresh = asyncHandler(async (req, res) => {
+  const token = String((req.body as { refreshToken?: unknown } | undefined)?.refreshToken || '');
+  if (!token) return fail(res, 400, 'refreshToken required');
+  let decoded: JwtPayload;
+  try { decoded = verifyToken(token); } catch { return fail(res, 401, 'Session expired — please sign in again'); }
+  if (decoded.typ !== 'refresh') return fail(res, 401, 'Session expired — please sign in again');
+  if (decoded.sub === BOOTSTRAP_SUB) {
+    if (!(await isBootstrapMode())) return fail(res, 401, 'Bootstrap session expired — please sign in');
+    const payload: JwtPayload = { sub: BOOTSTRAP_SUB, sa: true };
+    return ok(res, { accessToken: signAccessToken(payload), refreshToken: signRefreshToken(payload), user: sanitize(bootstrapUser()), bootstrap: true });
+  }
+  const user = await User.findById(decoded.sub).populate('role').lean();
+  if (!user || !user.active) return fail(res, 401, 'Invalid or inactive account');
+  const role = user.role as unknown as AuthRole | null;
+  const payload: JwtPayload = { sub: String(user._id), role: role?.key, sa: user.isSuperAdmin };
+  const forever = sessionNeverExpires(role, user.isSuperAdmin);
+  return ok(res, {
+    accessToken: signAccessToken(payload, forever),
+    refreshToken: signRefreshToken(payload, forever),
+    user: sanitize(user as unknown as SanitizableUser),
   });
 });
 

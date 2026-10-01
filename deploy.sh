@@ -30,4 +30,4 @@ sleep 6
 
 echo "== health =="
 curl -s "localhost:$PORT/health" && echo
-echo "== done — hard refresh the browser (Ctrl+Shift+R) =="
+echo "== done — open screens pick the new build up by themselves within ~2 minutes =="

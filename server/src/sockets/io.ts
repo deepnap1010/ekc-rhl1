@@ -19,7 +19,9 @@ export function initSocket(httpServer: HttpServer): IOServer {
     try {
       const token = socket.handshake.auth?.token;
       if (!token) return next(new Error('No token'));
-      socket.user = verifyToken(token);
+      const user = verifyToken(token);
+      if (user.typ === 'refresh') return next(new Error('Invalid token'));   // a refresh token is not a session
+      socket.user = user;
       next();
     } catch {
       next(new Error('Invalid token'));

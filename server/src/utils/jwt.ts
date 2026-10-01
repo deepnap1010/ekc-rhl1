@@ -17,8 +17,10 @@ import type { JwtPayload } from '../types/auth.js';
 export const signAccessToken = (payload: JwtPayload, neverExpires = false): string =>
   jwt.sign(payload, env.jwtSecret, (neverExpires ? {} : { expiresIn: env.jwtExpiry }) as SignOptions);
 
+// A refresh token carries typ:'refresh' so it can never pass as an access
+// token (middleware/auth refuses it) — it only buys a new pair at /auth/refresh.
 export const signRefreshToken = (payload: JwtPayload, neverExpires = false): string =>
-  jwt.sign(payload, env.jwtSecret, (neverExpires ? {} : { expiresIn: env.refreshExpiry }) as SignOptions);
+  jwt.sign({ ...payload, typ: 'refresh' }, env.jwtSecret, (neverExpires ? {} : { expiresIn: env.refreshExpiry }) as SignOptions);
 
 export const verifyToken = (token: string): JwtPayload =>
   jwt.verify(token, env.jwtSecret) as JwtPayload & VerifiedPayload;

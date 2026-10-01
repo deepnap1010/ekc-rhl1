@@ -4,6 +4,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { ProductionClassPopup } from '../components/ProductionClassPopup';
 import { DowntimeReasonPopup } from '../components/DowntimeReasonPopup';
 import { ScheduledDiaPopup } from '../components/ScheduleDia';
+import { useBuildWatch } from '../hooks/useBuildWatch';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
   Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target, Wrench,
@@ -44,6 +45,8 @@ const NAV: NavItem[] = [
 export default function AppLayout() {
   const { user, can, logout } = useAuthStore();
   const { company, appearance } = useSettings();
+  // A deploy reaches every open screen by itself (hooks/useBuildWatch).
+  useBuildWatch();
   const t = useT();
   const navigate = useNavigate();
   const location = useLocation();

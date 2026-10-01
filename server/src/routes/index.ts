@@ -19,6 +19,7 @@ const r = Router();
 
 // --- Public ---
 r.post('/auth/login', auth.login);
+r.post('/auth/refresh', auth.refresh);   // a new pair for an expired session — the refresh token is the credential
 r.post('/ingest', ingest.ingest); // PLC / data-source telemetry ingest — guarded by the x-ingest-key header
 
 // --- Everything below requires a valid session ---

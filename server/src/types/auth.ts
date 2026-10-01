@@ -7,6 +7,9 @@ export interface JwtPayload {
   sub: string;
   sa?: boolean;
   role?: string;
+  // 'refresh' marks a refresh token: it buys a new pair at POST /auth/refresh
+  // and nothing else — the API refuses it as a bearer.
+  typ?: 'refresh';
 }
 
 // A role as it travels on `req.user` (lean, populated). `permissions` is either

@@ -65,6 +65,9 @@ export const authApi = {
   login: (email: string, password: string) =>
     post<LoginResponse>('/auth/login', { email, password }),
   me: () => get<User>('/auth/me'),
+  // A new token pair for a session whose access token ran out — the API layer
+  // calls this by itself (api/client); nothing on a screen needs to.
+  refresh: (refreshToken: string) => post<LoginResponse>('/auth/refresh', { refreshToken }),
   // Update the signed-in user's own name / email / avatar (persists to the DB).
   updateMe: (body: { name?: string; email?: string; avatar?: string }) => patch<User>('/auth/me', body),
 };

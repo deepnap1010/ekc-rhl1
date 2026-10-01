@@ -26,7 +26,10 @@ import { useMachineLabelsSync } from './lib/machineName';
 import ErrorBoundary from './components/ErrorBoundary';
 
 const qc = new QueryClient({
-  defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1, staleTime: 10000 } },
+  // A tab that comes back into view (a PC that slept, a window behind another)
+  // refreshes whatever is stale, and so does a connection that returns —
+  // nobody should need to reload to see the present.
+  defaultOptions: { queries: { refetchOnWindowFocus: true, refetchOnReconnect: true, retry: 1, staleTime: 10000 } },
 });
 
 const P = (module: string, el: ReactElement): ReactElement => (

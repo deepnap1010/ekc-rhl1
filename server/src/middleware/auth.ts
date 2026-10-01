@@ -18,6 +18,8 @@ export async function authenticate(
     if (!token) return fail(res, 401, 'Authentication required');
 
     const decoded = verifyToken(token);
+    // A refresh token buys a new pair at /auth/refresh; it is not a session.
+    if (decoded.typ === 'refresh') return fail(res, 401, 'Authentication required');
 
     // Bootstrap session — valid only while no real users exist.
     if (decoded.sub === BOOTSTRAP_SUB) {

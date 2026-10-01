@@ -22,6 +22,8 @@ interface ModalProps {
 // a single-modal assumption closed both on one keypress and unlocked the page
 // under a still-open list.
 const open: object[] = [];
+/** Whether any modal is on screen — a self-reload waits for none. */
+export const modalsOpen = (): boolean => open.length > 0;
 
 export default function Modal({ title, subtitle, icon: Icon, onClose, children, maxW = 'max-w-3xl' }: ModalProps): JSX.Element {
   const [id] = useState(() => ({}));

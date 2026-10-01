@@ -3,6 +3,7 @@ import { useEffect, type ReactElement, type ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/endpoints';
+import { useSessionRenewal } from '../hooks/useSessionRenewal';
 
 interface RequireAuthProps {
   children: ReactNode;
@@ -11,6 +12,8 @@ interface RequireAuthProps {
 export function RequireAuth({ children }: RequireAuthProps): ReactElement {
   const token = useAuthStore((s) => s.accessToken);
   const setUser = useAuthStore((s) => s.setUser);
+  // The session renews itself before its token runs out (and on waking).
+  useSessionRenewal();
 
   // Re-hydrate the signed-in user from the server on entry, so a session that was
   // cached at login (and persisted in localStorage) picks up fields that may have
