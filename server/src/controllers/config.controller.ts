@@ -9,6 +9,7 @@ import { ok, fail, asyncHandler } from '../utils/http.js';
 import { env } from '../config/env.js';
 import { normalizeProdClass, invalidateProdClassCache, invalidateProductionReads, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
 import { normalizeDowntimeAsk, invalidateDowntimeAskCache, DEFAULT_DOWNTIME_ASK, type DowntimeAskConfig } from '../utils/downtimeAsk.js';
+import { normalizeNotifyFlow, invalidateNotifyFlowCache, DEFAULT_NOTIFY_FLOW, NOTIFY_EVENTS, type NotifyFlowConfig } from '../utils/notifyFlow.js';
 
 // A stored prodClass that fails today's rules (or was never saved) reads as
 // the defaults — same before/after-first-write contract as every other field.
@@ -19,6 +20,13 @@ const prodClassOf = (raw: unknown): ProdClassConfig => {
 const downtimeAskOf = (raw: unknown): DowntimeAskConfig => {
   const norm = normalizeDowntimeAsk(raw);
   return typeof norm === 'string' ? DEFAULT_DOWNTIME_ASK : norm;
+};
+// The workflow travels with its event registry: the matrix the admin edits
+// lists the events the CODE knows, so a client can never save a rule for an
+// event that does not exist.
+const notifyFlowOf = (raw: unknown): NotifyFlowConfig & { events: typeof NOTIFY_EVENTS } => {
+  const norm = normalizeNotifyFlow(raw);
+  return { ...(typeof norm === 'string' ? DEFAULT_NOTIFY_FLOW : norm), events: NOTIFY_EVENTS };
 };
 
 // Canonical seeds (mirror the client's previous hard-coded lists).
@@ -74,6 +82,7 @@ export const getConfig = asyncHandler(async (_req, res) => {
     processStages: doc?.processStages?.length ? doc.processStages : DEFAULTS.processStages,
     prodClass: prodClassOf(doc?.prodClass),
     downtimeAsk: downtimeAskOf(doc?.downtimeAsk),
+    notifyFlow: notifyFlowOf(doc?.notifyFlow),
     defaultWindow: doc?.defaultWindow === 'day' ? 'day' : 'shift',
     stored: !!doc,
     // The client shows a banner and hides its edit controls on a review copy.
@@ -85,7 +94,7 @@ export const getConfig = asyncHandler(async (_req, res) => {
 export const updateConfig = asyncHandler(async (req, res) => {
   const body = req.body as {
     shifts?: IShift[]; products?: string[]; processStages?: string[];
-    stageTemplates?: IStageTemplate[]; prodClass?: unknown; downtimeAsk?: unknown; defaultWindow?: unknown;
+    stageTemplates?: IStageTemplate[]; prodClass?: unknown; downtimeAsk?: unknown; notifyFlow?: unknown; defaultWindow?: unknown;
   };
   const set: Record<string, unknown> = {};
   let askBefore: DowntimeAskConfig | null = null;
@@ -94,6 +103,14 @@ export const updateConfig = asyncHandler(async (req, res) => {
     if (typeof norm === 'string') return fail(res, 400, norm);
     askBefore = downtimeAskOf((await AppConfig.findOne({ key: 'global' }).select({ downtimeAsk: 1 }).lean())?.downtimeAsk);
     set.downtimeAsk = norm;
+  }
+  let flowBefore: NotifyFlowConfig | null = null;
+  if (body.notifyFlow !== undefined) {
+    const norm = normalizeNotifyFlow(body.notifyFlow);
+    if (typeof norm === 'string') return fail(res, 400, norm);
+    const { events: _e, ...stored } = notifyFlowOf((await AppConfig.findOne({ key: 'global' }).select({ notifyFlow: 1 }).lean())?.notifyFlow);
+    flowBefore = stored;
+    set.notifyFlow = norm;
   }
   if (body.defaultWindow !== undefined) {
     if (body.defaultWindow !== 'shift' && body.defaultWindow !== 'day') return fail(res, 400, 'default window must be "shift" or "day"');
@@ -188,12 +205,22 @@ export const updateConfig = asyncHandler(async (req, res) => {
       before: askBefore, after: set.downtimeAsk,
     }).catch(() => {});
   }
+  if (set.notifyFlow !== undefined) {
+    invalidateNotifyFlowCache();
+    const u = req.user as { _id?: unknown; name?: string } | undefined;
+    AuditLog.create({
+      at: new Date(), user: { id: String(u?._id || ''), name: u?.name || '' },
+      action: 'settings.notifyflow', entity: { type: 'config', label: 'Notification workflow' },
+      before: flowBefore, after: set.notifyFlow,
+    }).catch(() => {});
+  }
   return ok(res, {
     shifts: doc.shifts, products: doc.products, processStages: doc.processStages,
     breaks: doc.breaks || [],
     stageTemplates: doc.stageTemplates?.length ? doc.stageTemplates : DEFAULTS.stageTemplates,
     prodClass: prodClassOf(doc.prodClass),
     downtimeAsk: downtimeAskOf(doc.downtimeAsk),
+    notifyFlow: notifyFlowOf(doc.notifyFlow),
     defaultWindow: doc.defaultWindow === 'day' ? 'day' : 'shift',
     stored: true,
   });

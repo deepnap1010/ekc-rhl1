@@ -9,6 +9,9 @@ import { ok, fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
 import { refIn, refCandidates } from '../utils/machineRef.js';
 import { getDowntimeAskConfig, askedTypes, reasonsFor, shiftSwitchExpr } from '../utils/downtimeAsk.js';
+import { notifyModeOf, popupMachines, popupReaches, isOperatorRole } from '../utils/notifyFlow.js';
+import { userCan } from '../middleware/auth.js';
+import type { AuthUser } from '../types/auth.js';
 import { loadShifts } from './config.controller.js';
 
 type ScopeUser = { isSuperAdmin?: boolean; assignedMachines?: string[] } | undefined;
@@ -260,13 +263,24 @@ export const downtimeQueue = asyncHandler(async (req, res) => {
   const cfg = await getDowntimeAskConfig();
   const types = askedTypes(cfg);
   if (!cfg.enabled || !types.length) return ok(res, []);
-  const user = req.user as ScopeUser;
-  const mine = user?.assignedMachines || [];
-  if (!mine.length) return ok(res, []);
+  // Who hears about a long downtime is the admin's workflow (utils/notifyFlow):
+  // a role it does not route gets nothing. A POPUP covers the person's own
+  // machines, exactly; a NOTICE covers everything they can see — which is the
+  // Downtime page's data, so it needs the Downtime page's permission.
+  const user = req.user as AuthUser | undefined;
+  const mode = await notifyModeOf(user, 'downtimeReason');
+  if (mode === 'off') return ok(res, []);
+  if (mode === 'notify' && !userCan(user, 'downtime', 'view')) return ok(res, []);
+  const machines = mode === 'popup' ? popupMachines(user) : machineScope(user);
+  if (machines && !machines.length) return ok(res, []);
+  // The terminal works the queue oldest first (what it lets lapse is
+  // written); any other popup screen only dismisses locally and reads newest
+  // first, so its closed rows never bury what just happened.
+  const inOrder = mode === 'popup' && isOperatorRole(user?.role);
   const now = Date.now();
   const minMs = cfg.askAfterMin * 60_000;
   const rows = await DowntimeEvent.find({
-    machineId: { $in: [...new Set(mine.flatMap(refCandidates))] },
+    ...(machines ? { machineId: { $in: [...new Set(machines.flatMap(refCandidates))] } } : {}),
     type: { $in: types },
     reason: { $in: ['', null] },
     askedAt: null,
@@ -274,7 +288,7 @@ export const downtimeQueue = asyncHandler(async (req, res) => {
       { endedAt: null, startedAt: { $lte: new Date(now - minMs) } },
       { endedAt: { $ne: null, $gte: new Date(now - QUEUE_RECENT_MS) }, durationMs: { $gte: minMs } },
     ],
-  }).select(LIST_FIELDS).sort({ startedAt: 1 }).limit(10).maxTimeMS(MAX_MS).lean();
+  }).select(LIST_FIELDS).sort({ startedAt: inOrder ? 1 : -1 }).limit(inOrder ? 10 : 50).maxTimeMS(MAX_MS).lean();
   return ok(res, rows);
 });
 
@@ -287,16 +301,22 @@ export const answerDowntime = asyncHandler(async (req, res) => {
   const user = req.user as Actor;
   const body = req.body as { reason?: unknown; timeout?: unknown };
   const span = await DowntimeEvent.findById(req.params.id).lean();
+  // Only someone the workflow routes the popup to, for one of their own
+  // machines, answers it — super admins included; a notice-only role reads.
   // Uniform 404: an out-of-scope caller learns nothing about other machines.
-  if (!span || (!user?.isSuperAdmin && !refIn(user?.assignedMachines, span.machineId))) {
+  const actor = req.user as AuthUser | undefined;
+  const cfg = await getDowntimeAskConfig();
+  const asked = cfg.enabled && !!span && askedTypes(cfg).includes(span.type as 'idle' | 'stopped');
+  if (!span || !asked || !(await popupReaches(actor, 'downtimeReason', span.machineId))) {
     return fail(res, 404, 'Downtime event not found');
   }
   const now = new Date();
   if (body.timeout) {
+    // Only the machine's terminal can let the ask lapse (see events.controller).
+    if (!isOperatorRole(actor?.role)) return ok(res, { handled: false });
     const r = await DowntimeEvent.updateOne({ _id: span._id, reason: { $in: ['', null] }, askedAt: null }, { $set: { askedAt: now } });
     return ok(res, { handled: r.modifiedCount > 0 });
   }
-  const cfg = await getDowntimeAskConfig();
   const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
   if (!reason) return fail(res, 400, 'A reason is required');
   if (reason.length > MAX_REASON) return fail(res, 400, `Reason must be ${MAX_REASON} characters or fewer`);

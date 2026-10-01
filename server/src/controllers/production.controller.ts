@@ -20,6 +20,8 @@ import { Order } from '../models/Order.js';
 import { ScheduledAssignment } from '../models/ScheduledAssignment.js';
 import { applyDueSchedules } from '../services/schedule.service.js';
 import { refMatch, refIn } from '../utils/machineRef.js';
+import { notifyModeOf, popupMachines, popupReaches } from '../utils/notifyFlow.js';
+import type { AuthUser } from '../types/auth.js';
 import { OperatorSession } from '../models/OperatorSession.js';
 import { AppConfig } from '../models/AppConfig.js';
 import { User } from '../models/User.js';
@@ -388,12 +390,15 @@ export const listSchedules = asyncHandler(async (req, res) => {
   const unacked = q.unacked === '1';
 
   if (unacked) {
-    // The operator notice is about MY machines — not about what I'm allowed to
-    // see. A super admin who also runs three machines gets those three, not the
-    // whole plant; someone with no machines gets nothing.
-    const mine = (user?.assignedMachines || []).filter(Boolean);
-    if (!mine.length) return ok(res, []);
-    f.machineRef = { $in: mine.map(refMatch) };
+    // Who gets the notice is the admin's workflow (utils/notifyFlow). A POPUP
+    // is about MY machines — not about what I'm allowed to see: a super admin
+    // who also runs three machines gets those three, not the whole plant;
+    // someone with no machines gets nothing. A NOTICE covers what I can see.
+    const mode = await notifyModeOf(user as AuthUser | undefined, 'diaInstruction');
+    if (mode === 'off') return ok(res, []);
+    const machines = mode === 'popup' ? popupMachines(user as AuthUser | undefined) : scope;
+    if (machines && !machines.length) return ok(res, []);
+    if (machines) f.machineRef = { $in: machines.map(refMatch) };
     f.$or = [
       { status: 'pending' },
       { status: { $in: ['applied', 'failed'] }, updatedAt: { $gte: new Date(Date.now() - 3 * 24 * 3_600_000) } },
@@ -480,11 +485,10 @@ export const cancelSchedule = asyncHandler(async (req, res) => {
 export const ackSchedule = asyncHandler(async (req, res) => {
   const doc = await ScheduledAssignment.findById(req.params.id).lean();
   if (!doc) return fail(res, 404, 'Schedule not found');
-  const user = req.user as ScopedUser;
-  const scope = machineScope(user);
-  // An operator acks their own machines' notices; the unacked list is scoped to
-  // assignedMachines, so accept that list too (a super admin has no scope).
-  if (scope && !refIn(scope, doc.machineRef) && !refIn(user?.assignedMachines, doc.machineRef)) {
+  // Dismissing is the POPUP's act: the workflow must route it to this role and
+  // the machine must be one of theirs — a notice-only role reads, and a role
+  // the admin did not route has no notice to dismiss.
+  if (!(await popupReaches(req.user as AuthUser | undefined, 'diaInstruction', doc.machineRef))) {
     return fail(res, 403, 'You are not assigned to this machine');
   }
   const uid = String((req.user as ScopedUser)?._id || '');

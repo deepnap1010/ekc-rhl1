@@ -29,6 +29,9 @@ export interface IAppConfig {
   // Downtime-reason popup rules (when to ask, how long, which reasons).
   // Shape owned + validated by utils/downtimeAsk.ts; stored as-is here.
   downtimeAsk?: Record<string, unknown>;
+  // Who is told about a counter advance / a long downtime, and how (popup,
+  // notice, nothing), by role. Shape owned + validated by utils/notifyFlow.ts.
+  notifyFlow?: Record<string, unknown>;
   // What "now" means on every screen by default: the running SHIFT or the full
   // production DAY. Governs which window the dashboards open on and which
   // count the classification popup speaks in ("piece 52 of this shift").
@@ -54,6 +57,7 @@ const appConfigSchema = new mongoose.Schema<IAppConfig>(
     processStages: { type: [String], default: [] },
     prodClass:     { type: mongoose.Schema.Types.Mixed },   // validated at the boundary
     downtimeAsk:   { type: mongoose.Schema.Types.Mixed },   // validated at the boundary
+    notifyFlow:    { type: mongoose.Schema.Types.Mixed },   // validated at the boundary
     defaultWindow: { type: String, enum: ['shift', 'day'] },
     updatedBy:     { type: String },
   },

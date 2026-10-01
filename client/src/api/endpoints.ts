@@ -11,6 +11,7 @@ import type {
   MachineEventRow,
   EventsSummary,
   AppConfigShape,
+  NotifyFlowConfig,
   ProductionByType,
   Machine,
   MachineSummary,
@@ -82,7 +83,7 @@ export const eventsApi = {
 
 export const configApi = {
   get: () => get<AppConfigShape>('/config'),
-  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass' | 'downtimeAsk' | 'defaultWindow'>>) =>
+  update: (body: Partial<Pick<AppConfigShape, 'shifts' | 'products' | 'processStages' | 'stageTemplates' | 'prodClass' | 'downtimeAsk' | 'defaultWindow'>> & { notifyFlow?: Pick<NotifyFlowConfig, 'rules'> }) =>
     api.put('/config', body) as unknown as Promise<ApiResponse<AppConfigShape>>,
 };
 

@@ -14,6 +14,8 @@ import Modal from './Modal';
 import { productionApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
+import { useNotifyMode } from '../hooks/useNotifyMode';
+import { useNoticeFeed } from '../hooks/useNoticeFeed';
 import { toast } from '../store/toast';
 import { stageForMachine, cycleSecFor } from '../lib/diaStage';
 import { hourlyRate, secToMinPerPc, fmtRate } from '../lib/targets';
@@ -224,18 +226,25 @@ function ScheduleRow({ s, onCancel }: { s: ScheduledDia; onCancel?: () => void }
 }
 
 /** Operator notice: every un-dismissed instruction for THEIR machines. It comes
- *  back on every dashboard visit until each row is acknowledged. */
+ *  back on every dashboard visit until each row is acknowledged. Who gets it,
+ *  and how, is the admin's workflow (hooks/useNotifyMode) — a role routed to
+ *  notices hears one quiet line per new instruction instead. */
 export function ScheduledDiaPopup(): JSX.Element | null {
-  const user = useAuthStore((s) => s.user);
   const can = useAuthStore((s) => s.can);
   const qc = useQueryClient();
-  const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
+  const mode = useNotifyMode('diaInstruction');
+  const allowed = can('production', 'view');
+  const active = allowed && mode === 'popup';
+  const noticing = allowed && mode === 'notify';
   const { data } = useQuery({
-    queryKey: ['schedules', 'unacked'],
+    queryKey: ['schedules', 'unacked', mode],
     queryFn: () => productionApi.schedules({ unacked: '1' }).then((r) => r.data),
-    enabled: isOperator && can('production', 'view'),
+    enabled: active || noticing,
     refetchInterval: 60_000,
   });
+  useNoticeFeed(data, noticing, (fresh) => fresh.length === 1
+    ? `Dia instruction — ${fresh[0].diaName} on ${fresh[0].machineRef}${fresh[0].createdBy?.name ? `, set by ${fresh[0].createdBy.name}` : ''}`
+    : `${fresh.length} dia instructions set — ${fresh.map((s) => s.machineRef).join(', ')}`);
   // Dismissed here and now: the row leaves the screen on click, not a
   // round-trip later, and comes back if the server refuses.
   const [dismissed, setDismissed] = useState<string[]>([]);
@@ -249,7 +258,7 @@ export function ScheduledDiaPopup(): JSX.Element | null {
   });
   const ack = (id: string): void => { setDismissed((d) => [...d, id]); ackMut.mutate(id); };
   const rows = (data || []).filter((r) => !dismissed.includes(r._id));
-  if (!isOperator || !rows.length) return null;
+  if (!active || !rows.length) return null;
 
   const ackAll = (): void => rows.forEach((r) => ack(r._id));
 

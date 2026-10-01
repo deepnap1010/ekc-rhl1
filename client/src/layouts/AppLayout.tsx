@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { ProductionClassPopup } from '../components/ProductionClassPopup';
 import { DowntimeReasonPopup } from '../components/DowntimeReasonPopup';
+import { ScheduledDiaPopup } from '../components/ScheduleDia';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
   Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target,
@@ -181,11 +182,14 @@ export default function AppLayout() {
         <main className="flex-1 overflow-y-auto overflow-x-hidden min-w-0">
           <ReviewCopyBanner />
           <Outlet />
-          {/* Operator classification popup — a counter advance asks on ANY
-              page, not just the dashboard. Self-gating: renders null unless
-              the popup is enabled and this user operates machines. */}
+          {/* The three asks — a counter advance, a long downtime, a dia
+              instruction — reach a person on ANY page, not just the dashboard,
+              and stay mounted so a notice is never missed between pages.
+              Self-gating: each renders null unless the admin's workflow
+              routes it to this user's role (hooks/useNotifyMode). */}
           <ProductionClassPopup />
           <DowntimeReasonPopup />
+          <ScheduledDiaPopup />
         </main>
       </div>
     </div>

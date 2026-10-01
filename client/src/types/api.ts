@@ -397,6 +397,18 @@ export interface DowntimeAskConfig {
   reasons: DowntimeReason[];
 }
 
+// Notification workflow — who is told about a counter advance or a long
+// downtime, and how, by ROLE. The events are the server's registry (one per
+// popup); only the admin's explicit choices are stored. A role with no rule
+// follows the convention that whoever calls themselves an operator is asked.
+export type NotifyMode = 'popup' | 'notify' | 'off';
+export type NotifyEventKey = 'productionClass' | 'downtimeReason' | 'diaInstruction';
+export interface NotifyEvent { key: NotifyEventKey; label: string; ask: string; master: string }
+export interface NotifyFlowConfig {
+  events: NotifyEvent[];
+  rules: Partial<Record<NotifyEventKey, Record<string, NotifyMode>>>;   // event → role key (lower-cased) → mode
+}
+
 // Shared (server-side) config — same shifts/products/stages on every desktop.
 export interface AppConfigShape {
   shifts: { name: string; start: string; end: string }[];
@@ -406,6 +418,7 @@ export interface AppConfigShape {
   processStages: string[];
   prodClass?: ProdClassConfig;   // production classification popup rules
   downtimeAsk?: DowntimeAskConfig;   // downtime-reason popup rules
+  notifyFlow?: NotifyFlowConfig;     // who is told what, and how, by role
   defaultWindow?: 'shift' | 'day';   // what every screen opens on: the running shift or the full day
   stored: boolean;
   // True when this deployment only MIRRORS the plant: it is refreshed from the

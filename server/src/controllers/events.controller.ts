@@ -12,6 +12,7 @@ import { refMatch, refIn } from '../utils/machineRef.js';
 import { userCan } from '../middleware/auth.js';
 import type { AuthUser } from '../types/auth.js';
 import { getProdClassConfig, invalidateProductionReads, type ClassValue } from '../utils/prodclass.js';
+import { notifyModeOf, popupMachines, popupReaches, isOperatorRole } from '../utils/notifyFlow.js';
 
 type ScopedUser = { isSuperAdmin?: boolean; assignedMachines?: string[] };
 type RangeFilter = { $gte?: Date; $lte?: Date };
@@ -144,20 +145,34 @@ const audit = (
     .catch(() => {});
 };
 
-// GET /production/class-queue — recent production events on MY machines whose
-// classification is still the untouched default. Operators only: an admin
-// browsing the dashboard must not be popped for the whole fleet.
+// GET /production/class-queue — recent production events in MY scope whose
+// classification is still the untouched default, for a role the admin's
+// workflow routes this event to (popup or notice). A role it does not route
+// gets nothing however many machines it holds — a plant head given machines
+// to WATCH used to be popped like an operator, which is what the workflow
+// exists to stop (utils/notifyFlow).
 export const classQueue = asyncHandler(async (req, res) => {
   const cfg = await getProdClassConfig();
   if (!cfg.enabled) return ok(res, []);
-  const user = req.user as ScopedUser | undefined;
-  const mine = user?.assignedMachines || [];
-  if (!mine.length) return ok(res, []);
+  const user = req.user as AuthUser | undefined;
+  const mode = await notifyModeOf(user, 'productionClass');
+  if (mode === 'off') return ok(res, []);
+  // A POPUP covers the machines assigned to the person, exactly — it can be
+  // answered, so "no machines" means no popups, never the fleet. A NOTICE
+  // writes nothing and covers everything the person can see (utils/scope),
+  // newest first and more of it: nothing is taken off this list by reading it.
+  const machines = mode === 'popup' ? popupMachines(user) : machineScope(user);
+  if (machines && !machines.length) return ok(res, []);
+  // The machine's terminal works the queue in order — each ask it lets lapse
+  // is written, so the oldest is always next. Any other popup screen only
+  // dismisses locally, so it reads newest first: the rows it has already
+  // closed must never bury what just happened.
+  const inOrder = mode === 'popup' && isOperatorRole(user?.role);
   const rows = await MachineEvent.find({
     kind: 'production', classSource: 'default', delta: { $gt: 0 },
-    machineId: { $in: mine.map(refMatch) },
+    ...(machines ? { machineId: { $in: machines.map(refMatch) } } : {}),
     startedAt: { $gte: new Date(Date.now() - QUEUE_WINDOW_MS) },
-  }).sort({ startedAt: 1 }).limit(25).lean();
+  }).sort({ startedAt: inOrder ? 1 : -1 }).limit(inOrder ? 25 : 100).lean();
   return ok(res, rows);
 });
 
@@ -169,21 +184,28 @@ export const classQueue = asyncHandler(async (req, res) => {
 //   · a timeout lands only while the row is still 'default' (the value stays
 //     the default — the write just marks "asked, no answer" so it leaves the queue).
 export const classifyEvent = asyncHandler(async (req, res) => {
-  const user = req.user as (ScopedUser & { _id?: unknown; name?: string }) | undefined;
+  const user = req.user as AuthUser | undefined;
   const body = req.body as { value?: unknown; timeout?: unknown };
   const ev = await MachineEvent.findById(req.params.id).lean();
   if (!ev || ev.kind !== 'production') return fail(res, 404, 'Production event not found');
-  // Popup answers come only from the machine's OWN operator (superadmin
-  // excepted). "Unscoped sees everything" is a READ rule — letting every
-  // view-level account classify fleet-wide would let a dashboard viewer
-  // pre-empt the real operator, unaudited. Everyone else corrects through
-  // the audited PATCH /events/:id/classification. Uniform 404, not 403 —
-  // an out-of-scope caller learns nothing about other machines' events.
-  if (!user?.isSuperAdmin && !refIn(user?.assignedMachines, ev.machineId)) {
+  // Popup answers come only through a popup that exists: the switch on, and
+  // someone the workflow ROUTES it to, for one of their own machines — super
+  // admins included: routing is the admin's rule for everyone, and the
+  // audited PATCH /events/:id/classification stays open to them. A role the
+  // admin did not route (a dashboard viewer) cannot pre-empt the real
+  // operator, and a role routed to a notice only reads. Uniform 404, not 403
+  // — an out-of-scope caller learns nothing about other machines' events.
+  const cfg = await getProdClassConfig();
+  if (!cfg.enabled || !(await popupReaches(user, 'productionClass', ev.machineId))) {
     return fail(res, 404, 'Production event not found');
   }
 
   if (body.timeout) {
+    // A countdown running out is the machine's TERMINAL giving up, not a
+    // second screen's: a plant head's office browser left on the dashboard
+    // must not take the ask away from the operator standing at the machine.
+    // Every other popup role dismisses locally; a stray call lands here.
+    if (!isOperatorRole(user?.role)) return ok(res, { handled: false });
     const r = await MachineEvent.updateOne(
       { _id: ev._id, classSource: 'default' },
       { $set: { classSource: 'timeout', classifiedAt: new Date() } },
@@ -191,7 +213,6 @@ export const classifyEvent = asyncHandler(async (req, res) => {
     return ok(res, { handled: r.modifiedCount > 0 });
   }
 
-  const cfg = await getProdClassConfig();
   const value = body.value as ClassValue;
   const opt = cfg.options.find((o) => o.value === value);
   if (!opt || !opt.enabled) return fail(res, 400, 'Not an enabled classification option');
@@ -205,18 +226,27 @@ export const classifyEvent = asyncHandler(async (req, res) => {
   );
   // modifiedCount 0 = someone else already answered — their word stands.
   // A popup answer of dry-cycle / sample takes the piece out of the count.
-  if (r.modifiedCount > 0) invalidateProductionReads();
+  if (r.modifiedCount > 0) {
+    invalidateProductionReads();
+    // The operator's answer is the row itself; anyone else the admin routed
+    // the popup to answers for a machine that is not theirs to run, and that
+    // is worth a line in the audit log.
+    if (!isOperatorRole(user?.role)) {
+      audit(user, 'production.classify', { type: 'production', id: String(ev._id), label: ev.machineId },
+        { classification: ev.classification }, { classification: value, source: 'popup', role: user?.role?.key || '' });
+    }
+  }
   return ok(res, { handled: r.modifiedCount > 0 });
 });
 
 // PATCH /events/:id/classification — correct a past classification, with a
 // REASON. Who may: anyone holding history.update (supervisors, admins), or the
-// machine's own operator (a production viewer whose assignedMachines holds
-// it) — the same person the popup trusted. Audited with the reason, and
-// allowed to use a currently DISABLED option: disabling only removes a button
-// from future popups, it does not make old truths unsayable.
+// machine's own operator — the same person the popup trusts, by the same rule
+// (routed to the popup, and assigned the machine). Audited with the reason,
+// and allowed to use a currently DISABLED option: disabling only removes a
+// button from future popups, it does not make old truths unsayable.
 export const editClassification = asyncHandler(async (req, res) => {
-  const user = req.user as (ScopedUser & { _id?: unknown; name?: string }) | undefined;
+  const user = req.user as AuthUser | undefined;
   const body = req.body as { value?: unknown; reason?: unknown };
   const value = body.value as ClassValue;
   const cfgNow = await getProdClassConfig();
@@ -226,9 +256,8 @@ export const editClassification = asyncHandler(async (req, res) => {
   if (reason.length > 200) return fail(res, 400, 'Reason must be 200 characters or fewer');
   const ev = await MachineEvent.findById(req.params.id).lean();
   if (!ev || ev.kind !== 'production') return fail(res, 404, 'Production event not found');
-  const own = refIn(user?.assignedMachines, ev.machineId);
-  const editor = userCan(user as AuthUser | undefined, 'history', 'update');
-  const operator = own && userCan(user as AuthUser | undefined, 'production', 'view');
+  const editor = userCan(user, 'history', 'update');
+  const operator = userCan(user, 'production', 'view') && await popupReaches(user, 'productionClass', ev.machineId);
   if (!editor && !operator) return fail(res, 404, 'Production event not found');
   const scope = machineScope(user);
   if (scope && !refIn(scope, ev.machineId)) return fail(res, 404, 'Production event not found');

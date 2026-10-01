@@ -105,7 +105,7 @@ export default function ProdClassSettings(): JSX.Element {
           <span className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center"><ListChecks size={16} className="text-accent" /></span>
           <div>
             <h3 className="font-semibold text-primary text-sm">Production classification</h3>
-            <p className="text-xs text-steel">Every counter advance asks the operator what it was. Counting never waits for the answer.</p>
+            <p className="text-xs text-steel">Every counter advance asks the operator what it was. Counting never waits for the answer. Who is asked, and how, is set under Alerts &amp; Downtime → “Who is told, and how”.</p>
           </div>
         </div>
         {dirty && (

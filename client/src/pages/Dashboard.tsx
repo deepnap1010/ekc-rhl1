@@ -22,7 +22,6 @@ import { dashboardApi, machineApi } from '../api/endpoints';
 import PageHeader from '../components/PageHeader';
 import GlobalFilters, { useGlobalWindow } from '../components/GlobalFilters';
 import ProductionVsTarget from '../components/ProductionVsTarget';
-import { ScheduledDiaPopup } from '../components/ScheduleDia';
 import { Donut, Legend } from '../components/charts';
 import { fmtNum, fmtDuration, fmtTime, prettyType } from '../lib/format';
 import { sumActivity } from '../lib/metrics';
@@ -206,9 +205,6 @@ export default function Dashboard() {
             with its own window filter (per hour / per shift / today…). */}
         <ProductionVsTarget rows={rows} windowMs={windowMs} windowLabel={windowLabel}
           from={fromISO} to={toISO} statusNow={statusNow} onMachineOpen={onMachineOpen} />
-
-        {/* Operator notice: scheduled-dia instructions, shown until dismissed */}
-        <ScheduledDiaPopup />
 
         {/* ── Fleet totals for the same window, under the groups they sum.
             Hidden while ONE machine's board is open above: a fleet donut

@@ -15,6 +15,7 @@ import Modal from './Modal';
 import { Spinner } from './ui';
 import { productionApi, eventsApi } from '../api/endpoints';
 import { useAppConfig } from '../hooks/useAppConfig';
+import { useNotifyMode } from '../hooks/useNotifyMode';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
 import { fmtNum, fmtTime } from '../lib/format';
@@ -169,10 +170,13 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
   const rows = allRows.slice((page - 1) * SIZE, page * SIZE);
   const total = allRows.length;
 
-  // Who may correct which row: history editors any row; an operator their own.
+  // Who may correct which row: history editors any row; an operator their own
+  // — the same person the popup trusts, so the same rule: routed to the popup,
+  // and assigned.
   const editor = can('history', 'update');
+  const popped = useNotifyMode('productionClass') === 'popup';
   const mine = useMemo(() => new Set((user?.assignedMachines || []).map((m) => m.toUpperCase())), [user]);
-  const mayEdit = (r: MachineEventRow): boolean => editor || (can('production', 'view') && mine.has(r.machineId.toUpperCase()));
+  const mayEdit = (r: MachineEventRow): boolean => editor || (popped && can('production', 'view') && mine.has(r.machineId.toUpperCase()));
 
   // The window's totals, in the operator's terms: counted vs classified
   // away. Climbs the engine refused (meta.implausible) are neither.

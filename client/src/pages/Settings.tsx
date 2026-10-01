@@ -18,6 +18,7 @@ import Modal from '../components/Modal';
 import DiaStagesSettings from '../components/DiaStagesSettings';
 import ProdClassSettings from '../components/ProdClassSettings';
 import DowntimeAskSettings from '../components/DowntimeAskSettings';
+import NotifyFlowSettings from '../components/NotifyFlowSettings';
 import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
@@ -560,6 +561,12 @@ function AlertsSection({ s }: { s: Settings }) {
   const pUnit = s.units.pressure;
   return (
     <>
+      {/* Server-side, shared by every screen: who is told what, and how, by
+          role — the workflow behind the operator popups — then the rules
+          behind the downtime popup itself. */}
+      <NotifyFlowSettings />
+      <DowntimeAskSettings />
+
       <Section title="Alert thresholds" desc="Planning limits for pressure-vessel safety. The live alert engine runs server-side; these guide display & review." icon={Bell}>
         <Row label="Temperature — warning"><NumberField value={s.alerts.tempWarn} onChange={(v) => patchSettings((d) => { d.alerts.tempWarn = v; })} suffix={tUnit} /></Row>
         <Row label="Temperature — critical"><NumberField value={s.alerts.tempCrit} onChange={(v) => patchSettings((d) => { d.alerts.tempCrit = v; })} suffix={tUnit} /></Row>
@@ -567,7 +574,7 @@ function AlertsSection({ s }: { s: Settings }) {
         <Row label="Pressure — critical"><NumberField value={s.alerts.pressureCrit} onChange={(v) => patchSettings((d) => { d.alerts.pressureCrit = v; })} suffix={pUnit} /></Row>
       </Section>
 
-      <Section title="Routing & escalation" desc="Who hears about what, and when." icon={MessageSquare}>
+      <Section title="Alert display on this device" desc="Device-local preferences for the alert feed — nothing here changes what the server sends or who is asked (that is the workflow above)." icon={MessageSquare}>
         <Row label="Minimum severity to notify">
           <Segmented<Severity> value={s.alerts.minSeverity} onChange={(v) => patchSettings((d) => { d.alerts.minSeverity = v; })}
             options={[{ value: 'info', label: 'Info' }, { value: 'warning', label: 'Warning' }, { value: 'critical', label: 'Critical' }]} />
@@ -584,10 +591,6 @@ function AlertsSection({ s }: { s: Settings }) {
           </Row>
         )}
       </Section>
-
-      {/* Server-side, shared by every screen — replaces the old device-local
-          reason list, which nothing ever read. */}
-      <DowntimeAskSettings />
     </>
   );
 }

@@ -22,6 +22,9 @@ import Modal from './Modal';
 import { productionApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
+import { useNotifyMode, isOperatorRole } from '../hooks/useNotifyMode';
+import { useNoticeFeed } from '../hooks/useNoticeFeed';
+import { useDismissed } from '../hooks/useDismissed';
 import { toast } from '../store/toast';
 import { fmtDuration, fmtTime } from '../lib/format';
 import { useMachineName } from '../lib/machineName';
@@ -102,20 +105,42 @@ export function DowntimeReasonPopup(): JSX.Element | null {
   const user = useAuthStore((s) => s.user);
   const can = useAuthStore((s) => s.can);
   const { downtimeAsk } = useAppConfig();
+  const mName = useMachineName();
   const qc = useQueryClient();
-  const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
-  const active = !!downtimeAsk?.enabled && isOperator && can('production', 'view');
+  // Who is asked is the admin's workflow, by role (hooks/useNotifyMode) —
+  // the same rule the server applies to the queue and to every answer. A
+  // notice can cover the whole plant's open downtime, which is the Downtime
+  // page's data, so it also needs that page's permission.
+  const mode = useNotifyMode('downtimeReason');
+  const allowed = !!downtimeAsk?.enabled && can('production', 'view');
+  const active = allowed && mode === 'popup';
+  const noticing = allowed && mode === 'notify' && can('downtime', 'view');
+  // Only the machine's terminal lets an ask lapse (see ProductionClassPopup).
+  const terminal = isOperatorRole(user?.role);
 
   const { data } = useQuery({
-    queryKey: ['downtime-ask', 'queue'],
+    queryKey: ['downtime-ask', 'queue', mode],
     queryFn: () => productionApi.downtimeQueue().then((r) => r.data),
-    enabled: active,
+    enabled: active || noticing,
     refetchInterval: 30_000,
   });
+  // A quiet line per new span — "No reason yet — SPG05 idle for 12m" — or one
+  // line naming the machines once there are more than three at once.
+  useNoticeFeed(data, noticing, (fresh) => {
+    const line = (s: DowntimeEvent): string =>
+      `${mName(s.machineId)} ${s.type} for ${fmtDuration(s.endedAt ? (s.durationMs || 0) : Date.now() - new Date(s.startedAt).getTime())}`;
+    return fresh.length <= 3
+      ? `No reason yet — ${fresh.map(line).join(' · ')}`
+      : `No reason yet on ${fresh.length} machines: ${fresh.map((s) => mName(s.machineId)).join(', ')}`;
+  });
 
+  // A notice-only role never fronts a span: nothing to count down. An ask
+  // that ran out on a non-terminal screen is closed on this device for good
+  // (hooks/useDismissed); an Esc is only for now.
   const [handled, setHandled] = useState<string[]>([]);
-  const rows = (data || []).filter((r) => !handled.includes(r._id));
-  const current = rows[0];
+  const closed = useDismissed(`ekc-asked:${user?.id || ''}:downtimeReason`);
+  const rows = (data || []).filter((r) => !handled.includes(r._id) && !closed.has(r._id));
+  const current = active ? rows[0] : undefined;
   const currentId = current?._id;
 
   const mut = useMutation({
@@ -150,7 +175,9 @@ export function DowntimeReasonPopup(): JSX.Element | null {
     if (!currentId) return;
     setLeft(timeoutSec);
     const t = setInterval(() => { setLeft((l) => l - 1); setTick((n) => n + 1); }, 1000);
-    const expiry = timeoutSec > 0 ? setTimeout(() => answer(currentId, null), timeoutSec * 1000) : null;
+    const expiry = timeoutSec > 0
+      ? setTimeout(() => (terminal ? answer(currentId, null) : closed.add(currentId)), timeoutSec * 1000)
+      : null;
     return () => { clearInterval(t); if (expiry) clearTimeout(expiry); };
   }, [currentId, timeoutSec]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -176,7 +203,7 @@ export function DowntimeReasonPopup(): JSX.Element | null {
                 style={{ width: `${pct}%`, background: left <= 5 ? '#DC2626' : 'rgb(var(--c-accent, 13 148 136))' }} />
             </div>
             <div className="flex items-center justify-between mt-1.5 text-[11px] text-steel">
-              <span>No answer in <span className="data font-semibold text-primary">{Math.max(0, left)}s</span> → left without a reason</span>
+              <span>No answer in <span className="data font-semibold text-primary">{Math.max(0, left)}s</span> → {terminal ? 'left without a reason' : 'closes here; the operator is still asked'}</span>
               <span>Can be added later on the Downtime page</span>
             </div>
           </div>

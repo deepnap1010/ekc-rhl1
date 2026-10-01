@@ -26,6 +26,7 @@ import type { ApiMeta, MetricStat, MetricValue, MachineEventRow } from '../types
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
+import { useNotifyMode } from '../hooks/useNotifyMode';
 import { classColor } from '../components/ProductionClassPopup';
 import { ReclassifyModal } from '../components/ProductionHistory';
 
@@ -277,7 +278,10 @@ function ClassCell({ e }: { e: MachineEventRow }): JSX.Element {
   const opts = prodClass?.options || [];
   const opt = opts.find((o) => o.value === e.classification);
   const label = opt?.label || e.classification || '—';
-  const own = (user?.assignedMachines || []).some((m) => m.toUpperCase() === e.machineId.toUpperCase());
+  // The operator may correct their own machines' rows — the same person the
+  // popup trusts, so the same rule: routed to the popup, and assigned.
+  const popped = useNotifyMode('productionClass') === 'popup';
+  const own = popped && (user?.assignedMachines || []).some((m) => m.toUpperCase() === e.machineId.toUpperCase());
   const canEdit = can('history', 'update') || (own && can('production', 'view'));
   const c = classColor(e.classification, opts);
   const who = e.classSource === 'operator' || e.classSource === 'edit' ? e.classifiedBy?.name : null;

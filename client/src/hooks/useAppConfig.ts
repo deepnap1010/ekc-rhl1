@@ -6,7 +6,7 @@ import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { configApi } from '../api/endpoints';
 import { useSettings, patchSettings, type ShiftTiming } from '../lib/settings';
-import type { ProdClassConfig, DowntimeAskConfig } from '../types/api';
+import type { ProdClassConfig, DowntimeAskConfig, NotifyFlowConfig } from '../types/api';
 
 export interface AppConfigLists {
   shifts: ShiftTiming[];
@@ -18,6 +18,8 @@ export interface AppConfigLists {
   prodClass: ProdClassConfig | null;
   /** Downtime-reason popup rules — null until the server answers. */
   downtimeAsk: DowntimeAskConfig | null;
+  /** Who is told what, and how, by role — null until the server answers. */
+  notifyFlow: NotifyFlowConfig | null;
   /** Admin's choice of what "now" means by default: the running shift or the
    *  full day. null while /config is still in flight — guessing 'shift' there
    *  opened every screen on the running shift and snapped it to the full day a
@@ -59,6 +61,7 @@ export function useAppConfig(): AppConfigLists {
     processStages: data?.processStages?.length ? data.processStages : s.production.processStages,
     prodClass: data?.prodClass || null,
     downtimeAsk: data?.downtimeAsk || null,
+    notifyFlow: data?.notifyFlow || null,
     defaultWindow: data ? (data.defaultWindow === 'day' ? 'day' : 'shift') : null,
     fromServer: !!data,
     readOnly: !!data?.readOnly,

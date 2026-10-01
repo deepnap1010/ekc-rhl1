@@ -7,6 +7,7 @@ import type { IUser, Deletion } from '../models/User.js';
 import { EmployeeHistory } from '../models/EmployeeHistory.js';
 import { ok, created, fail, asyncHandler } from '../utils/http.js';
 import { invalidateBootstrapCache, migratePermanentDeletes } from '../utils/bootstrap.js';
+import { forgetRoleRules } from '../utils/notifyFlow.js';
 
 // Coerce ANY stored/incoming permissions shape into a clean { module: [actions] }
 // matrix, filtered to valid modules × actions. Self-heals legacy/corrupt data that
@@ -90,8 +91,13 @@ export const createRole = asyncHandler(async (req, res) => {
     permissions?: Record<string, string[]>;
   };
   if (!name || !key) return fail(res, 400, 'name and key required');
-  const clean = isSuperAdminRole({ key, name }) ? FULL_PERMISSIONS : normalizePermissions(permissions);
-  const role = await Role.create({ name, key, description, permissions: clean as unknown as IRole['permissions'] });
+  // The key names the role everywhere else — the notification workflow stores
+  // rules under it as a field — so it is one word of 1–64 characters, no dots
+  // or dollars (the Roles page already slugs it; this guards the API).
+  const k = String(key).trim();
+  if (!/^[^.$\s][^.$]{0,63}$/.test(k)) return fail(res, 400, 'role key must be 1–64 characters without spaces at the edges, dots or $');
+  const clean = isSuperAdminRole({ key: k, name }) ? FULL_PERMISSIONS : normalizePermissions(permissions);
+  const role = await Role.create({ name, key: k, description, permissions: clean as unknown as IRole['permissions'] });
   return created(res, { ...role.toObject(), permissions: normalizePermissions(role.permissions) });
 });
 
@@ -121,6 +127,12 @@ export const deleteRole = asyncHandler(async (req, res) => {
   }
   await User.updateMany({ role: role._id }, { $set: { role: null } });
   await role.deleteOne();
+  // Its notification rules go with it — a role created later under the same
+  // key must start from the defaults, not inherit a popup nobody looked at.
+  // Unless a role differing only in case still carries that key: rules fold
+  // case, and the survivor's are not ours to drop.
+  const sibling = await Role.exists({ _id: { $ne: role._id }, key: new RegExp(`^${String(role.key || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+  if (!sibling) await forgetRoleRules(role.key);
   return ok(res, { deleted: true });
 });
 

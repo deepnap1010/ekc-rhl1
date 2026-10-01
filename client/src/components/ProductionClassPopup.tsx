@@ -15,6 +15,9 @@ import Modal from './Modal';
 import { productionApi, machineApi } from '../api/endpoints';
 import { useAuthStore } from '../store/auth';
 import { useAppConfig } from '../hooks/useAppConfig';
+import { useNotifyMode, isOperatorRole } from '../hooks/useNotifyMode';
+import { useNoticeFeed } from '../hooks/useNoticeFeed';
+import { useDismissed } from '../hooks/useDismissed';
 import { toast } from '../store/toast';
 import { fmtNum, fmtTime } from '../lib/format';
 import { useMachineName } from '../lib/machineName';
@@ -42,22 +45,45 @@ export function ProductionClassPopup(): JSX.Element | null {
   const { prodClass, shifts, defaultWindow } = useAppConfig();
   const mName = useMachineName();
   const qc = useQueryClient();
-  const isOperator = (user?.assignedMachines?.length ?? 0) > 0;
-  const active = !!prodClass?.enabled && isOperator && can('production', 'view');
+  // Who is asked is the admin's workflow, by role (hooks/useNotifyMode): the
+  // popup for a role routed to it, a quiet notice for one routed to notices,
+  // nothing for everyone else — a plant head given machines to watch is no
+  // longer popped like an operator. The server applies the same rule to the
+  // queue and to every answer.
+  const mode = useNotifyMode('productionClass');
+  const allowed = !!prodClass?.enabled && can('production', 'view');
+  const active = allowed && mode === 'popup';
+  const noticing = allowed && mode === 'notify';
+  // Only the machine's terminal lets an ask lapse; any other popup screen
+  // that runs out just closes, and the operator's screen keeps asking.
+  const terminal = isOperatorRole(user?.role);
 
   const { data } = useQuery({
-    queryKey: ['prodclass', 'queue'],
+    queryKey: ['prodclass', 'queue', mode],
     queryFn: () => productionApi.classQueue().then((r) => r.data),
-    enabled: active,
+    enabled: active || noticing,
     refetchInterval: 20_000,
+  });
+  // A notice is about the ASKS — what nobody has classified yet, on the
+  // machines this person can see — one line per poll for what is new.
+  useNoticeFeed(data, noticing, (fresh) => {
+    const by = new Map<string, number>();
+    for (const e of fresh) by.set(e.machineId, (by.get(e.machineId) || 0) + (e.delta || 0));
+    const total = [...by.values()].reduce((n, v) => n + v, 0);
+    const parts = [...by.entries()].sort((a, b) => b[1] - a[1]).map(([m, n]) => `${mName(m)} +${fmtNum(n)}`);
+    return `Awaiting classification — ${parts.slice(0, 4).join(', ')}${parts.length > 4 ? ` and ${parts.length - 4} more` : ''} (${fmtNum(total)} pc${total === 1 ? '' : 's'})`;
   });
 
   // Answered here and now: the event leaves the screen on click, not a
   // round-trip later. A refused ANSWER comes back with a toast; a refused
   // timeout stays gone (the row already holds the default either way).
+  // A notice-only role never fronts an event: nothing to count down, nothing
+  // to time out. An ask that ran out on a non-terminal screen is closed on
+  // this device for good (hooks/useDismissed); an Esc is only for now.
   const [handled, setHandled] = useState<string[]>([]);
-  const rows = (data || []).filter((r) => !handled.includes(r._id));
-  const current = rows[0];
+  const closed = useDismissed(`ekc-asked:${user?.id || ''}:productionClass`);
+  const rows = (data || []).filter((r) => !handled.includes(r._id) && !closed.has(r._id));
+  const current = active ? rows[0] : undefined;
   const currentId = current?._id;
 
   const mut = useMutation({
@@ -94,7 +120,7 @@ export function ProductionClassPopup(): JSX.Element | null {
     if (!currentId) return;
     setLeft(timeoutSec);
     const t = setInterval(() => setLeft((l) => l - 1), 1000);
-    const expiry = setTimeout(() => answer(currentId, null), timeoutSec * 1000);
+    const expiry = setTimeout(() => (terminal ? answer(currentId, null) : closed.add(currentId)), timeoutSec * 1000);
     return () => { clearInterval(t); clearTimeout(expiry); };
   }, [currentId, timeoutSec]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -207,7 +233,7 @@ export function ProductionClassPopup(): JSX.Element | null {
               style={{ width: `${pct}%`, background: left <= 5 ? '#DC2626' : 'rgb(var(--c-accent, 13 148 136))' }} />
           </div>
           <div className="flex items-center justify-between mt-1.5 text-[11px] text-steel">
-            <span>No answer in <span className="data font-semibold text-primary">{Math.max(0, left)}s</span> → recorded as {defaultLabel}</span>
+            <span>No answer in <span className="data font-semibold text-primary">{Math.max(0, left)}s</span> → {terminal ? `recorded as ${defaultLabel}` : 'closes here; the operator is still asked'}</span>
             <span>The count is already saved either way</span>
           </div>
         </div>
