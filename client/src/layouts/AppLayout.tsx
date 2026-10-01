@@ -6,7 +6,7 @@ import { DowntimeReasonPopup } from '../components/DowntimeReasonPopup';
 import { ScheduledDiaPopup } from '../components/ScheduleDia';
 import {
   LayoutGrid, Cpu, History, Clock, FileBarChart, Bell,
-  Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target,
+  Users, ShieldCheck, Network, LogOut, Gauge, Building2, Menu, X, Settings as SettingsIcon, Target, Wrench,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
@@ -37,6 +37,7 @@ const NAV: NavItem[] = [
   { to: '/orgchart',  label: 'Org Chart',          icon: Network,     module: 'orgchart',  section: 'Management' },
   { to: '/departments',label: 'Departments',       icon: Building2,   module: 'orgchart',  section: 'Management' },
   { to: '/roles',     label: 'Roles & Permissions',icon: ShieldCheck, module: 'roles',     section: 'Management' },
+  { to: '/corrections', label: 'Error Correction',  icon: Wrench,      module: 'corrections', section: 'Management' },
   { to: '/settings',  label: 'Settings',           icon: SettingsIcon,module: 'settings',  section: 'System' },
 ];
 

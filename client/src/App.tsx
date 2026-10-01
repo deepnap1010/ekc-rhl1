@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard';
 import Machines from './pages/Machines';
 import MachineDetail from './pages/MachineDetail';
 import Roles from './pages/Roles';
+import Corrections from './pages/Corrections';
 import Employees from './pages/Employees';
 import Downtime from './pages/Downtime';
 import History from './pages/History';
@@ -65,6 +66,7 @@ export default function App() {
             <Route path="/production"             element={P('production', <ProductionSetup />)} />
             <Route path="/production/trace"       element={P('production', <DiaTrace />)} />
             <Route path="/roles"                  element={P('roles', <Roles />)} />
+            <Route path="/corrections"            element={P('corrections', <Corrections />)} />
             <Route path="/settings"               element={P('settings', <Settings />)} />
           </Route>
         </Routes>

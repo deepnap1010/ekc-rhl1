@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   User as UserIcon, Building2, Bell, Shield, Factory, FileBarChart, Palette,
   Check, Plus, X, Sun, Moon, Monitor, RotateCcw, Info, Lock, ArrowRight,
-  Mail, MessageSquare, KeyRound, ScrollText, Clock, ExternalLink, Pencil, Camera, Ruler, Wrench,
+  Mail, MessageSquare, KeyRound, ScrollText, Clock, ExternalLink, Pencil, Camera, Ruler,
   type LucideIcon,
 } from 'lucide-react';
 import PageHeader from '../components/PageHeader';
@@ -19,7 +19,6 @@ import DiaStagesSettings from '../components/DiaStagesSettings';
 import ProdClassSettings from '../components/ProdClassSettings';
 import DowntimeAskSettings from '../components/DowntimeAskSettings';
 import NotifyFlowSettings from '../components/NotifyFlowSettings';
-import CorrectionBook from '../components/machine/CorrectionBook';
 import { useT } from '../lib/i18n';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
@@ -33,7 +32,7 @@ import {
   type Settings, type ThemeMode, type Severity,
 } from '../lib/settings';
 
-type SectionId = 'profile' | 'company' | 'alerts' | 'security' | 'production' | 'diastages' | 'corrections' | 'reports' | 'system';
+type SectionId = 'profile' | 'company' | 'alerts' | 'security' | 'production' | 'diastages' | 'reports' | 'system';
 
 // Shifts / products / process stages are SHARED lists (server app_config) so
 // every desktop sees the same values. Edits here save locally as always, and —
@@ -71,7 +70,6 @@ const SECTIONS: { id: SectionId; label: string; icon: LucideIcon; emoji: string 
   { id: 'security',   label: 'Security & Access',    icon: Shield,      emoji: '🔐' },
   { id: 'production',  label: 'Production & Quality', icon: Factory,     emoji: '🛢️' },
   { id: 'diastages',  label: 'Dia & Stages',         icon: Ruler,       emoji: '📐' },
-  { id: 'corrections', label: 'Error Correction',    icon: Wrench,      emoji: '🛠️' },
   { id: 'reports',    label: 'Reports & Compliance', icon: FileBarChart,emoji: '📊' },
   { id: 'system',     label: 'System & Appearance',  icon: Palette,     emoji: '🎨' },
 ];
@@ -90,8 +88,6 @@ export default function Settings() {
   const [section, setSection] = useState<SectionId>(
     SECTIONS.some((s) => s.id === initialSection) ? (initialSection as SectionId) : 'profile'
   );
-  const canOf = useAuthStore((st) => st.can);
-  const canBook = (['view', 'create', 'delete'] as const).some((a) => canOf('corrections', a));
 
   // Hydrate the shared lists FROM the server before any edit, so a push from
   // this device can never overwrite the server with a stale local seed.
@@ -111,14 +107,12 @@ export default function Settings() {
 
   return (
     <div>
-      <PageHeader title="Settings" subtitle="Device preferences, and the plant's shared rules — shifts, popups, who is told what, the error-correction book" />
+      <PageHeader title="Settings" subtitle="Device preferences, and the plant's shared rules — shifts, popups, who is told what" />
 
       <div className="px-4 sm:px-6 pb-10 pt-5 grid lg:grid-cols-[230px_1fr] gap-5">
-        {/* Section nav — vertical on desktop, horizontal scroller on mobile.
-            The error-correction book shows only to roles that hold any of
-            its permissions (Roles & Permissions → Corrections). */}
+        {/* Section nav — vertical on desktop, horizontal scroller on mobile */}
         <nav className="panel p-2 h-fit lg:sticky lg:top-20 flex lg:flex-col gap-1 overflow-x-auto">
-          {SECTIONS.filter((sec) => sec.id !== 'corrections' || canBook).map((sec) => {
+          {SECTIONS.map((sec) => {
             const active = section === sec.id;
             return (
               <button
@@ -143,31 +137,11 @@ export default function Settings() {
           {section === 'security'   && <SecuritySection s={s} />}
           {section === 'production' && <ProductionSection s={s} />}
           {section === 'diastages'  && <DiaStagesSettings />}
-          {section === 'corrections' && <CorrectionsSection />}
           {section === 'reports'    && <ReportsSection s={s} />}
           {section === 'system'     && <SystemSection s={s} />}
         </div>
       </div>
     </div>
-  );
-}
-
-// ── Error correction ───────────────────────────────────────────────────────────
-// The book, for every machine this person can see — the same screen a
-// machine card's Correct button opens for one machine.
-function CorrectionsSection() {
-  return (
-    <>
-      <Section title="Error correction" desc="What a machine really did over a period — when the collector started late, or recorded it wrong. Written beside the recorded data, signed and revocable; every figure that overlaps the period (cards, reports, targets, the Excel review) reads the correction instead." icon={Wrench}>
-        <CorrectionBook />
-      </Section>
-      <Section title="Who may correct" desc="Its own permission, nobody's until you grant it." icon={Shield}>
-        <p className="text-xs text-steel">
-          Roles &amp; Permissions → the <b>Corrections</b> module: <b>view</b> reads the book, <b>create</b> records a correction, <b>delete</b> revokes one. Super admins have all three.
-          A person corrects only the machines assigned to them (every machine when none are). Every correction and revocation is written to the audit log with who, when and why.
-        </p>
-      </Section>
-    </>
   );
 }
 
