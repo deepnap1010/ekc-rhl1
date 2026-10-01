@@ -11,7 +11,7 @@ import { Spinner, Avatar } from '../components/ui';
 import PageHeader from '../components/PageHeader';
 import { useAuthStore } from '../store/auth';
 import { roleStyle } from '../lib/orgRole';
-import { classifyRoleGroup, allRoleDepartments, type DeptKey } from '../lib/departments';
+import { classifyRoleGroup, allRoleDepartments, useRoleDepartments, type DeptKey } from '../lib/departments';
 import type { User } from '../types/api';
 
 // A department badge derived from a person's role, used to group the tree.
@@ -20,7 +20,7 @@ interface DeptBadge { key: DeptKey; name: string; fullName: string; accent: stri
 // Department a person belongs to, derived from their role (Production / Quality /
 // Maintenance / Safety). Plant Head & Super Admin sit above departments → null.
 function deptOf(u: User): DeptBadge | null {
-  const g = classifyRoleGroup({ key: u.role?.key, name: u.role?.name });
+  const g = classifyRoleGroup(u.role);
   const d = allRoleDepartments().find((x) => x.key === g);
   return d ? { key: d.key, name: d.name.replace(/\s*Department$/i, ''), fullName: d.name, accent: d.accent } : null;
 }
@@ -33,6 +33,10 @@ export default function OrgChart() {
   const me = useAuthStore((s) => s.user);
   const can = useAuthStore((s) => s.can);
   const canEdit = can('employees', 'update');
+  // The plant's departments (server-owned): the grouping below re-runs when
+  // the list arrives or changes, not only when the people do.
+  const roleDepartments = useRoleDepartments();
+  const deptSig = roleDepartments.map((d) => `${d.key}:${d.name}`).join('|');
 
   const [search, setSearch] = useState('');
   // Collapsed by default: a node's children show only when its id is in the expanded set.
@@ -109,7 +113,7 @@ export default function OrgChart() {
     };
     roots.forEach(walk);
     return vis;
-  }, [q, childrenOf, roots]);
+  }, [q, childrenOf, roots, deptSig]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (id: string) =>
     setExpanded((prev) => {
@@ -158,7 +162,7 @@ export default function OrgChart() {
     }
     forest(roots, null, '__root__');
     return { personIds, deptIds };
-  }, [roots, childrenOf]);
+  }, [roots, childrenOf, deptSig]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const expandAll = () => { setExpanded(new Set(allExpandable.personIds)); setDeptExpanded(new Set(allExpandable.deptIds)); };
   const collapseAll = () => { setExpanded(new Set()); setDeptExpanded(new Set()); };

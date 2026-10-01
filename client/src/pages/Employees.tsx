@@ -10,7 +10,7 @@ import PageHeader from '../components/PageHeader';
 import DeleteEmployeeModal from '../components/DeleteEmployeeModal';
 import EmployeeHistoryModal from '../components/EmployeeHistoryModal';
 import { useAuthStore } from '../store/auth';
-import { classifyRoleGroup, allRoleDepartments, displayRoleName, machineKey, DEPARTMENTS, usersForRole, isPlantHead, isSuperAdminUser, type RoleLike, type DeptRole } from '../lib/departments';
+import { classifyRoleGroup, useRoleDepartments, displayRoleName, machineKey, DEPARTMENTS, usersForRole, isPlantHead, isSuperAdminUser, type RoleLike, type DeptRole } from '../lib/departments';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import type { User, Role, Machine, UserWritePayload } from '../types/api';
 
@@ -162,7 +162,7 @@ function Field({ label, required, children }: { label: string; required?: boolea
 // "manager" doesn't swallow "Maintenance Manager"), to know exactly who it reports to.
 function configRoleFor(dbRole?: RoleLike | null): DeptRole | null {
   if (!dbRole) return null;
-  const group = classifyRoleGroup({ key: dbRole.key, name: dbRole.name });
+  const group = classifyRoleGroup(dbRole);
   const dept = DEPARTMENTS.find((d) => d.key === group);
   if (!dept) return null;
   const s = `${dbRole.key || ''} ${dbRole.name || ''}`.toLowerCase();
@@ -198,7 +198,7 @@ function roleRank(r: Role): number {
 // Which department dropdown a role belongs to (super_admin + plant_head → Leadership).
 function deptKeyForRole(r?: RoleLike | null): string {
   if (!r) return '';
-  const g = classifyRoleGroup({ key: r.key, name: r.name });
+  const g = classifyRoleGroup(r);
   return g === 'super_admin' || g === 'plant_head' ? 'leadership' : g;
 }
 
@@ -249,7 +249,7 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
   // "Reports to" follows the chosen role's department-config parent
   // (e.g. Mechanical Engineer → Maintenance Manager only).
   const selectedRole = roles.find((r) => r._id === form.role);
-  const selGroup = selectedRole ? classifyRoleGroup({ key: selectedRole.key, name: selectedRole.name }) : null;
+  const selGroup = selectedRole ? classifyRoleGroup(selectedRole) : null;
   const base = (users || []).filter((u) => u.id !== employee?.id);
   let parentTitle: string | null = null;
   if (!form.isSuperAdmin && selectedRole && selGroup !== 'super_admin') {
@@ -261,19 +261,22 @@ function EmployeeModal({ employee, roles, users, machines, onClose, onSaved }: E
         : parentTitle ? reportsToUsers(parentTitle, base)
           : base;
 
-  // Group the role dropdown into department sections (Leadership → departments → other).
+  // Group the role dropdown into department sections (Leadership → departments → other)
+  // — the plant's own department list, the same one the Roles page edits.
+  const roleDepartments = useRoleDepartments();
+  const deptSig = roleDepartments.map((d) => `${d.key}:${d.name}`).join('|');
   const groupedRoles = useMemo(() => {
     const g: Record<string, Role[]> = {};
-    (roles || []).forEach((r) => { const k = classifyRoleGroup({ key: r.key, name: r.name }); (g[k] = g[k] || []).push(r); });
+    (roles || []).forEach((r) => { const k = classifyRoleGroup(r); (g[k] = g[k] || []).push(r); });
     Object.values(g).forEach((arr) => arr.sort((a, b) => roleRank(a) - roleRank(b) || a.name.localeCompare(b.name)));
     return g;
-  }, [roles]);
+  }, [roles, deptSig]); // eslint-disable-line react-hooks/exhaustive-deps
   const leadershipRoles = [...(groupedRoles.super_admin || []), ...(groupedRoles.plant_head || [])];
 
   // Cascading role picker: choose a department first, then its roles fill the 2nd select.
   const deptOptions = [
     { key: 'leadership', name: 'Leadership', roles: leadershipRoles },
-    ...allRoleDepartments().map((d) => ({ key: d.key as string, name: d.name, roles: groupedRoles[d.key] || [] })),
+    ...roleDepartments.map((d) => ({ key: d.key as string, name: d.name, roles: groupedRoles[d.key] || [] })),
     { key: 'other', name: 'Other', roles: groupedRoles.other || [] },
   ].filter((d) => d.roles.length > 0);
   const rolesForDept = deptOptions.find((d) => d.key === form.dept)?.roles || [];

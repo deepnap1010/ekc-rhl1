@@ -117,6 +117,7 @@ function sanitize(user: SanitizableUser) {
           id: user.role._id,
           name: user.role.name,
           key: user.role.key,
+          department: user.role.department || '',
           permissions: user.role.permissions instanceof Map
             ? Object.fromEntries(user.role.permissions)
             : user.role.permissions,

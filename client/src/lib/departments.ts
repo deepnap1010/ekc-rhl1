@@ -1,14 +1,17 @@
 // client/src/lib/departments.ts
-// Frontend-only ORG / RBAC knowledge for EKC (Everest Kanto Cylinder). The database
-// is NEVER modified — this layer maps the REAL users (role, reportsTo, plant,
-// assignedMachines) and REAL machines into the company structure:
+// ORG / RBAC knowledge for EKC (Everest Kanto Cylinder). This layer maps the
+// REAL users (role, reportsTo, plant, assignedMachines) and REAL machines into
+// the company structure:
 //
 //   Company → Plant → Department → Role → User
 //
-// Departments are switched on here as they're approved. Production is live first;
-// Quality / Maintenance / HR / Safety follow by adding more entries to DEPARTMENTS.
+// The narrative below (DEPARTMENTS: purposes, stations, reporting lines) is
+// the org page's and stays here. The LIST of departments roles are grouped
+// by is the plant's own — server-owned, edited on the Roles page — and the
+// four built-ins here are only what applies until the server answers.
 import { useEffect, useReducer } from 'react';
-import type { User, Machine, PermissionMatrix } from '../types/api';
+import type { User, Machine, PermissionMatrix, DepartmentRow } from '../types/api';
+import { useAppConfig } from '../hooks/useAppConfig';
 
 export const COMPANY = { name: 'Everest Kanto Cylinder', short: 'EKC' } as const;
 
@@ -208,7 +211,7 @@ export const DEPARTMENTS: Department[] = [
 //   Super Admin → Plant Head → Department → roles.
 // `match` are the keywords that route a role's key/name into the department, so when
 // the user creates e.g. "QC Manager" it lands under Quality automatically.
-// Built-in department keys; custom (user-added) departments contribute arbitrary
+// Built-in department keys; the plant's own departments contribute arbitrary
 // string keys at runtime, so the type stays open while documenting the built-ins.
 export type DeptKey = 'production' | 'quality' | 'maintenance' | 'safety' | (string & {});
 export type RoleGroupKey = DeptKey | 'super_admin' | 'plant_head' | 'other';
@@ -217,8 +220,7 @@ export interface RoleDepartment {
   key: DeptKey;
   name: string;
   accent: string;
-  match: string[];
-  custom?: boolean;
+  match: string[];   // words that file an UNPLACED role here by its name
 }
 
 export const ROLE_DEPARTMENTS: RoleDepartment[] = [
@@ -231,84 +233,91 @@ export const ROLE_DEPARTMENTS: RoleDepartment[] = [
 // Generic shop-floor roles (no department word in the name) default into Production.
 const GENERIC_PROD_ROLES = ['manager', 'supervis', 'operator'];
 
-// ── User-added (custom) departments — stored locally only, never in the DB ──────
-const CUSTOM_DEPT_KEY = 'ekc.custom.departments.v1';
-const CUSTOM_DEPT_ACCENTS = ['#7C3AED', '#0EA5E9', '#DB2777', '#65A30D', '#EA580C', '#0891B2'];
+// ── The plant's department list — server-owned ──────────────────────────────
+// Read from the shared config (GET /config.departments), edited on the Roles
+// page (PUT /rbac/departments). Kept in a module-level cache so the pure
+// helpers below (classifyRoleGroup, the org chart's deptOf…) read it
+// synchronously; the hook feeds the cache and re-renders its holders when
+// the list changes. Until the server answers, the four built-ins apply — the
+// same list the server defaults to, so nothing flickers.
+let serverDepts: RoleDepartment[] | null = null;
 const deptListeners = new Set<() => void>();
 
-function readCustomDepts(): RoleDepartment[] {
-  try { return JSON.parse(localStorage.getItem(CUSTOM_DEPT_KEY) || '[]') as RoleDepartment[]; } catch { return []; }
-}
-function writeCustomDepts(list: RoleDepartment[]): void {
-  localStorage.setItem(CUSTOM_DEPT_KEY, JSON.stringify(list));
-  deptListeners.forEach((fn) => fn());
+// Words that file an UNPLACED role into a department by its name: the curated
+// list for a built-in, the department's own name for one the plant added.
+const matchWordsOf = (d: DepartmentRow): string[] => {
+  const builtin = ROLE_DEPARTMENTS.find((b) => b.key === d.key);
+  if (builtin) return builtin.match;
+  const words = d.name.toLowerCase().replace(/department/g, ' ').split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+  return [...new Set([d.key, ...words])];
+};
+/** Feed the cache; returns whether it changed. Silent — notifying is the hook's job. */
+function primeServerDepts(list: DepartmentRow[]): boolean {
+  const next = list.map((d) => ({ key: d.key, name: d.name, accent: d.accent, match: matchWordsOf(d) }));
+  if (JSON.stringify(next) === JSON.stringify(serverDepts)) return false;
+  serverDepts = next;
+  return true;
 }
 
-export function getCustomDepartments(): RoleDepartment[] { return readCustomDepts(); }
-
-// Built-in + user-added departments — the single source used to group roles.
+/** The plant's departments, in the admin's order — the single source used to group roles. */
 export function allRoleDepartments(): RoleDepartment[] {
-  return [...ROLE_DEPARTMENTS, ...readCustomDepts()];
+  return serverDepts ?? ROLE_DEPARTMENTS;
 }
 
-// Add a department from a display name. Returns the new dept, or null if the name is
-// empty/invalid or duplicates an existing department.
-export function addCustomDepartment(name: string, accent?: string): RoleDepartment | null {
-  const clean = String(name || '').replace(/department/i, '').trim();
-  const key = clean.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  if (!key) return null;
-  if (allRoleDepartments().some((d) => d.key === key)) return null;
-  const list = readCustomDepts();
-  const words = clean.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  const dept: RoleDepartment = {
-    key,
-    name: /department$/i.test(name) ? name.trim() : `${clean} Department`,
-    accent: accent || CUSTOM_DEPT_ACCENTS[list.length % CUSTOM_DEPT_ACCENTS.length] || '#7C3AED',
-    match: [...new Set([key, ...words])],
-    custom: true,
-  };
-  writeCustomDepts([...list, dept]);
-  return dept;
-}
-
-export function removeCustomDepartment(key: string): void {
-  writeCustomDepts(readCustomDepts().filter((d) => d.key !== key));
-}
-
-// Re-renders the holder whenever the custom-department list changes.
+/** The list, live: feeds the cache from the shared config and re-renders the
+ *  holder whenever it changes. The cache is primed during render, before the
+ *  holder reads it, so a form's first render (an employee's department, say)
+ *  already sees the plant's list; other holders are told in the effect. */
 export function useRoleDepartments(): RoleDepartment[] {
+  const { departments } = useAppConfig();
   const [, force] = useReducer((c: number) => c + 1, 0);
   useEffect(() => { deptListeners.add(force); return () => { deptListeners.delete(force); }; }, []);
+  const changed = !!departments?.length && primeServerDepts(departments);
+  useEffect(() => { if (changed) deptListeners.forEach((fn) => fn()); }, [changed, departments]);
   return allRoleDepartments();
 }
+
+// Departments an earlier build kept on THIS device only (localStorage). The
+// Roles page moves them to the plant's list once, then forgets them here.
+const LEGACY_LOCAL_KEY = 'ekc.custom.departments.v1';
+export function takeLocalDepartments(): { key: string; name: string; accent: string }[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LEGACY_LOCAL_KEY) || '[]') as { key?: string; name?: string; accent?: string }[];
+    // The old modal capped nothing; the plant's list does.
+    return Array.isArray(raw)
+      ? raw.filter((d) => d && d.key && d.name).map((d) => ({ key: String(d.key).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 40), name: String(d.name).trim().slice(0, 60), accent: String(d.accent || '#7C3AED') }))
+      : [];
+  } catch { return []; }
+}
+export function forgetLocalDepartments(): void { try { localStorage.removeItem(LEGACY_LOCAL_KEY); } catch { /* nothing to forget */ } }
 
 // A role-ish shape — both DB roles (Role) and trimmed user roles (UserRole) satisfy it.
 export interface RoleLike {
   key?: string | null;
   name?: string | null;
+  department?: string | null;   // where the admin placed it, '' = filed by its name
 }
 
 // Route a role into a group for the Roles & Permissions tree:
 //   'super_admin' · 'plant_head' · <department key> · 'other'
+// Leadership is recognised by name whatever else is set; after that the
+// admin's placement wins, and only an unplaced role is filed by its words.
 export function classifyRoleGroup(role?: RoleLike | null): RoleGroupKey {
   const s = `${role?.key || ''} ${role?.name || ''}`.toLowerCase();
   if (/super.?admin/.test(s)) return 'super_admin';
   if (/plant.?head|planthead/.test(s)) return 'plant_head';
+  const placed = String(role?.department || '').trim().toLowerCase();
+  if (placed && allRoleDepartments().some((d) => d.key === placed)) return placed;
   for (const d of allRoleDepartments()) if (d.match.some((k) => s.includes(k))) return d.key;
-  if (GENERIC_PROD_ROLES.some((k) => s.includes(k))) return 'production';
+  // Generic shop-floor words mean Production — while the plant has one.
+  if (GENERIC_PROD_ROLES.some((k) => s.includes(k)) && allRoleDepartments().some((d) => d.key === 'production')) return 'production';
   return 'other';
 }
 
-// Display-name overrides for generic shop-floor roles so they read with their
-// department context. Display-only — the role's key/name in the DB is unchanged.
-export const ROLE_DISPLAY_OVERRIDES: Record<string, string> = {
-  manager: 'Production Manager',
-  supervisor: 'Production Supervisor',
-};
+// A role reads as the admin named it — the Roles page renames it for real
+// now, so no display-time overrides.
 export function displayRoleName(role?: RoleLike | null): string {
-  if (!role) return '';
-  const key = (role.key || '').toLowerCase();
-  return ROLE_DISPLAY_OVERRIDES[key] || role.name || role.key || '';
+  return role ? (role.name || role.key || '') : '';
 }
 
 // Ready-to-create department roles with sensible baseline permissions. Created via

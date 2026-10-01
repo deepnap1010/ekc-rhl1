@@ -46,6 +46,7 @@ export interface UserRole {
   id: string;
   name: string;
   key: string;
+  department?: string;   // the department the admin placed the role in ('' = filed by its name)
   // Only the authenticated user's own role (from /auth/login & /auth/me) carries
   // the permission matrix; the trimmed role on listed users omits it.
   permissions?: PermissionMatrix;
@@ -107,6 +108,7 @@ export interface Role {
   name: string;
   key: string;
   description?: string;
+  department?: string;   // department key ('' = filed by its name)
   isSystem?: boolean;
   permissions: PermissionMatrix;
   createdAt?: string;
@@ -117,6 +119,10 @@ export interface RbacMeta {
   modules: string[];
   actions: string[];
 }
+
+// A department — the group a role sits in. The plant's list is shared
+// (GET /config.departments) and edited on the Roles page.
+export interface DepartmentRow { key: string; name: string; accent: string }
 
 // ─── Plant ─────────────────────────────────────────────────────────────────
 export interface Plant {
@@ -419,6 +425,7 @@ export interface AppConfigShape {
   prodClass?: ProdClassConfig;   // production classification popup rules
   downtimeAsk?: DowntimeAskConfig;   // downtime-reason popup rules
   notifyFlow?: NotifyFlowConfig;     // who is told what, and how, by role
+  departments?: DepartmentRow[];     // the groups roles sit in, in the admin's order
   defaultWindow?: 'shift' | 'day';   // what every screen opens on: the running shift or the full day
   stored: boolean;
   // True when this deployment only MIRRORS the plant: it is refreshed from the

@@ -112,7 +112,11 @@ r.get('/rbac/meta', authorize('roles'), rbac.rbacMeta);
 r.get('/roles', authorize('roles'), rbac.listRoles);
 r.post('/roles', authorize('roles', 'create'), rbac.createRole);
 r.patch('/roles/:id/permissions', authorize('roles', 'update'), rbac.updateRolePermissions);
+r.patch('/roles/:id', authorize('roles', 'update'), rbac.updateRole);                 // rename / describe / move to a department
 r.delete('/roles/:id', authorize('roles', 'delete'), rbac.deleteRole);
+// Departments — the groups roles sit in, one shared list (also on GET /config)
+r.get('/rbac/departments', authorize('roles'), rbac.listDepartments);
+r.put('/rbac/departments', authorize('roles', 'update'), rbac.updateDepartments);
 
 // Users / employees
 r.get('/users', authorize('employees'), rbac.listUsers);

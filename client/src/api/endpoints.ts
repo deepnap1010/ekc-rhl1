@@ -12,6 +12,7 @@ import type {
   EventsSummary,
   AppConfigShape,
   NotifyFlowConfig,
+  DepartmentRow,
   ProductionByType,
   Machine,
   MachineSummary,
@@ -192,7 +193,13 @@ export const rbacApi = {
   createRole: (body: Partial<Role>) => post<Role>('/roles', body),
   updatePermissions: (id: string, permissions: PermissionMatrix) =>
     patch<Role>(`/roles/${id}/permissions`, { permissions }),
+  // Rename, describe, or move a role to a department — the key never changes.
+  updateRole: (id: string, body: Partial<Pick<Role, 'name' | 'description' | 'department'>>) => patch<Role>(`/roles/${id}`, body),
   deleteRole: (id: string) => del<{ deleted: boolean }>(`/roles/${id}`),
+  // The plant's departments, whole list in the admin's order.
+  departments: () => get<DepartmentRow[]>('/rbac/departments'),
+  updateDepartments: (departments: Pick<DepartmentRow, 'key' | 'name' | 'accent'>[]) =>
+    api.put('/rbac/departments', { departments }) as unknown as Promise<ApiResponse<DepartmentRow[]>>,
 };
 
 export const userApi = {

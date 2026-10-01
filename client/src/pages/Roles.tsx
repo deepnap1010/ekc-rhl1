@@ -1,17 +1,18 @@
 // client/src/pages/Roles.tsx
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, Plus, Lock, LockOpen, Crown, ChevronDown, ChevronRight, Sparkles, Building2, X, ShieldCheck } from 'lucide-react';
-import { rbacApi } from '../api/endpoints';
+import { Save, Plus, Lock, LockOpen, Crown, ChevronDown, ChevronRight, Sparkles, Building2, X, ShieldCheck, Pencil, Trash2, Check } from 'lucide-react';
+import { rbacApi, authApi } from '../api/endpoints';
 import { Spinner } from '../components/ui';
 import Modal from '../components/Modal';
 import PageHeader from '../components/PageHeader';
 import { prettyKey } from '../lib/format';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
+import { useAppConfig } from '../hooks/useAppConfig';
 import {
   classifyRoleGroup, DEFAULT_ROLE_TEMPLATES, displayRoleName,
-  useRoleDepartments, addCustomDepartment, removeCustomDepartment, type RoleDepartment,
+  useRoleDepartments, takeLocalDepartments, forgetLocalDepartments, type RoleDepartment,
 } from '../lib/departments';
 import type { PermissionMatrix, Role } from '../types/api';
 
@@ -27,17 +28,25 @@ const isProtected = (r?: Role | null): boolean => {
   return s.includes('super') && s.includes('admin');
 };
 
+const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+const deptKeyOf = (name: string): string => slug(name.replace(/\s*department\s*$/i, '')).slice(0, 40);
+
 export default function Roles() {
   const qc = useQueryClient();
   const can = useAuthStore((s) => s.can);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PermissionDraft>({}); // module -> Set(actions)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['production'])); // open departments
-  const [creating, setCreating] = useState(false);        // New role modal
+  const [creating, setCreating] = useState<null | { department: string }>(null);   // New role modal (+ the department it opens from)
+  const [editing, setEditing] = useState(false);          // Edit role modal (name / description / department)
   const [addingDept, setAddingDept] = useState(false);    // Add department modal
+  const [renaming, setRenaming] = useState<{ key: string; name: string } | null>(null);   // inline department rename
   const canEdit = can('roles', 'update');                  // permission to edit roles at all
-  const roleDepartments = useRoleDepartments();            // built-in + custom departments
-  const deptSig = roleDepartments.map((d) => d.key).join('|'); // stable memo signal
+  const canCreate = can('roles', 'create');
+  const canDelete = can('roles', 'delete');
+  // The plant's departments — server-owned, same list on every screen.
+  const roleDepartments = useRoleDepartments();
+  const deptSig = roleDepartments.map((d) => `${d.key}:${d.name}`).join('|'); // stable memo signal
 
   const { data: meta } = useQuery({ queryKey: ['rbac', 'meta'], queryFn: () => rbacApi.meta().then((r) => r.data) });
   const { data: roles, isLoading } = useQuery({ queryKey: ['roles'], queryFn: () => rbacApi.roles().then((r) => r.data) });
@@ -72,6 +81,54 @@ export default function Roles() {
     }
   }, [selected?._id]);
 
+  // Every department edit is applied to the plant's LIVE list, fetched at
+  // that moment — never to this screen's copy, which may be a minute old or
+  // the built-in fallback, and a stale whole-list save would silently drop a
+  // department another desk just added (and unplace its roles). Every screen
+  // that groups roles reads the result back from the shared config.
+  type DeptRow = Pick<RoleDepartment, 'key' | 'name' | 'accent'>;
+  const saveDepts = async (edit: (live: DeptRow[]) => DeptRow[]): Promise<void> => {
+    const live = (await rbacApi.departments()).data;
+    await rbacApi.updateDepartments(edit(live).map((d) => ({ key: d.key, name: d.name, accent: d.accent })));
+    await qc.invalidateQueries({ queryKey: ['app-config'] });
+    await qc.invalidateQueries({ queryKey: ['roles'] });   // a removed department unplaces its roles
+  };
+  // Departments an earlier build kept on this device only: moved to the plant's
+  // list once, so they finally exist for everyone, then forgotten here — also
+  // when the plant refuses them (the admin is told), or every visit would retry.
+  const { departments: plantList } = useAppConfig();
+  const deptsReady = !!plantList?.length;
+  useEffect(() => {
+    if (!canEdit || !deptsReady) return;
+    const local = takeLocalDepartments();
+    if (!local.length) return;
+    saveDepts((live) => [...live, ...local.filter((d) => !live.some((x) => x.key === d.key || x.name.toLowerCase() === d.name.toLowerCase()))])
+      .then(() => toast.success(`Moved ${local.length} department${local.length > 1 ? 's' : ''} from this device to the plant's list`))
+      .catch((e: unknown) => toast.error(`This device's old departments could not be moved to the plant: ${e instanceof Error ? e.message : 'rejected'}`))
+      .finally(() => forgetLocalDepartments());
+  }, [canEdit, deptsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const renameDept = async (): Promise<void> => {
+    if (!renaming) return;
+    const name = renaming.name.trim();
+    if (!name) { setRenaming(null); return; }
+    try {
+      await saveDepts((live) => live.map((d) => (d.key === renaming.key ? { ...d, name } : d)));
+      toast.success('Department renamed');
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not rename'); }
+    setRenaming(null);
+  };
+  const removeDept = async (d: RoleDepartment): Promise<void> => {
+    // Only roles the admin PLACED here are affected; roles filed here by their
+    // names are filed the same way again.
+    const placed = (roles || []).filter((r) => (r.department || '') === d.key).length;
+    if (!window.confirm(`Remove the "${d.name}" department?${placed ? ` Its ${placed} placed role${placed > 1 ? 's' : ''} go back to being filed by name — Manager / Supervisor / Operator under Production, a department word under that department, anything else under Other.` : ''}`)) return;
+    try {
+      await saveDepts((live) => live.filter((x) => x.key !== d.key));
+      toast.success(`${d.name} removed`);
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not remove'); }
+  };
+
   const saveMut = useMutation({
     mutationFn: () => {
       const perms: PermissionMatrix = {};
@@ -81,6 +138,18 @@ export default function Roles() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['roles'] }); toast.success('Permissions saved'); },
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not save permissions'),
   });
+
+  // Deleting a role detaches the people in it (they keep their accounts, with
+  // no role until reassigned) and drops its notification rules.
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => rbacApi.deleteRole(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['roles'] }); qc.invalidateQueries({ queryKey: ['app-config'] }); setSelectedId(null); toast.success('Role deleted'); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not delete the role'),
+  });
+  const deleteRole = (r: Role): void => {
+    if (!window.confirm(`Delete the "${displayRoleName(r)}" role? People in it keep their accounts but have no role until you assign another.`)) return;
+    deleteMut.mutate(r._id);
+  };
 
   // One-click: create the Quality / Maintenance / Safety department roles that don't
   // exist yet (via the normal /roles API). Idempotent — skips any already present.
@@ -119,12 +188,14 @@ export default function Roles() {
 
   if (isLoading) return <div><PageHeader title="Roles & Permissions" /><Spinner /></div>;
 
+  const deptName = (key?: string): string => roleDepartments.find((d) => d.key === (key || ''))?.name || '';
+
   return (
     <div>
       <PageHeader
         title="Roles & Permissions"
         subtitle="Dynamic RBAC — module access per role"
-        right={can('roles', 'create') && (
+        right={canCreate && (
           <div className="flex items-center gap-2">
             {missingTemplateCount > 0 && (
               <button onClick={() => setupMut.mutate()} disabled={setupMut.isPending}
@@ -132,14 +203,14 @@ export default function Roles() {
                 <Sparkles size={15} /> {setupMut.isPending ? 'Creating…' : `Set up dept roles (${missingTemplateCount})`}
               </button>
             )}
-            <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3 py-1.5 rounded-lg hover:bg-accent/90 transition-colors">
+            <button onClick={() => setCreating({ department: '' })} className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3 py-1.5 rounded-lg hover:bg-accent/90 transition-colors">
               <Plus size={15} /> New role
             </button>
           </div>
         )}
       />
 
-      <div className="px-4 sm:px-6 pb-8 grid lg:grid-cols-[240px_1fr] gap-5">
+      <div className="px-4 sm:px-6 pb-8 grid lg:grid-cols-[260px_1fr] gap-5">
         {/* Role tree — Super Admin → Plant Head → Departments → roles */}
         <div className="panel p-2 h-fit space-y-2">
           {/* Leadership */}
@@ -151,11 +222,11 @@ export default function Roles() {
             </div>
           ) : null}
 
-          {/* Departments — built-in + user-added (custom) */}
+          {/* Departments — the plant's own list: rename, remove, add roles inside */}
           <div>
             <div className="label px-2 mb-1 flex items-center justify-between">
               <span>Departments</span>
-              {can('roles', 'create') && (
+              {canEdit && deptsReady && (
                 <button onClick={() => setAddingDept(true)} title="Add department" className="text-steel hover:text-accent transition-colors">
                   <Plus size={13} />
                 </button>
@@ -164,28 +235,46 @@ export default function Roles() {
             {roleDepartments.map((d) => {
               const deptRoles = grouped[d.key] || [];
               const open = isOpen(d.key);
+              const isRenaming = renaming?.key === d.key;
               return (
                 <div key={d.key} className="mb-0.5">
-                  <div onClick={() => toggleGroup(d.key)}
+                  <div onClick={() => { if (!isRenaming) toggleGroup(d.key); }}
                     className="w-full flex items-center gap-1.5 px-2 py-2 rounded-lg hover:bg-line/50 text-left transition-colors cursor-pointer group/dept">
                     {open ? <ChevronDown size={14} className="text-steel shrink-0" /> : <ChevronRight size={14} className="text-steel shrink-0" />}
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: d.accent }} />
-                    <span className="text-sm font-medium text-primary flex-1 truncate">{d.name}</span>
-                    <span className="pill bg-line text-steel !text-[10px]">{deptRoles.length}</span>
-                    {d.custom && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); if (window.confirm(`Remove the "${d.name}" department? Its roles move to "Other".`)) removeCustomDepartment(d.key); }}
-                        title="Remove department"
-                        className="opacity-0 group-hover/dept:opacity-100 text-steel hover:text-stopped transition-opacity shrink-0">
-                        <X size={13} />
-                      </button>
+                    {isRenaming ? (
+                      <span className="flex-1 flex items-center gap-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+                        <input value={renaming.name} autoFocus maxLength={60}
+                          onChange={(e) => setRenaming({ key: d.key, name: e.target.value })}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void renameDept(); } if (e.key === 'Escape') setRenaming(null); }}
+                          className="input !py-1 !px-2 text-sm flex-1 min-w-0" />
+                        <button onClick={() => void renameDept()} title="Save name" className="text-accent hover:text-accent/80 shrink-0"><Check size={14} /></button>
+                        <button onClick={() => setRenaming(null)} title="Cancel" className="text-steel hover:text-primary shrink-0"><X size={14} /></button>
+                      </span>
+                    ) : (
+                      <span className="text-sm font-medium text-primary flex-1 truncate">{d.name}</span>
+                    )}
+                    {!isRenaming && <span className="pill bg-line text-steel !text-[10px]">{deptRoles.length}</span>}
+                    {!isRenaming && canEdit && deptsReady && (
+                      <span className="flex items-center gap-1 opacity-0 group-hover/dept:opacity-100 transition-opacity shrink-0">
+                        {canCreate && (
+                          <button onClick={(e) => { e.stopPropagation(); setCreating({ department: d.key }); }} title={`Add a role to ${d.name}`}
+                            className="text-steel hover:text-accent"><Plus size={13} /></button>
+                        )}
+                        <button onClick={(e) => { e.stopPropagation(); setRenaming({ key: d.key, name: d.name }); }} title="Rename department"
+                          className="text-steel hover:text-accent"><Pencil size={12} /></button>
+                        {roleDepartments.length > 1 && (
+                          <button onClick={(e) => { e.stopPropagation(); void removeDept(d); }} title="Remove department"
+                            className="text-steel hover:text-stopped"><X size={13} /></button>
+                        )}
+                      </span>
                     )}
                   </div>
                   {open && (
                     <div className="ml-3 pl-2 border-l border-line mt-0.5">
                       {deptRoles.length
                         ? deptRoles.map((r) => <RoleItem key={r._id} role={r} selected={selected} onSelect={setSelectedId} />)
-                        : <div className="text-[11px] text-steel/60 px-2 py-1.5">No roles yet — use “New role” or “Set up dept roles”.</div>}
+                        : <div className="text-[11px] text-steel/60 px-2 py-1.5">No roles yet — hover the department for “+”.</div>}
                     </div>
                   )}
                 </div>
@@ -193,10 +282,10 @@ export default function Roles() {
             })}
           </div>
 
-          {/* Other / unassigned roles */}
+          {/* Other / unplaced roles */}
           {grouped.other?.length ? (
             <div>
-              <div className="label px-2 mb-1">Other</div>
+              <div className="label px-2 mb-1" title="Roles no department claims — edit a role to place it">Other</div>
               {grouped.other.map((r) => <RoleItem key={r._id} role={r} selected={selected} onSelect={setSelectedId} />)}
             </div>
           ) : null}
@@ -209,17 +298,32 @@ export default function Roles() {
               <h2 className="font-semibold flex items-center gap-2">
                 <span className="truncate">{displayRoleName(selected)}</span>
                 {selected?.isSystem && <span className="pill bg-line text-steel !text-[10px] shrink-0">System</span>}
+                {selected && deptName(selected.department) && <span className="pill bg-accent/10 text-accent !text-[10px] shrink-0">{deptName(selected.department)}</span>}
               </h2>
               <p className="text-xs text-steel truncate">{selected?.description || 'No description'}</p>
             </div>
-            {editable && (
-              <button
-                onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
-                className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3 py-1.5 rounded-lg disabled:opacity-60 shrink-0"
-              >
-                <Save size={15} /> {saveMut.isPending ? 'Saving…' : 'Save permissions'}
-              </button>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              {selected && canEdit && (
+                <button onClick={() => setEditing(true)} title="Rename, describe or move this role"
+                  className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-line text-primary hover:bg-base transition-colors">
+                  <Pencil size={14} /> Edit
+                </button>
+              )}
+              {selected && canDelete && !protectedRole && (
+                <button onClick={() => deleteRole(selected)} disabled={deleteMut.isPending} title="Delete this role"
+                  className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-stopped/30 text-stopped hover:bg-stopped/5 disabled:opacity-60 transition-colors">
+                  <Trash2 size={14} /> Delete
+                </button>
+              )}
+              {editable && (
+                <button
+                  onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
+                  className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3 py-1.5 rounded-lg disabled:opacity-60"
+                >
+                  <Save size={15} /> {saveMut.isPending ? 'Saving…' : 'Save permissions'}
+                </button>
+              )}
+            </div>
           </div>
 
           {protectedRole ? (
@@ -297,8 +401,20 @@ export default function Roles() {
         </div>
       </div>
 
-      {creating && <RoleModal onClose={() => setCreating(false)} onCreated={(r) => { setCreating(false); qc.invalidateQueries({ queryKey: ['roles'] }); if (r?._id) setSelectedId(r._id); }} />}
-      {addingDept && <AddDepartmentModal onClose={() => setAddingDept(false)} onCreated={(d) => { setAddingDept(false); setExpanded((s) => { const n = new Set(s); n.add(d.key); return n; }); }} />}
+      {creating && (
+        <RoleModal departments={roleDepartments} department={creating.department} onClose={() => setCreating(null)}
+          // Select the new role only once the list holds it — selecting
+          // earlier lets the fallback-to-first effect overwrite the choice.
+          onCreated={async (r) => { setCreating(null); await qc.invalidateQueries({ queryKey: ['roles'] }); if (r?._id) setSelectedId(r._id); }} />
+      )}
+      {editing && selected && (
+        <EditRoleModal role={selected} departments={roleDepartments} onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); qc.invalidateQueries({ queryKey: ['roles'] }); qc.invalidateQueries({ queryKey: ['app-config'] }); }} />
+      )}
+      {addingDept && (
+        <AddDepartmentModal existingKeys={new Set((roles || []).map((r) => r.key))} saveDepts={saveDepts} onClose={() => setAddingDept(false)}
+          onCreated={(key) => { setAddingDept(false); setExpanded((s) => { const n = new Set(s); n.add(key); return n; }); }} />
+      )}
     </div>
   );
 }
@@ -329,8 +445,22 @@ function Field({ label, required, children }: { label: string; required?: boolea
   return <div><label className="label block mb-1.5">{label}{required && <span className="text-stopped"> *</span>}</label>{children}</div>;
 }
 
-// Create a custom department (localStorage) + seed its roles via the /roles API.
-function AddDepartmentModal({ onClose, onCreated }: { onClose: () => void; onCreated: (d: RoleDepartment) => void }) {
+function DepartmentSelect({ value, onChange, departments }: { value: string; onChange: (v: string) => void; departments: RoleDepartment[] }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className="input">
+      <option value="">— not placed (filed by its name) —</option>
+      {departments.map((d) => <option key={d.key} value={d.key}>{d.name}</option>)}
+    </select>
+  );
+}
+
+// Create a department on the plant's list + seed its roles via the /roles API.
+function AddDepartmentModal({ existingKeys, saveDepts, onClose, onCreated }: {
+  existingKeys: Set<string>;
+  saveDepts: (edit: (live: Pick<RoleDepartment, 'key' | 'name' | 'accent'>[]) => Pick<RoleDepartment, 'key' | 'name' | 'accent'>[]) => Promise<void>;
+  onClose: () => void;
+  onCreated: (key: string) => void;
+}) {
   const qc = useQueryClient();
   const [name, setName] = useState('');
   const [roleNames, setRoleNames] = useState<string[]>(['', '', '']);
@@ -339,31 +469,37 @@ function AddDepartmentModal({ onClose, onCreated }: { onClose: () => void; onCre
   const setRole = (i: number, v: string) => setRoleNames((arr) => arr.map((x, idx) => (idx === i ? v : x)));
   const addRoleRow = () => setRoleNames((arr) => [...arr, '']);
   const removeRoleRow = (i: number) => setRoleNames((arr) => arr.filter((_, idx) => idx !== i));
-  const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  const deptShort = name.trim().replace(/\s*department$/i, '').trim();
 
   const mut = useMutation({
     mutationFn: async () => {
-      const dept = addCustomDepartment(name.trim());
-      if (!dept) throw new Error('That department already exists, or the name is invalid.');
-      const short = dept.name.replace(/\s*Department$/i, '');
-      let created = 0;
+      const clean = name.trim();
+      const key = deptKeyOf(clean);
+      if (!key) throw new Error('The department name needs at least one letter or digit.');
+      await saveDepts((live) => {
+        if (live.some((d) => d.key === key || d.name.toLowerCase() === clean.toLowerCase())) throw new Error('That department already exists.');
+        return [...live, { key, name: clean, accent: '' }];
+      });
+      // A role key must be unique across the plant: "Manager" in HR becomes
+      // hr_manager when a plain "manager" already exists.
+      const taken = new Set(existingKeys);
+      const made: string[] = [];
+      const failed: string[] = [];
       for (const raw of roleNames.map((r) => r.trim()).filter(Boolean)) {
-        // Ensure the role name carries the department word so it groups correctly.
-        const finalName = raw.toLowerCase().includes(short.toLowerCase()) ? raw : `${short} ${raw}`;
-        const key = slug(finalName);
-        if (!key) continue;
+        const base = slug(raw);
+        if (!base) continue;
+        const roleKey = taken.has(base) ? `${key}_${base}` : base;
         try {
-          await rbacApi.createRole({ name: finalName, key, description: `${dept.name} role`, permissions: { dashboard: ['view'], machines: ['view'] } });
-          created += 1;
-        } catch { /* skip duplicate/invalid, keep going */ }
+          await rbacApi.createRole({ name: raw, key: roleKey, description: `${clean} role`, department: key, permissions: { dashboard: ['view'], machines: ['view'] } });
+          taken.add(roleKey); made.push(raw);
+        } catch { failed.push(raw); }
       }
-      return { dept, created };
+      return { key, name: clean, made, failed };
     },
-    onSuccess: ({ dept, created }) => {
+    onSuccess: ({ key, name: n, made, failed }) => {
       qc.invalidateQueries({ queryKey: ['roles'] });
-      toast.success(`${dept.name} created${created ? ` with ${created} role${created > 1 ? 's' : ''}` : ''}`);
-      onCreated(dept);
+      toast.success(`${n} created${made.length ? ` with ${made.length} role${made.length > 1 ? 's' : ''}` : ''}`);
+      if (failed.length) toast.error(`Not created (a role with that key exists): ${failed.join(', ')}`, 8000);
+      onCreated(key);
     },
     onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Could not create department'),
   });
@@ -376,10 +512,10 @@ function AddDepartmentModal({ onClose, onCreated }: { onClose: () => void; onCre
   };
 
   return (
-    <Modal title="Add Department" subtitle="Create a department and the roles inside it" icon={Building2} onClose={onClose} maxW="max-w-md">
+    <Modal title="Add Department" subtitle="A department for every screen — and the roles inside it" icon={Building2} onClose={onClose} maxW="max-w-md">
       <form onSubmit={submit} className="space-y-4">
         <Field label="Department name" required>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. HR, Logistics, Stores" className="input" autoFocus />
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. HR, Logistics, Stores" className="input" autoFocus maxLength={60} />
         </Field>
         <div>
           <div className="label mb-1.5">Roles in this department</div>
@@ -398,7 +534,7 @@ function AddDepartmentModal({ onClose, onCreated }: { onClose: () => void; onCre
           </button>
         </div>
         <p className="text-[11px] text-steel">
-          Roles are created under this department. Typing “Manager” becomes “{deptShort || 'HR'} Manager”, so it groups here automatically. You can set each role’s permissions afterwards.
+          The department appears on the Roles page, the Employees form, the org chart and the notification matrix (Settings → Alerts & Downtime). Roles are placed in it as they are created; set each role’s permissions afterwards.
         </p>
         {error && <div className="text-sm text-stopped bg-stopped/8 border border-stopped/15 rounded-lg px-3 py-2">{error}</div>}
         <div className="flex gap-2 justify-end pt-1">
@@ -412,16 +548,17 @@ function AddDepartmentModal({ onClose, onCreated }: { onClose: () => void; onCre
   );
 }
 
-// Create a single custom role (name + key + description), then set its permissions in the matrix.
-function RoleModal({ onClose, onCreated }: { onClose: () => void; onCreated: (r?: Role) => void }) {
-  const [form, setForm] = useState({ name: '', key: '', description: '' });
+// Create a single role (name + key + description, in a department), then set its permissions in the matrix.
+function RoleModal({ departments, department, onClose, onCreated }: {
+  departments: RoleDepartment[]; department: string; onClose: () => void; onCreated: (r?: Role) => void;
+}) {
+  const [form, setForm] = useState({ name: '', key: '', description: '', department });
   const [keyEdited, setKeyEdited] = useState(false);
   const [error, setError] = useState('');
-  const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   const onName = (v: string) => setForm((f) => ({ ...f, name: v, key: keyEdited ? f.key : slug(v) }));
 
   const mut = useMutation({
-    mutationFn: () => rbacApi.createRole({ name: form.name.trim(), key: form.key.trim(), description: form.description.trim(), permissions: {} }),
+    mutationFn: () => rbacApi.createRole({ name: form.name.trim(), key: form.key.trim(), description: form.description.trim(), department: form.department, permissions: {} }),
     onSuccess: (res) => onCreated(res?.data),
     onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Could not create role'),
   });
@@ -432,17 +569,74 @@ function RoleModal({ onClose, onCreated }: { onClose: () => void; onCreated: (r?
     if (!form.name.trim() || !form.key.trim()) return setError('Name and key are required.');
     mut.mutate();
   };
+  const deptLabel = departments.find((d) => d.key === department)?.name;
 
   return (
-    <Modal title="New Role" subtitle="Create a custom role, then set its permissions" icon={ShieldCheck} onClose={onClose} maxW="max-w-md">
+    <Modal title="New Role" subtitle={deptLabel ? `In ${deptLabel} — then set its permissions` : 'Create a role, then set its permissions'} icon={ShieldCheck} onClose={onClose} maxW="max-w-md">
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Role name" required><input value={form.name} onChange={(e) => onName(e.target.value)} placeholder="e.g. Quality Engineer" className="input" autoFocus /></Field>
+        <Field label="Role name" required><input value={form.name} onChange={(e) => onName(e.target.value)} placeholder="e.g. Quality Engineer" className="input" autoFocus maxLength={60} /></Field>
         <Field label="Key (unique id)" required><input value={form.key} onChange={(e) => { setKeyEdited(true); setForm((f) => ({ ...f, key: slug(e.target.value) })); }} placeholder="quality_engineer" className="input data" /></Field>
-        <Field label="Description"><textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="What this role is for…" className="input resize-none" /></Field>
+        <Field label="Department"><DepartmentSelect value={form.department} onChange={(v) => setForm((f) => ({ ...f, department: v }))} departments={departments} /></Field>
+        <Field label="Description"><textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="What this role is for…" className="input resize-none" maxLength={300} /></Field>
         {error && <div className="text-sm text-stopped bg-stopped/8 border border-stopped/15 rounded-lg px-3 py-2">{error}</div>}
         <div className="flex gap-2 justify-end pt-1">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base transition-colors">Cancel</button>
           <button type="submit" disabled={mut.isPending} className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-60">{mut.isPending ? 'Creating…' : 'Create role'}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// Rename, describe, or move a role. The key stays: people, notification rules
+// and the operator-session convention all hang off it.
+function EditRoleModal({ role, departments, onClose, onSaved }: {
+  role: Role; departments: RoleDepartment[]; onClose: () => void; onSaved: () => void;
+}) {
+  const [form, setForm] = useState({ name: role.name, description: role.description || '', department: role.department || '' });
+  const [error, setError] = useState('');
+  const wasOperator = /operator|\bopr\b/i.test(`${role.key} ${role.name}`.replace(/[._/-]+/g, ' '));
+  const isOperator = /operator|\bopr\b/i.test(`${role.key} ${form.name}`.replace(/[._/-]+/g, ' '));
+  // Leadership sits above the departments whatever is stored: no placement to edit.
+  const leadership = ['super_admin', 'plant_head'].includes(classifyRoleGroup(role));
+  const me = useAuthStore((s) => s.user);
+  const setUser = useAuthStore((s) => s.setUser);
+
+  const mut = useMutation({
+    mutationFn: () => rbacApi.updateRole(role._id, { name: form.name.trim(), description: form.description.trim(), ...(leadership ? {} : { department: form.department }) }),
+    onSuccess: async () => {
+      // My own role renamed: the name this screen gates on (operator or not)
+      // must be the new one at once, not after the next sign-in.
+      if (me?.role?.id === role._id) { try { setUser((await authApi.me()).data); } catch { /* next sign-in */ } }
+      toast.success('Role updated'); onSaved();
+    },
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Could not update the role'),
+  });
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!form.name.trim()) return setError('Name is required.');
+    mut.mutate();
+  };
+
+  return (
+    <Modal title="Edit Role" subtitle={<span className="data">{role.key}</span>} icon={Pencil} onClose={onClose} maxW="max-w-md">
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Role name" required><input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="input" autoFocus maxLength={60} /></Field>
+        {!leadership && <Field label="Department"><DepartmentSelect value={form.department} onChange={(v) => setForm((f) => ({ ...f, department: v }))} departments={departments} /></Field>}
+        <Field label="Description"><textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} className="input resize-none" maxLength={300} /></Field>
+        {wasOperator !== isOperator && (
+          <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            {isOperator
+              ? 'A role with “operator” in its name is asked by the popups by default — check Settings → Alerts & Downtime after saving.'
+              : 'This role will no longer read as an operator role: unless a rule says otherwise, its people stop getting the popups — check Settings → Alerts & Downtime after saving.'}
+          </div>
+        )}
+        <p className="text-[11px] text-steel">The key never changes, so the people in this role, its notification rules and its permissions all stay as they are.</p>
+        {error && <div className="text-sm text-stopped bg-stopped/8 border border-stopped/15 rounded-lg px-3 py-2">{error}</div>}
+        <div className="flex gap-2 justify-end pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg border border-line text-sm text-steel hover:bg-base transition-colors">Cancel</button>
+          <button type="submit" disabled={mut.isPending} className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-60">{mut.isPending ? 'Saving…' : 'Save'}</button>
         </div>
       </form>
     </Modal>

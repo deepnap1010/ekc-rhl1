@@ -15,6 +15,7 @@ import { useAppConfig } from '../hooks/useAppConfig';
 import { notifyModeFor, isOperatorRole } from '../hooks/useNotifyMode';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
+import { classifyRoleGroup, useRoleDepartments } from '../lib/departments';
 import type { NotifyEventKey, NotifyFlowConfig, NotifyMode, Role } from '../types/api';
 
 type Rules = NotifyFlowConfig['rules'];
@@ -49,6 +50,9 @@ export default function NotifyFlowSettings(): JSX.Element {
   const qc = useQueryClient();
   const can = useAuthStore((s) => s.can);
   const { notifyFlow, readOnly, prodClass, downtimeAsk } = useAppConfig();
+  // The same departments, in the same order, as the Roles page — a department
+  // added there is a group here the moment the config refreshes.
+  const departments = useRoleDepartments();
   const canRoles = can('roles', 'view');
   const { data: roles, isLoading } = useQuery({
     queryKey: ['roles'],
@@ -78,6 +82,14 @@ export default function NotifyFlowSettings(): JSX.Element {
   const dis = !can('settings', 'update') || readOnly;
   const dirty = JSON.stringify(draft) !== JSON.stringify(notifyFlow.rules);
   const list = [...(roles || [])].sort((a, b) => a.name.localeCompare(b.name));
+  // Rows grouped as the Roles page groups them: Leadership → departments → Other.
+  const byGroup = new Map<string, Role[]>();
+  for (const r of list) { const g = classifyRoleGroup(r); byGroup.set(g, [...(byGroup.get(g) || []), r]); }
+  const groups = [
+    { key: 'leadership', name: 'Leadership', accent: '#0D9488', roles: [...(byGroup.get('super_admin') || []), ...(byGroup.get('plant_head') || [])] },
+    ...departments.map((d) => ({ key: d.key, name: d.name, accent: d.accent, roles: byGroup.get(d.key) || [] })),
+    { key: 'other', name: 'Other', accent: '#64748B', roles: byGroup.get('other') || [] },
+  ].filter((g) => g.roles.length > 0);
   // Two roles whose keys differ only in case share one rule — say so.
   const keys = list.map((r) => roleKeyOf(r.key));
   const shared = new Set(keys.filter((k, i) => keys.indexOf(k) !== i));
@@ -172,7 +184,13 @@ export default function NotifyFlowSettings(): JSX.Element {
               {list.length === 0 && (
                 <tr><td colSpan={1 + events.length} className="px-3 py-3 text-xs text-steel">No roles yet — create them on the Roles page.</td></tr>
               )}
-              {list.map((role) => (
+              {groups.map((g) => [
+                <tr key={`g:${g.key}`} className="border-t border-line bg-base/40">
+                  <td colSpan={1 + events.length} className="px-3 py-1.5">
+                    <span className="inline-flex items-center gap-1.5 label"><span className="w-2 h-2 rounded-full" style={{ background: g.accent }} />{g.name}</span>
+                  </td>
+                </tr>,
+                ...g.roles.map((role) => (
                 <tr key={role._id} className="border-t border-line">
                   <td className="px-3 py-2.5 align-top">
                     <div className="font-medium text-primary flex items-center gap-1.5">
@@ -204,7 +222,8 @@ export default function NotifyFlowSettings(): JSX.Element {
                     );
                   })}
                 </tr>
-              ))}
+                )),
+              ])}
             </tbody>
           </table>
         </div>

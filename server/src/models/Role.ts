@@ -37,6 +37,10 @@ export interface IRole {
   name: string;
   key: string;
   description: string;
+  // The department this role sits in (a key from the plant's department list,
+  // utils/departments) — '' = not placed, so the client files it by the words
+  // in its name, as it always did.
+  department: string;
   isSystem: boolean;
   // { dashboard: ['view'], machines: ['view','update'], ... }
   permissions: Map<string, string[]>;
@@ -47,6 +51,7 @@ const roleSchema = new mongoose.Schema<IRole>(
     name: { type: String, required: true },          // "Production Supervisor"
     key: { type: String, required: true, unique: true }, // "supervisor"
     description: { type: String, default: '' },
+    department: { type: String, default: '' },       // department key, '' = unplaced
     isSystem: { type: Boolean, default: false },     // system roles can't be deleted
 
     // { dashboard: ['view'], machines: ['view','update'], ... }

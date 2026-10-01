@@ -15,6 +15,7 @@ export interface AuthRole {
   _id?: Types.ObjectId | string;
   name?: string;
   key?: string;
+  department?: string;
   permissions?: Map<string, string[]> | Record<string, string[]>;
 }
 

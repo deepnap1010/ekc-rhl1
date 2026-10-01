@@ -10,6 +10,7 @@ import { env } from '../config/env.js';
 import { normalizeProdClass, invalidateProdClassCache, invalidateProductionReads, DEFAULT_PROD_CLASS, type ProdClassConfig } from '../utils/prodclass.js';
 import { normalizeDowntimeAsk, invalidateDowntimeAskCache, DEFAULT_DOWNTIME_ASK, type DowntimeAskConfig } from '../utils/downtimeAsk.js';
 import { normalizeNotifyFlow, invalidateNotifyFlowCache, DEFAULT_NOTIFY_FLOW, NOTIFY_EVENTS, type NotifyFlowConfig } from '../utils/notifyFlow.js';
+import { loadDepartments } from '../utils/departments.js';
 
 // A stored prodClass that fails today's rules (or was never saved) reads as
 // the defaults — same before/after-first-write contract as every other field.
@@ -83,6 +84,9 @@ export const getConfig = asyncHandler(async (_req, res) => {
     prodClass: prodClassOf(doc?.prodClass),
     downtimeAsk: downtimeAskOf(doc?.downtimeAsk),
     notifyFlow: notifyFlowOf(doc?.notifyFlow),
+    // The groups roles sit in — edited on the Roles page (PUT /rbac/departments),
+    // read here so every screen that groups roles sees one list.
+    departments: await loadDepartments(),
     defaultWindow: doc?.defaultWindow === 'day' ? 'day' : 'shift',
     stored: !!doc,
     // The client shows a banner and hides its edit controls on a review copy.
@@ -221,6 +225,7 @@ export const updateConfig = asyncHandler(async (req, res) => {
     prodClass: prodClassOf(doc.prodClass),
     downtimeAsk: downtimeAskOf(doc.downtimeAsk),
     notifyFlow: notifyFlowOf(doc.notifyFlow),
+    departments: await loadDepartments(),
     defaultWindow: doc.defaultWindow === 'day' ? 'day' : 'shift',
     stored: true,
   });

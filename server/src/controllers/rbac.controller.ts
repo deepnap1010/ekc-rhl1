@@ -8,6 +8,27 @@ import { EmployeeHistory } from '../models/EmployeeHistory.js';
 import { ok, created, fail, asyncHandler } from '../utils/http.js';
 import { invalidateBootstrapCache, migratePermanentDeletes } from '../utils/bootstrap.js';
 import { forgetRoleRules } from '../utils/notifyFlow.js';
+import { loadDepartments, normalizeDepartments } from '../utils/departments.js';
+import { AppConfig } from '../models/AppConfig.js';
+import { AuditLog } from '../models/AuditLog.js';
+
+// Fire-and-forget — an audit row must never be the reason a change fails.
+const audit = (
+  user: { _id?: unknown; name?: string } | undefined,
+  action: string, entity: { type: string; id?: string; label?: string },
+  before?: unknown, after?: unknown,
+): void => {
+  AuditLog.create({ at: new Date(), user: { id: String(user?._id || ''), name: user?.name || '' }, action, entity, before, after })
+    .catch(() => {});
+};
+
+/** A department key a role may sit in: '' (unplaced), one of the plant's, or
+ *  null when the key names no department. */
+async function placeIn(raw: unknown): Promise<string | null> {
+  const k = String(raw ?? '').trim().toLowerCase();
+  if (!k) return '';
+  return (await loadDepartments()).some((d) => d.key === k) ? k : null;
+}
 
 // Coerce ANY stored/incoming permissions shape into a clean { module: [actions] }
 // matrix, filtered to valid modules × actions. Self-heals legacy/corrupt data that
@@ -51,7 +72,7 @@ interface StripableUser {
   email?: string;
   plant?: string;
   isSuperAdmin?: boolean;
-  role?: { _id?: unknown; name?: string; key?: string } | null;
+  role?: { _id?: unknown; name?: string; key?: string; department?: string } | null;
   reportsTo?: unknown;
   assignedMachines?: string[];
   avatar?: string;
@@ -84,21 +105,93 @@ export const rbacMeta = asyncHandler(async (req, res) =>
 );
 
 export const createRole = asyncHandler(async (req, res) => {
-  const { name, key, description, permissions } = req.body as {
+  const { name, key, description, permissions, department } = req.body as {
     name?: string;
     key?: string;
     description?: string;
     permissions?: Record<string, string[]>;
+    department?: string;
   };
   if (!name || !key) return fail(res, 400, 'name and key required');
+  // The same bounds the Edit dialog enforces, or a role could be born that it
+  // can never save.
+  const nm = String(name).trim();
+  if (!nm || nm.length > 60) return fail(res, 400, 'role name must be 1–60 characters');
+  const desc = String(description ?? '').trim();
+  if (desc.length > 300) return fail(res, 400, 'description must be 300 characters or fewer');
+  const dept = await placeIn(department);
+  if (dept === null) return fail(res, 400, 'Unknown department');
   // The key names the role everywhere else — the notification workflow stores
   // rules under it as a field — so it is one word of 1–64 characters, no dots
   // or dollars (the Roles page already slugs it; this guards the API).
   const k = String(key).trim();
   if (!/^[^.$\s][^.$]{0,63}$/.test(k)) return fail(res, 400, 'role key must be 1–64 characters without spaces at the edges, dots or $');
-  const clean = isSuperAdminRole({ key: k, name }) ? FULL_PERMISSIONS : normalizePermissions(permissions);
-  const role = await Role.create({ name, key: k, description, permissions: clean as unknown as IRole['permissions'] });
+  const clean = isSuperAdminRole({ key: k, name: nm }) ? FULL_PERMISSIONS : normalizePermissions(permissions);
+  const role = await Role.create({ name: nm, key: k, description: desc, department: dept, permissions: clean as unknown as IRole['permissions'] });
   return created(res, { ...role.toObject(), permissions: normalizePermissions(role.permissions) });
+});
+
+// PATCH /roles/:id — rename, describe, or move a role to another department.
+// The KEY never changes: users, notification rules and the operator session
+// convention all point at it, so a rename changes what people read and
+// nothing else. The Super Admin role keeps a name that says so —
+// isSuperAdminRole() is how the whole app recognises it.
+export const updateRole = asyncHandler(async (req, res) => {
+  const body = req.body as { name?: unknown; description?: unknown; department?: unknown };
+  const role = await Role.findById(req.params.id).lean();
+  if (!role) return fail(res, 404, 'Role not found');
+  const set: Record<string, string> = {};
+  if (body.name !== undefined) {
+    const name = String(body.name ?? '').trim();
+    if (!name || name.length > 60) return fail(res, 400, 'role name must be 1–60 characters');
+    if (isSuperAdminRole(role) && !isSuperAdminRole({ key: role.key, name })) return fail(res, 400, 'The Super Admin role keeps a name that says so');
+    // …and nothing else may take that name: the role list grants full
+    // permissions to whatever is called Super Admin.
+    if (!isSuperAdminRole(role) && isSuperAdminRole({ key: role.key, name })) return fail(res, 400, 'Only the Super Admin role may carry that name');
+    set.name = name;
+  }
+  if (body.description !== undefined) {
+    const description = String(body.description ?? '').trim();
+    if (description.length > 300) return fail(res, 400, 'description must be 300 characters or fewer');
+    set.description = description;
+  }
+  if (body.department !== undefined) {
+    const dept = await placeIn(body.department);
+    if (dept === null) return fail(res, 400, 'Unknown department');
+    set.department = dept;
+  }
+  if (!Object.keys(set).length) return fail(res, 400, 'Nothing to update');
+  const updated = await Role.findByIdAndUpdate(role._id, { $set: set }, { new: true }).lean();
+  if (!updated) return fail(res, 404, 'Role not found');
+  const before = Object.fromEntries(Object.keys(set).map((f) => [f, (role as unknown as Record<string, unknown>)[f] ?? '']));
+  audit(req.user as { _id?: unknown; name?: string } | undefined, 'roles.update', { type: 'role', id: String(role._id), label: role.key }, before, set);
+  return ok(res, { ...updated, permissions: normalizePermissions(updated.permissions) });
+});
+
+// ---- Departments ----
+// GET /rbac/departments — the list every screen groups roles by (also on
+// GET /config, for screens whose users cannot see roles).
+export const listDepartments = asyncHandler(async (_req, res) => ok(res, await loadDepartments()));
+
+// PUT /rbac/departments { departments } — the whole list, in the admin's
+// order. A department that disappears takes nothing with it but its name:
+// the roles that sat in it become unplaced and are filed by their names
+// again, exactly as roles that were never placed.
+export const updateDepartments = asyncHandler(async (req, res) => {
+  // "No list" is not "the built-ins": a mis-keyed body must not reset the plant.
+  const raw = (req.body as { departments?: unknown }).departments;
+  if (!Array.isArray(raw)) return fail(res, 400, 'departments must be a list');
+  const norm = normalizeDepartments(raw);
+  if (typeof norm === 'string') return fail(res, 400, norm);
+  const before = await loadDepartments();
+  const kept = new Set(norm.map((d) => d.key));
+  const removed = before.filter((d) => !kept.has(d.key)).map((d) => d.key);
+  const unplaced = removed.length ? (await Role.find({ department: { $in: removed } }).select('key').lean()).map((r) => r.key) : [];
+  if (unplaced.length) await Role.updateMany({ department: { $in: removed } }, { $set: { department: '' } });
+  const u = req.user as { _id?: unknown; name?: string } | undefined;
+  await AppConfig.findOneAndUpdate({ key: 'global' }, { $set: { departments: norm, updatedBy: u?.name || '' } }, { upsert: true });
+  audit(u, 'roles.departments', { type: 'config', label: 'Departments' }, { departments: before }, { departments: norm, removedDepartments: removed, unplacedRoles: unplaced });
+  return ok(res, norm);
 });
 
 export const updateRolePermissions = asyncHandler(async (req, res) => {
@@ -155,7 +248,7 @@ export const listUsers = asyncHandler(async (req, res) => {
   if (search) q.$or = [{ name: new RegExp(search, 'i') }, { email: new RegExp(search, 'i') }];
   const skip = (Number(page) - 1) * Number(limit);
   const [items, total] = await Promise.all([
-    User.find(q).populate('role', 'name key').sort({ name: 1 }).skip(skip).limit(Number(limit)).lean(),
+    User.find(q).populate('role', 'name key department').sort({ name: 1 }).skip(skip).limit(Number(limit)).lean(),
     User.countDocuments(q),
   ]);
   return ok(res, (items as unknown as StripableUser[]).map(stripUser), { total, page: Number(page), limit: Number(limit) });
@@ -178,7 +271,7 @@ export const createUser = asyncHandler(async (req, res) => {
   await user.setPassword(password);
   await user.save();
   invalidateBootstrapCache();   // first real user → bootstrap login disables immediately
-  const populated = await user.populate('role', 'name key');
+  const populated = await user.populate('role', 'name key department');
   return created(res, stripUser(populated.toObject() as unknown as StripableUser));
 });
 
@@ -189,7 +282,7 @@ export const updateUser = asyncHandler(async (req, res) => {
   Object.assign(user, rest);
   if (password) await user.setPassword(password);
   await user.save();
-  const populated = await user.populate('role', 'name key');
+  const populated = await user.populate('role', 'name key department');
   return ok(res, stripUser(populated.toObject() as unknown as StripableUser));
 });
 
@@ -216,7 +309,7 @@ export const deleteEmployee = asyncHandler(async (req, res) => {
   // keep a read-only snapshot in employee_history. This is what lets you re-create a
   // user with the same email later without a duplicate-key error.
   if (type === 'permanent') {
-    const populated = await user.populate('role', 'name key');
+    const populated = await user.populate('role', 'name key department');
     const prole = populated.role as unknown as { name?: string; key?: string } | null;
     await EmployeeHistory.create({
       userId: user._id, name: user.name, email: user.email, plant: user.plant || '',
@@ -245,7 +338,7 @@ export const deleteEmployee = asyncHandler(async (req, res) => {
   user.deletion = deletion;
   user.active = false; // suspended accounts can no longer sign in
   await user.save();
-  const populated = await user.populate('role', 'name key');
+  const populated = await user.populate('role', 'name key department');
   return ok(res, stripUser(populated.toObject() as unknown as StripableUser));
 });
 
@@ -257,7 +350,7 @@ export const restoreEmployee = asyncHandler(async (req, res) => {
   user.deletion = null;
   user.active = true;
   await user.save();
-  const populated = await user.populate('role', 'name key');
+  const populated = await user.populate('role', 'name key department');
   return ok(res, stripUser(populated.toObject() as unknown as StripableUser));
 });
 
@@ -303,7 +396,7 @@ export const listDeletedEmployees = asyncHandler(async (req, res) => {
   const [temps, perms] = await Promise.all([
     wantTemp
       ? User.find({ 'deletion.type': 'temporary', ...(rx ? { $or: [{ name: rx }, { email: rx }] } : {}) })
-          .populate('role', 'name key').populate('deletion.by', 'name').sort({ 'deletion.at': -1 }).lean()
+          .populate('role', 'name key department').populate('deletion.by', 'name').sort({ 'deletion.at': -1 }).lean()
       : Promise.resolve([]),
     wantPerm
       ? EmployeeHistory.find(rx ? { $or: [{ name: rx }, { email: rx }] } : {}).populate('by', 'name').sort({ at: -1 }).lean()
@@ -340,7 +433,7 @@ export const listDeletedEmployees = asyncHandler(async (req, res) => {
 
 // GET /users/orgchart — the reporting tree
 export const orgChart = asyncHandler(async (req, res) => {
-  const users = await User.find({ active: true }).populate('role', 'name key').lean();
+  const users = await User.find({ active: true }).populate('role', 'name key department').lean();
   return ok(res, (users as unknown as StripableUser[]).map(stripUser));
 });
 
@@ -351,7 +444,7 @@ function stripUser(u: StripableUser) {
     email: u.email,
     plant: u.plant,
     isSuperAdmin: u.isSuperAdmin,
-    role: u.role ? { id: u.role._id, name: u.role.name, key: u.role.key } : null,
+    role: u.role ? { id: u.role._id, name: u.role.name, key: u.role.key, department: u.role.department || '' } : null,
     reportsTo: u.reportsTo || null,
     assignedMachines: u.assignedMachines || [],
     avatar: u.avatar || '',
