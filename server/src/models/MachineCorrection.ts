@@ -14,11 +14,16 @@
 import mongoose from 'mongoose';
 
 export type CorrectionState = 'running' | 'idle' | 'stopped';
+/** How the period's time really divided — the card's own tiles, as amounts.
+ *  What the three do not add up to is time nobody can account for: signal
+ *  lost, exactly as the engines book silence. */
+export interface CorrectionTime { runningMs: number; idleMs: number; stoppedMs: number }
 export interface IMachineCorrection {
   machineRef: string;                // Machine.code, exactly as the app uses it
   from: Date;
   to: Date;
-  state: CorrectionState | null;     // what the machine was doing — null = as recorded
+  time: CorrectionTime | null;       // the period's time split — null = as recorded
+  state: CorrectionState | null;     // older rows: the WHOLE period in one state (time wins when both exist)
   pieces: number | null;             // pieces actually made in the period — null = as recorded
   downtimeReason: string;            // for an idle/stopped period: the reason the review sheets file it under
   reason: string;                    // why the correction is being made (required)
@@ -36,6 +41,7 @@ const schema = new mongoose.Schema<IMachineCorrection>(
     machineRef: { type: String, required: true, index: true },
     from: { type: Date, required: true },
     to: { type: Date, required: true },
+    time: { type: new mongoose.Schema({ runningMs: { type: Number, default: 0 }, idleMs: { type: Number, default: 0 }, stoppedMs: { type: Number, default: 0 } }, { _id: false }), default: null },
     state: { type: String, enum: ['running', 'idle', 'stopped', null], default: null },
     pieces: { type: Number, default: null },
     downtimeReason: { type: String, default: '' },

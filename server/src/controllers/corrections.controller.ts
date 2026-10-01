@@ -7,7 +7,7 @@
 // until it is ticked (super admins have everything). Scope still applies: a
 // corrector sees and corrects the machines assigned to them, or every
 // machine when none are. Every creation and revocation is audited.
-import { MachineCorrection, type CorrectionState } from '../models/MachineCorrection.js';
+import { MachineCorrection, type CorrectionState, type CorrectionTime } from '../models/MachineCorrection.js';
 import { Machine } from '../models/Machine.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { ok, fail, created, asyncHandler } from '../utils/http.js';
@@ -85,8 +85,21 @@ export const createCorrection = asyncHandler(async (req, res) => {
   if (to.getTime() > now + FUTURE_SLACK_MS) return fail(res, 400, 'A correction describes the past — the period cannot end in the future');
   if (to.getTime() - from.getTime() > MAX_PERIOD_MS) return fail(res, 400, 'A correction covers at most 31 days');
   if (from.getTime() < now - MAX_AGE_MS) return fail(res, 400, 'A correction reaches back at most 400 days');
+  // Time: the card's three tiles as amounts for the period (running / idle /
+  // stopped), or — the older, simpler form — one state for the whole period.
+  // What the amounts leave unaccounted is signal lost; they can't exceed the
+  // period.
   const state = b.state == null || b.state === '' ? null : (b.state as CorrectionState);
   if (state !== null && !STATES.includes(state)) return fail(res, 400, 'state must be running, idle, stopped, or left as recorded');
+  let time: CorrectionTime | null = null;
+  if (b.time != null && typeof b.time === 'object') {
+    const t = b.time as Record<string, unknown>;
+    const ms = (k: string): number => { const v = Math.round(Number(t[k] ?? 0)); return Number.isFinite(v) && v > 0 ? v : 0; };
+    time = { runningMs: ms('runningMs'), idleMs: ms('idleMs'), stoppedMs: ms('stoppedMs') };
+    const sum = time.runningMs + time.idleMs + time.stoppedMs;
+    if (sum > to.getTime() - from.getTime() + 60_000) return fail(res, 400, 'Running + idle + stopped is longer than the period itself');
+    if (sum === 0) time = null;   // nothing said about time
+  }
   let pieces: number | null = null;
   if (b.pieces != null && b.pieces !== '') {
     pieces = Math.round(Number(b.pieces));
@@ -95,10 +108,11 @@ export const createCorrection = asyncHandler(async (req, res) => {
     const maxForPeriod = Math.ceil((to.getTime() - from.getTime()) / 60_000) * PROD_STEP_PER_MIN;
     if (pieces > maxForPeriod) return fail(res, 400, `${pieces} pieces in that period is faster than any machine here runs — at most ${maxForPeriod} (${PROD_STEP_PER_MIN} a minute)`);
   }
-  if (state === null && pieces === null) return fail(res, 400, 'Say what the machine was doing, how many pieces it made, or both');
+  if (time === null && state === null && pieces === null) return fail(res, 400, 'Say how the period\'s time went, how many pieces it made, or both');
   const reason = String(b.reason ?? '').trim();
   if (reason.length < 3 || reason.length > 200) return fail(res, 400, 'A reason of 3–200 characters is required');
-  const downtimeReason = String(b.downtimeReason ?? '').trim().slice(0, 60);
+  const hasDown = time ? time.idleMs + time.stoppedMs > 0 : state === 'idle' || state === 'stopped';
+  const downtimeReason = hasDown ? String(b.downtimeReason ?? '').trim().slice(0, 60) : '';
   // Two corrections cannot both say what one hour was: revoke, then re-enter.
   const key = machineRef.toUpperCase();
   const run = (inflight.get(key) ?? Promise.resolve()).then(async () => {
@@ -106,7 +120,7 @@ export const createCorrection = asyncHandler(async (req, res) => {
       .select({ from: 1, to: 1 }).lean();
     if (clash) return { clash };
     const doc = await MachineCorrection.create({
-      machineRef, from, to, state, pieces, downtimeReason: state === 'running' || state === null ? '' : downtimeReason, reason,
+      machineRef, from, to, time, state: time ? null : state, pieces, downtimeReason, reason,
       createdBy: { id: String(user?._id || ''), name: user?.name || '' }, createdAt: new Date(),
       revokedAt: null, revokedBy: null, revokeReason: '',
     });

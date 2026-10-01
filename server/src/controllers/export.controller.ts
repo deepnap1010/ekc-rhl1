@@ -29,6 +29,7 @@ import { MachineAssignment } from '../models/MachineAssignment.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { MachineEvent } from '../models/MachineEvent.js';
 import { MachineCorrection } from '../models/MachineCorrection.js';
+import { timeSplitWithin, type Correction } from '../utils/corrections.js';
 import { fail, asyncHandler } from '../utils/http.js';
 import { machineScope } from '../utils/scope.js';
 import { refCandidates } from '../utils/machineRef.js';
@@ -754,18 +755,24 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
   const correctionSheet: Sheet = { name: 'Corrections', blocks: [{
     title: `ERROR CORRECTIONS — ${period}`,
     note: corrections.length
-      ? 'Periods for which a person corrected what the telemetry recorded (the error-correction book). Inside each period every sheet in this workbook uses the correction — pieces, running / idle / stopped — instead of the recorded data; "revoked" rows no longer apply and are listed for the record.'
+      ? 'Periods for which a person corrected what the telemetry recorded (the error-correction book). Inside each period every sheet in this workbook uses the correction — pieces, running / idle / stopped — instead of the recorded data; time the correction leaves unaccounted is signal lost; "revoked" rows no longer apply and are listed for the record.'
       : 'No corrections touch this window: every figure in this workbook is what the machines recorded.',
     columns: [
       { header: 'Machine', key: 'name', width: 18 }, { header: 'From', key: 'from', fmt: 'datetime', width: 18 }, { header: 'To', key: 'to', fmt: 'datetime', width: 18 },
-      { header: 'Was', key: 'state', width: 12 }, { header: 'Pieces made', key: 'pieces', fmt: 'int' }, { header: 'Downtime reason', key: 'downtimeReason', width: 22 },
+      { header: 'Running', key: 'running', fmt: 'dur' }, { header: 'Idle', key: 'idle', fmt: 'dur' }, { header: 'Stopped', key: 'stopped', fmt: 'dur' }, { header: 'Unaccounted', key: 'dark', fmt: 'dur' },
+      { header: 'Pieces made', key: 'pieces', fmt: 'int' }, { header: 'Downtime reason', key: 'downtimeReason', width: 22 },
       { header: 'Why corrected', key: 'reason', width: 40 }, { header: 'By', key: 'by', width: 16 }, { header: 'Entered', key: 'at', fmt: 'datetime', width: 18 },
       { header: 'Revoked', key: 'revoked', width: 10 }, { header: 'Revoked by', key: 'revokedBy', width: 16 }, { header: 'Revoked at', key: 'revokedAt', fmt: 'datetime', width: 18 },
     ],
-    rows: corrections.map((c) => ({
-      name: nameOf(c.machineRef), from: c.from, to: c.to, state: c.state || 'as recorded', pieces: c.pieces, downtimeReason: c.downtimeReason || '',
-      reason: c.reason, by: c.createdBy?.name || '', at: c.createdAt, revoked: c.revokedAt ? 'yes' : '', revokedBy: c.revokedBy?.name || '', revokedAt: c.revokedAt,
-    })),
+    rows: corrections.map((c) => {
+      const ts = timeSplitWithin(c as Correction, new Date(c.from).getTime(), new Date(c.to).getTime());
+      return {
+        name: nameOf(c.machineRef), from: c.from, to: c.to,
+        running: ts ? ts.runningMs : null, idle: ts ? ts.idleMs : null, stopped: ts ? ts.stoppedMs : null, dark: ts ? ts.darkMs : null,
+        pieces: c.pieces, downtimeReason: c.downtimeReason || '',
+        reason: c.reason, by: c.createdBy?.name || '', at: c.createdAt, revoked: c.revokedAt ? 'yes' : '', revokedBy: c.revokedBy?.name || '', revokedAt: c.revokedAt,
+      };
+    }),
   }] };
 
   const book = buildXlsx([summary, analysis, perShift, report, daily, machines, diaSheet, targetSheet, reasonSheet, downtimeSheet, prodSheet, reliabilitySheet, correctionSheet], tzMin);

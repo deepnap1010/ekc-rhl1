@@ -18,7 +18,7 @@ import { cached } from '../utils/cache.js';
 import { lineLinkFor, normRef } from '../config/lineLinks.js';
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEvents } from './derivedCounter.service.js';
-import { loadCorrections, overlapOf, piecesWithin } from '../utils/corrections.js';
+import { loadCorrections, overlapOf, piecesWithin, timeSplitWithin } from '../utils/corrections.js';
 
 export interface ActivityRow {
   code: string;
@@ -701,11 +701,12 @@ export async function computeActivity(
 // MachineCorrection). For the part of the period inside this window, the
 // engine's own figure for exactly that part is taken out and the correction
 // put in: the pieces that fall in the window (the same evenly laid steps the
-// report splits, so card and report agree) and, when it names a state, that
-// state for the whole part — including the part's DARK time, which the
-// engine booked as signal lost and the correction says was not. Everything
-// else the engine worked out stays. The four buckets are then held inside
-// the window again, the buckets no correction named paying first, so a
+// report splits, so card and report agree) and, when it gives the period's
+// time, that time — running / idle / stopped as amounts, scaled to the part,
+// what they leave unaccounted booked as signal lost — in place of the
+// engine's booking for the part, its DARK time included. Everything else
+// the engine worked out stays. The four buckets are then held inside the
+// window again, the buckets no correction named paying first, so a
 // correction can never be trimmed away by the figure it replaces; and the
 // state is re-voted over observed time only, as the engine votes.
 // ponytail: the raw time for the part is a second (cached) engine run per
@@ -719,8 +720,6 @@ async function applyCorrections(
   const corr = await loadCorrections(rows.map((r) => r.code), fromD, endD);
   if (!corr.size) return;
   const fromMs = fromD.getTime(), endMs = endD.getTime(), windowMs = endMs - fromMs;
-  const bucketOf = (state: 'running' | 'idle' | 'stopped'): 'runningMs' | 'idleMs' | 'stoppedMs' =>
-    state === 'running' ? 'runningMs' : state === 'idle' ? 'idleMs' : 'stoppedMs';
   for (const row of rows) {
     const list = corr.get(row.code.toUpperCase());
     if (!list?.length) continue;
@@ -737,18 +736,25 @@ async function applyCorrections(
         const was = ctx.rawPiecesIn(row.code, o.s, o.e) ?? raw?.production ?? 0;
         row.production = Math.max(0, (row.production ?? 0) - was + piecesWithin(c, fromMs, endMs));
       }
-      if (c.state) {
+      const ts = timeSplitWithin(c, o.s, o.e);
+      if (ts) {
         row.runningMs -= raw?.runningMs ?? 0; row.idleMs -= raw?.idleMs ?? 0;
         row.stoppedMs -= raw?.stoppedMs ?? 0; row.offlineMs -= raw?.offlineMs ?? 0;
-        // The part's dark time is booked in the window's remainder, not in the
-        // raw run (which saw nothing and said nothing): take it out here.
-        if (hadRemainder) {
+        // The raw run books the part's own dark time whenever it had any
+        // evidence in the part (a reading or a span: offline = window −
+        // envelope), and that came off with raw.offlineMs above. Only a raw
+        // run that saw nothing leaves the part's dark to the window's
+        // remainder — take it out here, once, never twice. What the
+        // correction leaves unaccounted comes back as signal lost.
+        const rawBookedDark = !!raw && (raw.readings > 0 || raw.offlineMs > 0);
+        if (hadRemainder && !rawBookedDark) {
           const seen = es != null && ee != null ? Math.max(0, Math.min(o.e, ee) - Math.max(o.s, es)) : 0;
           row.offlineMs -= (o.e - o.s) - seen;
         }
-        const k = bucketOf(c.state);
-        row[k] += o.e - o.s;
-        fixed.add(k);
+        row.runningMs += ts.runningMs; row.idleMs += ts.idleMs; row.stoppedMs += ts.stoppedMs; row.offlineMs += ts.darkMs;
+        if (ts.runningMs > 0) fixed.add('runningMs');
+        if (ts.idleMs > 0) fixed.add('idleMs');
+        if (ts.stoppedMs > 0) fixed.add('stoppedMs');
       }
       row.corrected = true;
     }

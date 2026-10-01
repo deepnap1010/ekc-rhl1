@@ -239,12 +239,16 @@ export interface MachineActivityRow {
 // by someone the admin trusts with it. Never edits the PLC's data; every
 // figure overlapping the period reads this instead.
 export type CorrectionState = 'running' | 'idle' | 'stopped';
+/** The period's time as amounts — the card's own tiles. What they leave
+ *  unaccounted is signal lost. */
+export interface CorrectionTime { runningMs: number; idleMs: number; stoppedMs: number }
 export interface MachineCorrection {
   _id: string;
   machineRef: string;
   from: string;
   to: string;
-  state: CorrectionState | null;   // null = as recorded
+  time: CorrectionTime | null;     // null = as recorded
+  state: CorrectionState | null;   // older rows: the whole period in one state
   pieces: number | null;           // null = as recorded
   downtimeReason: string;
   reason: string;

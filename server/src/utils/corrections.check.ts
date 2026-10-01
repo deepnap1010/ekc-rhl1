@@ -1,13 +1,13 @@
 // Self-check for the correction arithmetic. Run: npx tsx server/src/utils/corrections.check.ts
-import { syntheticSteps, correctSteps, cutOut, overlapOf, stateCuts, piecesWithin, inPiecesPeriod, type Correction } from './corrections.js';
+import { syntheticSteps, correctSteps, cutOut, overlapOf, timeCuts, timeSplitWithin, piecesWithin, inPiecesPeriod, type Correction } from './corrections.js';
 
 const eq = (what: string, got: unknown, want: unknown): void => {
   if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`${what}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
 };
 const H = 3_600_000;
 const T0 = Date.parse('2026-10-01T01:30:00Z');   // 07:00 IST
-const corr = (from: number, to: number, pieces: number | null, state: Correction['state'] = null): Correction =>
-  ({ _id: 'c', machineRef: 'SPG05', from: new Date(from), to: new Date(to), state, pieces, downtimeReason: '', reason: 'late start',
+const corr = (from: number, to: number, pieces: number | null, state: Correction['state'] = null, time: Correction['time'] = null): Correction =>
+  ({ _id: 'c', machineRef: 'SPG05', from: new Date(from), to: new Date(to), time, state, pieces, downtimeReason: '', reason: 'late start',
     createdBy: { id: 'u', name: 'Admin' }, createdAt: new Date(), revokedAt: null, revokedBy: null, revokeReason: '' });
 
 // Synthetic steps: the right total, evenly spread, inside the period.
@@ -43,6 +43,15 @@ eq('a non-touching cut changes nothing', cutOut(0, 10, [{ s: 20, e: 30 }]), [{ s
 // Overlaps.
 eq('overlap clips to the window', overlapOf(corr(T0, T0 + 5 * H, 1), T0 + 4 * H, T0 + 9 * H), { s: T0 + 4 * H, e: T0 + 5 * H });
 eq('no overlap → null', overlapOf(corr(T0, T0 + 5 * H, 1), T0 + 6 * H, T0 + 9 * H), null);
-eq('state cuts carry their correction', stateCuts([corr(T0, T0 + H, null, 'idle'), corr(T0 + 2 * H, T0 + 3 * H, 5)], T0, T0 + 9 * H).map((x) => [x.s - T0, x.e - T0, x.c.state]), [[0, H, 'idle']]);
+eq('time cuts carry their correction', timeCuts([corr(T0, T0 + H, null, 'idle'), corr(T0 + 2 * H, T0 + 3 * H, 5)], T0, T0 + 9 * H).map((x) => [x.s - T0, x.e - T0, x.c.state]), [[0, H, 'idle']]);
+
+// Time amounts: the card's own tiles, as amounts, scaled to the part a window takes.
+const five = corr(T0, T0 + 5 * H, 50, null, { runningMs: 4 * H, idleMs: 0.5 * H, stoppedMs: 0.25 * H });
+eq('the whole period gives the amounts, the rest unaccounted', timeSplitWithin(five, T0, T0 + 5 * H), { runningMs: 4 * H, idleMs: 0.5 * H, stoppedMs: 0.25 * H, darkMs: 0.25 * H });
+eq('half the period gives half of each', timeSplitWithin(five, T0, T0 + 2.5 * H), { runningMs: 2 * H, idleMs: 0.25 * H, stoppedMs: 0.125 * H, darkMs: 0.125 * H });
+eq('amounts never exceed the part', timeSplitWithin(corr(T0, T0 + H, null, null, { runningMs: 2 * H, idleMs: 0, stoppedMs: 0 }), T0, T0 + H), { runningMs: H, idleMs: 0, stoppedMs: 0, darkMs: 0 });
+eq('an older whole-period state is the whole part', timeSplitWithin(corr(T0, T0 + H, null, 'stopped'), T0, T0 + H / 2), { runningMs: 0, idleMs: 0, stoppedMs: H / 2, darkMs: 0 });
+eq('pieces only says nothing about time', timeSplitWithin(corr(T0, T0 + H, 5), T0, T0 + H), null);
+eq('a time correction is a time cut', timeCuts([five], T0, T0 + H).map((x) => x.e - x.s), [H]);
 
 console.log('corrections: all checks passed');

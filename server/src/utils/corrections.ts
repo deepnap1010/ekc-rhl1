@@ -95,7 +95,34 @@ export function cutOut(s: number, e: number, cuts: Interval[]): Interval[] {
   return parts.filter((p) => p.e > p.s);
 }
 
-/** The corrected-STATE periods of one machine inside [from, to]. */
-export const stateCuts = (corrections: Correction[] | undefined, from: number, to: number): (Interval & { c: Correction })[] =>
-  (corrections || []).filter((c) => c.state).map((c) => { const o = overlapOf(c, from, to); return o ? { ...o, c } : null; })
+/** Whether a correction says anything about the period's TIME. */
+export const speaksOfTime = (c: Correction): boolean => !!c.time || !!c.state;
+
+export interface TimeSplit { runningMs: number; idleMs: number; stoppedMs: number; darkMs: number }
+/** How the part [s, e) of a correction's period divides: the amounts the
+ *  correction gives, scaled by the part's share of the period (a window that
+ *  cuts the period takes its share of each), and what they leave unaccounted
+ *  — signal lost, as the engines book silence. An older row that named one
+ *  state for the whole period is that state for the whole part. null when
+ *  the correction leaves time as recorded. */
+export function timeSplitWithin(c: Correction, s: number, e: number): TimeSplit | null {
+  const part = Math.max(0, e - s);
+  if (!part) return null;
+  if (c.time) {
+    const span = Math.max(1, new Date(c.to).getTime() - new Date(c.from).getTime());
+    const f = part / span;
+    const r = Math.round(Math.max(0, c.time.runningMs) * f), i = Math.round(Math.max(0, c.time.idleMs) * f), st = Math.round(Math.max(0, c.time.stoppedMs) * f);
+    const scale = r + i + st > part ? part / (r + i + st) : 1;   // never more than the part holds
+    const rr = Math.round(r * scale), ii = Math.round(i * scale), ss = Math.round(st * scale);
+    return { runningMs: rr, idleMs: ii, stoppedMs: ss, darkMs: Math.max(0, part - rr - ii - ss) };
+  }
+  if (c.state) {
+    return { runningMs: c.state === 'running' ? part : 0, idleMs: c.state === 'idle' ? part : 0, stoppedMs: c.state === 'stopped' ? part : 0, darkMs: 0 };
+  }
+  return null;
+}
+
+/** The periods of one machine whose TIME a correction describes, inside [from, to]. */
+export const timeCuts = (corrections: Correction[] | undefined, from: number, to: number): (Interval & { c: Correction })[] =>
+  (corrections || []).filter(speaksOfTime).map((c) => { const o = overlapOf(c, from, to); return o ? { ...o, c } : null; })
     .filter((x): x is Interval & { c: Correction } => x !== null);

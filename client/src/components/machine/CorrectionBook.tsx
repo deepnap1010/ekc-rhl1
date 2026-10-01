@@ -20,7 +20,7 @@ import { useAppConfig } from '../../hooks/useAppConfig';
 import { useMachineName } from '../../lib/machineName';
 import { toast } from '../../store/toast';
 import { fmtNum, fmtTime } from '../../lib/format';
-import type { CorrectionState, MachineCorrection } from '../../types/api';
+import type { MachineCorrection } from '../../types/api';
 
 // <input type="datetime-local"> speaks local wall-clock time without a zone.
 const toLocalInput = (iso: string | number | Date): string => {
@@ -32,13 +32,38 @@ const fromLocalInput = (s: string): string | null => {
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
-const STATES: { value: '' | CorrectionState; label: string; hint: string }[] = [
-  { value: '', label: 'As recorded', hint: 'Leave the running / idle / stopped time as the telemetry has it' },
-  { value: 'running', label: 'Running', hint: 'The whole period counts as running' },
-  { value: 'idle', label: 'Idle', hint: 'The whole period counts as idle' },
-  { value: 'stopped', label: 'Stopped', hint: 'The whole period counts as stopped' },
-];
 const DAY_MS = 86_400_000;
+const MIN_MS = 60_000;
+
+// Durations are typed the way the card shows them: "4h 10m", "4:10", "250"
+// (minutes) all mean the same thing; '' means nothing said.
+const parseDur = (s: string): number | null => {
+  const t = s.trim().toLowerCase();
+  if (!t) return 0;
+  let m = t.match(/^(\d+)\s*:\s*(\d{1,2})$/);
+  if (m) return (Number(m[1]) * 60 + Number(m[2])) * MIN_MS;
+  m = t.match(/^(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+)\s*m(?:in)?)?$/);
+  if (m && (m[1] || m[2])) return Math.round((Number(m[1] || 0) * 60 + Number(m[2] || 0)) * MIN_MS);
+  if (/^\d+(\.\d+)?$/.test(t)) return Math.round(Number(t) * MIN_MS);
+  return null;
+};
+const fmtDur = (ms: number): string => {
+  const min = Math.round(ms / MIN_MS);
+  return min >= 60 ? `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m` : `${min}m`;
+};
+/** "4h 10m run · 35m idle · 15m stopped" — or the older whole-period state. */
+const describeTime = (c: MachineCorrection): string => {
+  if (c.time) {
+    const parts = [[c.time.runningMs, 'run'], [c.time.idleMs, 'idle'], [c.time.stoppedMs, 'stopped']] as [number, string][];
+    return parts.filter(([ms]) => ms > 0).map(([ms, l]) => `${fmtDur(ms)} ${l}`).join(' · ') || 'as recorded';
+  }
+  return c.state ? `all ${c.state}` : 'as recorded';
+};
+const TILES: { key: 'running' | 'idle' | 'stopped'; label: string; color: string }[] = [
+  { key: 'running', label: 'Running (uptime)', color: '#0D9488' },
+  { key: 'idle', label: 'Idle', color: '#D97706' },
+  { key: 'stopped', label: 'Stopped', color: '#DC2626' },
+];
 
 export default function CorrectionBook({ machine, from, to, onRecorded }: {
   machine?: { code: string; name: string };   // fixed (a card's button) — otherwise pick one
@@ -73,13 +98,28 @@ export default function CorrectionBook({ machine, from, to, onRecorded }: {
   const [form, setForm] = useState({
     from: toLocalInput(from ?? new Date(new Date().setHours(0, 0, 0, 0))),
     to: toLocalInput(Math.min(to ? new Date(to).getTime() : now, now)),
-    state: '' as '' | CorrectionState,
+    running: '', idle: '', stopped: '',   // the card's tiles, as amounts for the period
     pieces: '',
     downtimeReason: '',
     reason: '',
   });
   const [error, setError] = useState('');
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]): void => setForm((f) => ({ ...f, [k]: v }));
+
+  // The period's length, what the three amounts add up to, and what is left
+  // — shown live, because the remainder is booked as signal lost.
+  const fromT = fromLocalInput(form.from) ? new Date(form.from).getTime() : null;
+  const toT = fromLocalInput(form.to) ? new Date(form.to).getTime() : null;
+  const periodMs = fromT != null && toT != null ? Math.max(0, toT - fromT) : 0;   // unknown until both ends are typed
+  const amounts = { running: parseDur(form.running), idle: parseDur(form.idle), stopped: parseDur(form.stopped) };
+  const badDur = Object.values(amounts).some((v) => v === null);
+  const saidMs = (amounts.running || 0) + (amounts.idle || 0) + (amounts.stopped || 0);
+  const leftMs = periodMs - saidMs;
+  const fillAll = (key: 'running' | 'idle' | 'stopped'): void => {
+    const whole = fmtDur(periodMs);
+    setForm((f) => ({ ...f, running: key === 'running' ? whole : '', idle: key === 'idle' ? whole : '', stopped: key === 'stopped' ? whole : '' }));
+  };
+  const hasDown = (amounts.idle || 0) + (amounts.stopped || 0) > 0;
 
   // The book — this machine's, or everything in scope — last 30 days,
   // revoked rows included (greyed).
@@ -102,17 +142,20 @@ export default function CorrectionBook({ machine, from, to, onRecorded }: {
       if (!f || !t) throw new Error('Enter the period as date and time');
       const pieces = form.pieces.trim() === '' ? null : Number(form.pieces);
       if (pieces !== null && (!Number.isInteger(pieces) || pieces < 0)) throw new Error('Pieces must be a whole number');
-      if (!form.state && pieces === null) throw new Error('Say what the machine was doing, how many pieces it made, or both');
+      if (badDur) throw new Error('Durations read like "4h 10m", "4:10" or minutes ("250")');
+      if (saidMs > periodMs + MIN_MS) throw new Error(`Running + idle + stopped (${fmtDur(saidMs)}) is longer than the period (${fmtDur(periodMs)})`);
+      const time = saidMs > 0 ? { runningMs: amounts.running || 0, idleMs: amounts.idle || 0, stoppedMs: amounts.stopped || 0 } : null;
+      if (!time && pieces === null) throw new Error('Say how the period\'s time went, how many pieces it made, or both');
       if (form.reason.trim().length < 3) throw new Error('Say why this correction is needed (at least 3 characters)');
       return correctionApi.create({
-        machineRef: code, from: f, to: t, state: form.state || null, pieces,
-        downtimeReason: form.state === 'idle' || form.state === 'stopped' ? form.downtimeReason : '', reason: form.reason.trim(),
+        machineRef: code, from: f, to: t, time, pieces,
+        downtimeReason: hasDown ? form.downtimeReason : '', reason: form.reason.trim(),
       });
     },
     onSuccess: async () => {
       await refresh();
       toast.success(`${name}: correction recorded`);
-      setForm((f) => ({ ...f, pieces: '', reason: '', state: '', downtimeReason: '' }));
+      setForm((f) => ({ ...f, pieces: '', reason: '', running: '', idle: '', stopped: '', downtimeReason: '' }));
       onRecorded?.();
     },
     onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Could not record the correction'),
@@ -155,18 +198,36 @@ export default function CorrectionBook({ machine, from, to, onRecorded }: {
           </div>
 
           <div>
-            <span className="label block mb-1.5">In that period the machine was</span>
-            <div className="inline-flex rounded-lg border border-line overflow-hidden">
-              {STATES.map((s) => (
-                <button key={s.value} type="button" title={s.hint} onClick={() => set('state', s.value)}
-                  className={`px-3 py-1.5 text-sm font-medium transition-colors ${form.state === s.value ? 'bg-accent text-white' : 'text-steel hover:text-primary'}`}>
-                  {s.label}
-                </button>
+            <div className="flex items-baseline justify-between gap-3 mb-1.5">
+              <span className="label">How the period's time really went{periodMs > 0 ? ` — ${fmtDur(periodMs)} in all` : ''}</span>
+              <span className="flex items-center gap-1 text-[11px] text-steel">
+                whole period:
+                {TILES.map((t) => (
+                  <button key={t.key} type="button" onClick={() => fillAll(t.key)} disabled={!periodMs}
+                    className="px-1.5 py-0.5 rounded border border-line hover:border-accent/40 hover:text-accent disabled:opacity-50">{t.label.split(' ')[0].toLowerCase()}</button>
+                ))}
+                <button type="button" onClick={() => setForm((f) => ({ ...f, running: '', idle: '', stopped: '' }))} className="px-1.5 py-0.5 rounded border border-line hover:text-primary">as recorded</button>
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {TILES.map((t) => (
+                <label key={t.key} className="block rounded-xl border border-line px-3 py-2">
+                  <span className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: t.color }}>{t.label}</span>
+                  <input value={form[t.key]} onChange={(e) => set(t.key, e.target.value)} placeholder="e.g. 4h 10m" inputMode="text"
+                    className={`${inputCls} w-full mt-1 data`} />
+                </label>
               ))}
+            </div>
+            <div className={`text-[11px] mt-1 ${badDur || saidMs > periodMs + MIN_MS ? 'text-stopped' : 'text-steel'}`}>
+              {badDur ? 'Durations read like "4h 10m", "4:10" or minutes ("250").'
+                : saidMs === 0 ? 'Leave all three empty to keep the recorded time; fill them to replace it for this period.'
+                  : saidMs > periodMs + MIN_MS ? `That is ${fmtDur(saidMs - periodMs)} more than the period holds.`
+                    : leftMs >= MIN_MS ? `${fmtDur(leftMs)} of the period is unaccounted for — it will count as signal lost.`
+                      : 'The whole period is accounted for.'}
             </div>
           </div>
 
-          {(form.state === 'idle' || form.state === 'stopped') && (
+          {hasDown && (
             <label className="block">
               <span className="label block mb-1">Downtime reason (how the review sheets file it)</span>
               <input list="correction-reasons" value={form.downtimeReason} maxLength={60} onChange={(e) => set('downtimeReason', e.target.value)}
@@ -190,7 +251,7 @@ export default function CorrectionBook({ machine, from, to, onRecorded }: {
 
           {error && <div className="text-sm text-stopped bg-stopped/8 border border-stopped/15 rounded-lg px-3 py-2">{error}</div>}
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[11px] text-steel">Only the period you name changes. An hour that was 40 min running and 20 min idle is two corrections, one after the other. Two corrections cannot overlap — revoke one to replace it.</span>
+            <span className="text-[11px] text-steel">Only the period you name changes; time and pieces outside it stay as recorded. Two corrections cannot overlap — revoke one to replace it.</span>
             <button type="submit" disabled={create.isPending} className="shrink-0 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-60">
               {create.isPending ? 'Recording…' : 'Record correction'}
             </button>
@@ -214,7 +275,7 @@ export default function CorrectionBook({ machine, from, to, onRecorded }: {
               <thead className="bg-base/60 text-steel">
                 <tr>
                   {!machine && <th className="text-left label px-3 py-1.5">Machine</th>}
-                  <th className="text-left label px-3 py-1.5">Period</th><th className="text-left label px-3 py-1.5">Was</th><th className="text-right label px-3 py-1.5">Pieces</th>
+                  <th className="text-left label px-3 py-1.5">Period</th><th className="text-left label px-3 py-1.5">Time</th><th className="text-right label px-3 py-1.5">Pieces</th>
                   <th className="text-left label px-3 py-1.5">Why</th><th className="text-left label px-3 py-1.5">By</th><th className="px-3 py-1.5" />
                 </tr>
               </thead>
@@ -223,7 +284,7 @@ export default function CorrectionBook({ machine, from, to, onRecorded }: {
                   <tr key={c._id} className={`border-t border-line ${c.revokedAt ? 'text-steel/60 line-through' : 'text-primary'}`}>
                     {!machine && <td className="px-3 py-1.5 whitespace-nowrap font-medium">{mName(c.machineRef)}</td>}
                     <td className="px-3 py-1.5 whitespace-nowrap data">{fmtTime(c.from)} → {fmtTime(c.to)}</td>
-                    <td className="px-3 py-1.5">{c.state || 'as recorded'}{c.downtimeReason ? ` · ${c.downtimeReason}` : ''}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">{describeTime(c)}{c.downtimeReason ? ` · ${c.downtimeReason}` : ''}</td>
                     <td className="px-3 py-1.5 text-right data">{c.pieces == null ? '—' : fmtNum(c.pieces)}</td>
                     <td className="px-3 py-1.5 max-w-[220px] truncate" title={c.reason}>{c.reason}</td>
                     <td className="px-3 py-1.5 whitespace-nowrap">{c.createdBy?.name || ''}{c.revokedAt ? ` · revoked by ${c.revokedBy?.name || '?'}` : ''}</td>

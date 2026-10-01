@@ -14,7 +14,7 @@ import type {
   NotifyFlowConfig,
   DepartmentRow,
   MachineCorrection,
-  CorrectionState,
+  CorrectionTime,
   ProductionByType,
   Machine,
   MachineSummary,
@@ -210,7 +210,7 @@ export const rbacApi = {
 // The error-correction book — needs the `corrections` module (view / create / delete).
 export const correctionApi = {
   list: (params?: { machineId?: string; from?: string; to?: string; revoked?: '1' }) => get<MachineCorrection[]>('/corrections', params),
-  create: (body: { machineRef: string; from: string; to: string; state: CorrectionState | null; pieces: number | null; downtimeReason?: string; reason: string }) =>
+  create: (body: { machineRef: string; from: string; to: string; time: CorrectionTime | null; pieces: number | null; downtimeReason?: string; reason: string }) =>
     post<MachineCorrection>('/corrections', body),
   revoke: (id: string, reason?: string) => post<{ revoked: boolean }>(`/corrections/${id}/revoke`, { reason: reason || '' }),
 };

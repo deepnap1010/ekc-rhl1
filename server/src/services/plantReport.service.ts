@@ -27,7 +27,7 @@ import { MachineAssignment } from '../models/MachineAssignment.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { refCandidates } from '../utils/machineRef.js';
 import { productionEventsBy } from './counters.service.js';
-import { loadCorrections, overlapOf, stateCuts, cutOut } from '../utils/corrections.js';
+import { loadCorrections, overlapOf, timeCuts, timeSplitWithin, cutOut } from '../utils/corrections.js';
 import { computeTargets, type TargetRow } from './targets.service.js';
 import type { Span } from './activity.service.js';
 
@@ -217,7 +217,7 @@ export async function computePlantReport(
   // booked as what the correction says instead; the days it touches are
   // marked, so the review sheets can show a figure as a person's word.
   const corrections = await loadCorrections(machines, from, to);
-  const cutsOf = (code: string) => stateCuts(corrections.get(code.toUpperCase()), fromMs, toMs);
+  const cutsOf = (code: string) => timeCuts(corrections.get(code.toUpperCase()), fromMs, toMs);
   for (const code of machines) {
     for (const c of corrections.get(code.toUpperCase()) || []) {
       const o = overlapOf(c, fromMs, toMs);
@@ -274,23 +274,29 @@ export async function computePlantReport(
     byMachine.set(code, arr);
   }
   const reasonSets = new Map<string, Set<string>>();
-  // One idle/stopped booking, whether from a span or a correction.
+  // One idle/stopped booking into a day's shift — ms from a span piece, or a
+  // correction's share — under its reason.
+  const bookDownMs = (code: string, type: 'idle' | 'stopped', reason: string, day: string, shift: string, ms: number, countEvent: boolean): void => {
+    if (ms <= 0) return;
+    const r = get(code, day);
+    r.downtimeMs[type] += ms;
+    r.downtimeByReason[reason] = (r.downtimeByReason[reason] || 0) + ms;
+    const rt = r.reasonType[reason] || (r.reasonType[reason] = { idle: 0, stopped: 0 });
+    rt[type] += ms;
+    const rs = r.reasonShift[reason] || (r.reasonShift[reason] = {});
+    rs[shift] = (rs[shift] || 0) + ms;
+    if (countEvent) r.reasonEvents[reason] = (r.reasonEvents[reason] || 0) + 1;
+    if (reason) {
+      const k = `${code.toUpperCase()}|${day}`;
+      if (!reasonSets.has(k)) reasonSets.set(k, new Set());
+      reasonSets.get(k)!.add(reason);
+    }
+  };
   const bookDown = (code: string, type: 'idle' | 'stopped', reason: string, s: number, e: number, countEvent: boolean): void => {
     let first = countEvent;
     for (const piece of splitByBucket(s, e, tzMin, shifts)) {
-      const r = get(code, piece.day);
-      r.downtimeMs[type] += piece.ms;
-      r.downtimeByReason[reason] = (r.downtimeByReason[reason] || 0) + piece.ms;
-      const rt = r.reasonType[reason] || (r.reasonType[reason] = { idle: 0, stopped: 0 });
-      rt[type] += piece.ms;
-      const rs = r.reasonShift[reason] || (r.reasonShift[reason] = {});
-      rs[piece.shift] = (rs[piece.shift] || 0) + piece.ms;
-      if (first) { r.reasonEvents[reason] = (r.reasonEvents[reason] || 0) + 1; first = false; }
-      if (reason) {
-        const k = `${code.toUpperCase()}|${piece.day}`;
-        if (!reasonSets.has(k)) reasonSets.set(k, new Set());
-        reasonSets.get(k)!.add(reason);
-      }
+      bookDownMs(code, type, reason, piece.day, piece.shift, piece.ms, first);
+      first = false;
     }
   };
   for (const code of machines) {
@@ -326,9 +332,25 @@ export async function computePlantReport(
         }
       }
     }
+    // The correction's own account of the period: its idle and stopped
+    // amounts under its reason, shared across the shifts the period touches
+    // in proportion to the time each holds; what it leaves unaccounted is
+    // signal lost; running books nothing — it is neither downtime nor dark.
     for (const cut of cuts) {
-      if (cut.c.state === 'idle' || cut.c.state === 'stopped') bookDown(code, cut.c.state, cut.c.downtimeReason || '', cut.s, cut.e, true);
-      // 'running' books nothing: the period simply is not downtime, nor dark.
+      const ts = timeSplitWithin(cut.c, cut.s, cut.e);
+      if (!ts) continue;
+      const reason = cut.c.downtimeReason || '';
+      // One correction is one EVENT, counted on the first piece that books
+      // anything — not once per type, and not lost to a piece that rounds to 0.
+      let first = true;
+      for (const piece of splitByBucket(cut.s, cut.e, tzMin, shifts)) {
+        const share = piece.ms / (cut.e - cut.s);
+        const i = Math.round(ts.idleMs * share), st = Math.round(ts.stoppedMs * share);
+        bookDownMs(code, 'idle', reason, piece.day, piece.shift, i, first && i > 0);
+        bookDownMs(code, 'stopped', reason, piece.day, piece.shift, st, first && i <= 0 && st > 0);
+        if (i > 0 || st > 0) first = false;
+        get(code, piece.day).downtimeMs.offline += Math.round(ts.darkMs * share);
+      }
     }
   }
   for (const [k, set] of reasonSets) { const r = byKey.get(k); if (r) r.reasonsText = [...set].join(', '); }

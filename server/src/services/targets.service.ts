@@ -24,7 +24,7 @@ import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
 import { clipSpans, type Span } from './activity.service.js';
 import { productionEventsBy } from './counters.service.js';
-import { loadCorrections, stateCuts, cutOut } from '../utils/corrections.js';
+import { loadCorrections, timeCuts, timeSplitWithin, cutOut } from '../utils/corrections.js';
 
 const IST_MS = 5.5 * 3_600_000;
 const HOUR = 3_600_000;
@@ -99,10 +99,15 @@ interface AsgLike {
 
 /** Pure row builder — everything time-based happens here, so the self-check
  *  can drive it with synthetic data. */
+// A span from the error-correction book carries a weight: the share of its
+// length that was downtime (idle + stopped amounts ÷ period). Recorded spans
+// weigh 1.
+export type WSpan = Span & { weight?: number };
+
 export function buildTargetRows(
   assignments: AsgLike[],
   eventsBy: Map<string, { t: number; made: number }[]>,   // sorted asc
-  spansBy: Map<string, Span[]>,                           // clipped
+  spansBy: Map<string, WSpan[]>,                          // clipped
   fromMs: number, toMs: number,
   breaks: Pick<IBreak, 'start' | 'end'>[] = [],
   opsBy: Map<string, OpInterval[]> = new Map(),
@@ -131,8 +136,9 @@ export function buildTargetRows(
         for (const sp of spans) {
           const os = Math.max(sp.s, s), oe = Math.min(sp.e, e);
           if (oe <= os) continue;
-          dtMs += oe - os;
-          dtInBreakMs += breakOverlapMs(os, oe, breaks);
+          const w = sp.weight ?? 1;
+          dtMs += (oe - os) * w;
+          dtInBreakMs += breakOverlapMs(os, oe, breaks) * w;
         }
         const downtimeSec = dtMs / 1000;
         const netSec = Math.max(0, assignedSec - breakSec);
@@ -216,12 +222,21 @@ export async function computeTargets(
     arr.push({ type: ev.type as Span['type'], s, e });
     rawSpans.set(ev.machineId, arr);
   }
-  // A period the error-correction book says was something else is nobody's
-  // downtime: cut it out of the spans, as the cards and the plant report do.
+  // A period the error-correction book describes is nobody else's downtime:
+  // cut it out of the spans, as the cards and the plant report do, and put
+  // the correction's own idle + stopped in — as a span over the period
+  // weighted by how much of it was downtime, so every hour inside takes its
+  // proportional share.
   const corrT = await loadCorrections(machines, fromD, toD);
-  const spansBy = new Map([...rawSpans].map(([ref, sp]) => {
-    const cuts = stateCuts(corrT.get(ref.toUpperCase()), fromD.getTime(), toD.getTime());
-    return [ref, clipSpans(sp).flatMap((s) => cutOut(s.s, s.e, cuts).map((p) => ({ ...s, ...p })))] as [string, Span[]];
+  const spansBy = new Map([...machines].map((ref) => {
+    const cuts = timeCuts(corrT.get(ref.toUpperCase()), fromD.getTime(), toD.getTime());
+    const kept: WSpan[] = clipSpans(rawSpans.get(ref) || []).flatMap((s) => cutOut(s.s, s.e, cuts).map((p) => ({ ...s, ...p })));
+    for (const cut of cuts) {
+      const ts = timeSplitWithin(cut.c, cut.s, cut.e);
+      const down = ts ? ts.idleMs + ts.stoppedMs : 0;
+      if (down > 0) kept.push({ type: ts!.stoppedMs >= ts!.idleMs ? 'stopped' : 'idle', s: cut.s, e: cut.e, weight: down / (cut.e - cut.s) });
+    }
+    return [ref, kept] as [string, WSpan[]];
   }));
 
   // Planned daily breaks (targets exclude them) and operator sessions (rows are
