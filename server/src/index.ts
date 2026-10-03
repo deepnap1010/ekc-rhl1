@@ -8,6 +8,7 @@ import { initSocket } from './sockets/io.js';
 import { startWatchers, stopWatchers } from './services/watch.service.js';
 import { startDowntimeMonitor, stopDowntimeMonitor } from './services/downtime.service.js';
 import { startScheduleTicker, stopScheduleTicker } from './services/schedule.service.js';
+import { seedCounterKeys } from './services/counterKey.service.js';
 
 async function start(): Promise<void> {
   await connectDB();
@@ -29,6 +30,11 @@ async function start(): Promise<void> {
   server.listen(env.port, () => {
     console.log(`[server] EKC SmartFactory API on :${env.port} (${env.nodeEnv})`);
   });
+  // What each machine's counter is called, learned from the readings already
+  // stored (counterKey.service). In the background: nothing waits for it.
+  seedCounterKeys()
+    .then((n) => { if (n) console.log(`[counters] learned the counter key of ${n} machine${n === 1 ? '' : 's'}`); })
+    .catch((e) => console.error('[counters] seed failed (continuing):', e instanceof Error ? e.message : e));
 
   const shutdown = async (): Promise<void> => {
     stopDowntimeMonitor();

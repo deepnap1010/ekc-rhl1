@@ -16,6 +16,7 @@ import { pickProductionKey } from '../utils/production.js';
 import { refMatch } from '../utils/machineRef.js';
 import { getProdClassConfig } from '../utils/prodclass.js';
 import { PROD_STEP_PER_MIN } from './activity.service.js';
+import { rememberCounterKey } from './counterKey.service.js';
 
 // In-memory last-known values per machine ref. lastState is re-seeded from open
 // sessions on boot; lastCounter starts empty so the first sweep only records a
@@ -78,6 +79,10 @@ export async function recordProduction(ref: string, params: Record<string, unkno
     if (!key) return;
     const value = Number(flat[key]);
     if (!Number.isFinite(value)) return;
+    // This reading names the machine's counter: remember the name, so a later
+    // reading without it (PLC off, a second agent) cannot make the machine
+    // "unable to count" (counterKey.service). A no-op unless it is new.
+    if (!key.includes('.')) void rememberCounterKey(ref, key);
 
     // Stamped with the READING that carried the advance, not the sweep tick
     // up to 30s later: a piece made at 14:59:40 belongs to the shift that

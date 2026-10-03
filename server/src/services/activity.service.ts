@@ -18,6 +18,7 @@ import { cached } from '../utils/cache.js';
 import { lineLinkFor, normRef } from '../config/lineLinks.js';
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEvents } from './derivedCounter.service.js';
+import { counterKeyIn, counterKeys } from './counterKey.service.js';
 import { loadCorrections, overlapOf, piecesWithin, timeSplitWithin } from '../utils/corrections.js';
 
 export interface ActivityRow {
@@ -297,20 +298,45 @@ export async function computeActivity(
       // one, because it is the honest answer for runtime — see utils/production
       // #pickRunKey. One pipeline for both: a second scan of the same window
       // would double the cost of every dashboard poll.
-      const flatOf = (t: TeleRow): Record<string, unknown> => (t.lastData ? flattenData(t.lastData) : {});
+      //
+      // The keys are read off the window's LAST reading — and, when that one
+      // carries none, off its first, then off the machine's standing counter
+      // key (counterKey.service, the one the targets board counts by). A single
+      // reading must not decide what a whole shift is built from: SPG06 made
+      // 102 pieces in a shift whose last reading had no counter in it, and
+      // the card read "— of 129 · 0 pcs" above hourly bars that added up.
+      const flatOf = (d?: Record<string, unknown>): Record<string, unknown> => (d ? flattenData(d) : {});
       const usable = (k: string | null | undefined): boolean => !!k && !k.includes('.');
+      const booksIn = (flat: Record<string, unknown>): MachineBooks => {
+        const b = pickRunKeys(flat);
+        return {
+          run: b.run && usable(b.run.key) ? b.run : null,
+          idle: usable(b.idle) ? b.idle : null,
+          stop: usable(b.stop) ? b.stop : null,
+        };
+      };
+      // What the last reading itself names — any key, dotted ones included: a
+      // dotted key has no series (no $getField) and is read first-vs-last
+      // further down, exactly as before, so it is never replaced here.
+      const named = (t: TeleRow): string | null => (t.lastData ? pickProductionKey(flattenData(t.lastData)) : null);
+      const edgeKey = (t: TeleRow): string | null => {
+        const own = named(t);
+        if (own) return usable(own) ? own : null;
+        return derivedCounterFor(t._id) ? null : counterKeyIn(t.firstData);
+      };
+      // Only machines neither edge names a counter for are looked up — and a
+      // machine that counts by a derived rule keeps that rule (see
+      // counterKey.service#standingKey).
+      const orphans = tele
+        .filter((t: TeleRow) => !named(t) && !counterKeyIn(t.firstData) && !derivedCounterFor(t._id))
+        .map((t: TeleRow) => t._id);
+      const standing = new Map((orphans.length ? await counterKeys(orphans) : []).map((k) => [k.ref, k.key]));
       type Keyed = { id: string; key: string | null; books: MachineBooks };
       const keyed: Keyed[] = tele
         .map((t: TeleRow) => {
-          const flat = flatOf(t);
-          const prod = pickProductionKey(flat);
-          const b = pickRunKeys(flat);
-          const books: MachineBooks = {
-            run: b.run && usable(b.run.key) ? b.run : null,
-            idle: usable(b.idle) ? b.idle : null,
-            stop: usable(b.stop) ? b.stop : null,
-          };
-          return { id: t._id, key: usable(prod) ? prod : null, books };
+          const last = booksIn(flatOf(t.lastData));
+          const books = last.run ? last : booksIn(flatOf(t.firstData));
+          return { id: t._id, key: edgeKey(t) ?? standing.get(t._id) ?? null, books };
         })
         .filter((x) => !!x.key || !!x.books.run);
 
@@ -445,14 +471,24 @@ export async function computeActivity(
     return { runMs, idleMs: secs('i', books.idle), stopMs: secs('s', books.stop) };
   };
 
+  // The counter key each machine's series was read with (chosen above: the
+  // window's last reading, else its first, else the machine's standing key).
+  const keyBy = new Map<string, string | null>(
+    ((teleAgg as { keyed: { id: string; key: string | null }[] }).keyed || []).map((k) => [k.id, k.key]),
+  );
   // Key selection is shared (utils/production) with the event engine + client.
   const productionOf = (t?: TeleRow): { key: string; production: number } | null => {
-    if (!t?.lastData) return null;
-    const last = flattenData(t.lastData);
-    const key = pickProductionKey(last);
+    if (!t) return null;
+    const last = flattenData(t.lastData || {});
+    const own = pickProductionKey(last);
+    const key = own ?? keyBy.get(t._id) ?? null;
     if (!key) return null;
+    // A key the last reading did not name counts only if the window read it
+    // at all — otherwise the machine "cannot count" here, as before.
+    if (!own && !(seriesBy.get(t._id) || []).some((x) => x.v != null)) return null;
     const steps = madeBy.get(t._id);
     if (steps != null) return { key, production: steps };
+    if (!own) return null;
     // Dotted key (no $getField pass) → fall back to first-vs-last. A null/'' first
     // reading must NOT coerce to 0, and a mid-window reset falls back to the end
     // value, exactly as before.

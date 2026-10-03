@@ -15,6 +15,7 @@ import { normalizeData, rankNamed, isNumericValue } from '../utils/normalize.js'
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEvents } from '../services/derivedCounter.service.js';
 import { pickProductionKey } from '../utils/production.js';
+import { counterKeys, windowKeys } from '../services/counterKey.service.js';
 import { getProfile } from '../config/machineProfiles.js';
 import { machineScope } from '../utils/scope.js';
 import { computeActivity, stepEvents, PROD_STEP_PER_MIN } from '../services/activity.service.js';
@@ -206,8 +207,13 @@ export const machineTimeline = asyncHandler(async (req, res) => {
   // drops, one of them 67 wide), so "the last one" was effectively a coin toss and
   // the History column sawed up and down. The highest value in a minute is stable
   // however many times that minute is replayed.
+  // A snapshot that happens to carry no counter (a reading sent while the PLC
+  // was off) falls back to the machine's standing key (counterKey.service).
   const snapKey = pickProductionKey(flattenData((m as LeanMachine).currentParameters as Record<string, unknown> || {}));
-  const maxKey = snapKey && !snapKey.includes('.') ? snapKey : null;
+  const aliases = [m.code, m.machineId].filter(Boolean) as string[];
+  const maxKey = snapKey
+    ? (!snapKey.includes('.') ? snapKey : null)
+    : ((await counterKeys(aliases))[0] ?? (await windowKeys(aliases, fromD, endD))[0])?.key ?? null;
   const counterAt = maxKey ? { $getField: { field: maxKey, input: '$data' } } : null;
 
   // The whole range is aggregated ONCE and cached briefly. Paging must not re-run
@@ -782,8 +788,12 @@ export const machineHourly = asyncHandler(async (req, res) => {
   const endD = new Date(Math.min(toD.getTime(), Date.now()));
 
   // Counter key from the machine's current snapshot — the timeline's choice too.
+  // …or, when that snapshot carries none (a reading sent while the PLC was
+  // off), the machine's standing key — the one the targets board counts by.
+  // Failing that, the window's own readings (its last, else its first).
   const snapKey = pickProductionKey(flattenData((m.currentParameters as Record<string, unknown>) || {}));
-  const key = snapKey && !snapKey.includes('.') ? snapKey : null;
+  const standing = snapKey ? null : ((await counterKeys(refs))[0] ?? (await windowKeys(refs, fromD, endD))[0] ?? null);
+  const key = snapKey ? (!snapKey.includes('.') ? snapKey : null) : standing?.key ?? null;
 
   // Only a machine with NO register falls back to its derived rule: hours from
   // edge events in its raw signal (config/derivedCounters) — same engine as
@@ -811,7 +821,7 @@ export const machineHourly = asyncHandler(async (req, res) => {
 
   const HOUR = 3600_000;
   const cacheKey = `hourly:${refs.join('|')}:${key}:${fromD.toISOString()}:${endD.toISOString()}`;
-  const hours = await cached(cacheKey, 30_000, async () => {
+  const { hours, read } = await cached(cacheKey, 30_000, async () => {
     // Highest counter value per minute (replay-proof), stepped in Node — then
     // each confirmed climb lands in the hour of the sample that observed it.
     const rows = await Telemetry.aggregate([
@@ -849,9 +859,16 @@ export const machineHourly = asyncHandler(async (req, res) => {
         }
       }
     }
-    return [...byHour.entries()].sort((a, b) => a[0] - b[0])
-      .map(([t, made]) => ({ t: new Date(t).toISOString(), made }));
+    return {
+      hours: [...byHour.entries()].sort((a, b) => a[0] - b[0])
+        .map(([t, made]) => ({ t: new Date(t).toISOString(), made })),
+      read: series.length > 0,
+    };
   });
+  // A recovered key names the counter; a window that never read it has nothing
+  // to draw — "cannot count", the answer the card and the board give, not
+  // eight hours of zero. (Pieces an error correction put there still draw.)
+  if (standing?.recovered && !read && !hours.length) return ok(res, { key: null, hours: [] });
   return ok(res, { key, hours }, { from: fromD.toISOString(), to: endD.toISOString() });
 });
 

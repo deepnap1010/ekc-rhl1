@@ -5,35 +5,17 @@
 // change to one silently disagreed with the other, and both paid the same two
 // avoidable costs on every cold request.
 import { Telemetry } from '../models/Telemetry.js';
-import { flattenData } from '../utils/flatten.js';
-import { pickProductionKey } from '../utils/production.js';
-import { cached } from '../utils/cache.js';
 import { excludedPiecesBy } from '../utils/prodclass.js';
 import { stepEvents, PROD_STEP_PER_MIN } from './activity.service.js';
 import { derivedCounterFor } from '../config/derivedCounters.js';
 import { derivedEventsBy } from './derivedCounter.service.js';
 import { loadCorrections, correctSteps } from '../utils/corrections.js';
+import { counterKeys, windowKeys } from './counterKey.service.js';
+
+export { counterKeys };
 
 const NUMERIC = ['int', 'long', 'double', 'decimal'];
 const DAY = 24 * 3_600_000;
-
-/** Each machine's production-counter key, read from its latest payload.
- *  Looked up in PARALLEL — one round trip instead of one per machine — and
- *  cached: a register map changes when a PLC is reprogrammed, not between page
- *  loads. (Measured on this fleet: 679ms sequential -> 254ms parallel -> 0 warm.) */
-export function counterKeys(machines: string[]): Promise<{ ref: string; key: string }[]> {
-  return cached(`counterkeys:${[...machines].sort().join(',')}`, 5 * 60_000, async () => {
-    const found = await Promise.all(machines.map(async (ref) => {
-      const last = await Telemetry.findOne({ machineId: ref }).sort({ timestamp: -1 })
-        .select({ data: 1 }).lean();
-      // A derived-counter machine is looked up like any other: if its PLC has
-      // started sending a register, that register is what we count.
-      const k = last?.data ? pickProductionKey(flattenData(last.data as Record<string, unknown>)) : null;
-      return k && !k.includes('.') ? { ref, key: k } : null;
-    }));
-    return found.filter((x): x is { ref: string; key: string } => x !== null);
-  });
-}
 
 /** Confirmed counter steps per machine within [from, to], with the
  *  error-correction book applied (utils/corrections): inside a corrected
@@ -70,7 +52,14 @@ async function rawProductionEventsBy(
   // (config/derivedCounters) — edges in a raw signal, read from the raw series
   // because per-bin $max erases the dips the edges live in.
   const keyed = await counterKeys(machines);
+  // No standing key is not yet "cannot count": the window's own last and first
+  // reading are asked too — the two the card reads — so the board, the bars
+  // and the reports find a counter wherever the card finds one.
+  const standing = new Set(keyed.map((k) => k.ref));
+  const unkeyed = machines.filter((m) => !standing.has(m));
+  if (unkeyed.length) keyed.push(...await windowKeys(unkeyed, from, to));
   const registered = new Set(keyed.map((k) => k.ref));
+  const recovered = new Set(keyed.filter((k) => k.recovered).map((k) => k.ref));
   const fallback = machines.filter((m) => !registered.has(m) && derivedCounterFor(m));
   // Classified-away pieces come OFF the step that made them — for a derived
   // counter exactly as for a register (see below); an operator's "dry cycle"
@@ -126,6 +115,11 @@ async function rawProductionEventsBy(
     const pts = s.rows.map((p) => ({ t: +new Date(p._id), v: Number(p.pv) }))
       .filter((p) => Number.isFinite(p.v))
       .sort((a, b) => a.t - b.t);
+    // A recovered key names the counter; whether the machine COUNTED in this
+    // window is for the window's own readings to say. With none of them
+    // carrying it the machine stays absent — "cannot count", as it read
+    // before the name was recovered — rather than "made nothing".
+    if (!pts.length && recovered.has(s.ref)) continue;
     out.set(s.ref, takeOff(s.ref, stepEvents(pts, PROD_STEP_PER_MIN)));
   }
   return out;

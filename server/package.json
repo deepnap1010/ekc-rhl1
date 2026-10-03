@@ -15,7 +15,8 @@
     "check:label": "tsx checks/label.check.ts",
     "check:session": "tsx checks/session.check.ts",
     "check:readonly": "tsx checks/readonly.check.ts",
-    "check:permissions": "tsx checks/permissions.check.ts"
+    "check:permissions": "tsx checks/permissions.check.ts",
+    "check:counterkey": "tsx checks/counterkey.check.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
