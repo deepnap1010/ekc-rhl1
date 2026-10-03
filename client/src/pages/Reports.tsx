@@ -134,7 +134,7 @@ export default function Reports() {
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
         {/* The Dashboard's selection — one bar, both pages. */}
         <GlobalFilters modalSubtitle="Every report on this page uses this window"
-          extra={can('production', 'update') && (
+          extra={can('production', 'view') && can('dia_schedule', 'update') && (
             /* Scheduling lives behind this one button, on every page that shows
                what the machines are making. The Dia tab beside it only READS. */
             <button onClick={() => setSchedOpen(true)}

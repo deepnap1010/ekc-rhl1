@@ -11,6 +11,16 @@ export const MODULES = [
   'dashboard',
   'machines',
   'production',
+  // Production's own controls — one row each, so the admin can hand one out
+  // without the others. What every tick allows is in utils/permissions; the
+  // read side of all of them is production.view.
+  'dia',                // the dia catalogue and its cycle times
+  'dia_assign',         // which dia a machine runs right now
+  'dia_schedule',       // a dia switch set for a later moment
+  'breaks',             // the plant's planned breaks
+  'orders',             // production orders
+  'operator_sessions',  // who is on a machine
+  'audit',              // the change history
   'quality',
   'downtime',
   'history',

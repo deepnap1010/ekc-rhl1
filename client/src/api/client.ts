@@ -38,7 +38,12 @@ export function renewSession(): Promise<Renewal> {
         refreshSocketAuth(d.accessToken);
         return 'ok';
       })
-      .catch((e: AxiosError): Renewal => (e.response ? 'denied' : 'offline'))
+      // Only a real refusal signs a person out. A server that is busy, limiting
+      // or restarting (429, 5xx) has not refused anything: try again later.
+      .catch((e: AxiosError): Renewal => {
+        const s = e.response?.status;
+        return s === 400 || s === 401 || s === 403 ? 'denied' : 'offline';
+      })
       .finally(() => { renewing = null; });
   }
   return renewing;

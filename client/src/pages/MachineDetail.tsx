@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { machineApi, downtimeApi } from '../api/endpoints';
 import { StatusPill, Spinner, FreshnessPill } from '../components/ui';
-import { DiaChip, AssignDiaModal, useCurrentAssignment } from '../components/machine/AssignDia';
+import { DiaChip, AssignDiaModal, useCurrentAssignment, useDiaControl } from '../components/machine/AssignDia';
 import { useAuthStore } from '../store/auth';
 import ConfigurePanel from '../components/machine/ConfigurePanel';
 import MachineOverview from '../components/machine/MachineOverview';
@@ -52,7 +52,7 @@ export default function MachineDetail() {
   });
   const [paramsOpen, setParamsOpen] = useState(initialTab === 'parameters');
   const [diaOpen, setDiaOpen] = useState(false);
-  const canSetDia = useAuthStore((s) => s.can)('production', 'update');
+  const canSetDia = useDiaControl().any;   // assign now, or schedule — the modal knows which
   const currentDia = useCurrentAssignment(String(code || '').toUpperCase());
 
   const { data: machine, isLoading } = useQuery({

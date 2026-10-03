@@ -1,6 +1,7 @@
 // client/src/components/machine/AssignDia.tsx
 // The machine-side DIA controls: a header chip showing what the machine is
-// running ("40L · Cutting"), which — for anyone holding production.update —
+// running ("40L · Cutting"), which — for anyone who may put a dia on a
+// machine or schedule one (two rows of the Roles grid, held separately) —
 // opens the assignment modal right there on the floor. Both this and the
 // Configure tab write through the same endpoint: close the open assignment,
 // freeze a new snapshot, write an audit row.
@@ -34,13 +35,26 @@ export function useCurrentAssignment(code: string): MachineAssignment | null {
   return (data || []).find((a) => a.machineRef.toUpperCase() === up) || null;
 }
 
+/** What this person may do with a machine's dia: put one on NOW, or schedule
+ *  one for LATER. Neither includes editing a dia's cycle times — that is the
+ *  catalogue's own permission (dia.update). */
+export function useDiaControl(): { assign: boolean; schedule: boolean; any: boolean } {
+  const can = useAuthStore((s) => s.can);
+  // Both need the dias and the machine's current one to choose from — reads
+  // that are production.view. Without it the control would open on nothing.
+  const see = can('production', 'view');
+  const assign = see && can('dia_assign', 'update');
+  const schedule = see && can('dia_schedule', 'update');
+  return { assign, schedule, any: assign || schedule };
+}
+
 /** Header chip: current DIA · stage. A control when the user may assign. */
 export function DiaChip({ code }: { code: string }): JSX.Element | null {
   const can = useAuthStore((s) => s.can);
   const current = useCurrentAssignment(code);
   const [open, setOpen] = useState(false);
+  const editable = useDiaControl().any;
   if (!can('production', 'view')) return null;
-  const editable = can('production', 'update');
   const label = current ? `${current.snapshot.diaName} · ${current.snapshot.stageName}` : 'No DIA assigned';
   return (
     <>
@@ -65,6 +79,10 @@ export function AssignDiaModal({ code, current, onClose }: {
 }): JSX.Element {
   const qc = useQueryClient();
   const mName = useMachineName();
+  // Someone who may only schedule gets the schedule form; someone who may
+  // only assign never sees it.
+  const ctl = useDiaControl();
+  const scheduleOnly = !ctl.assign && ctl.schedule;
   const { data: dias } = useQuery({
     queryKey: ['dia-configs'],
     queryFn: () => productionApi.dia().then((r) => r.data),
@@ -97,8 +115,12 @@ export function AssignDiaModal({ code, current, onClose }: {
   };
 
   // ── Schedule for later: same picks, applied at a chosen future minute ──────
-  const [schedMode, setSchedMode] = useState(false);
-  const [when, setWhen] = useState('');
+  const [wantSched, setSchedMode] = useState(scheduleOnly);
+  // The mode follows what the person may do, even if that changes while the
+  // modal is open: no scheduling without that permission, nothing BUT
+  // scheduling without the assign one.
+  const schedMode = ctl.schedule && (wantSched || !ctl.assign);
+  const [when, setWhen] = useState(() => (scheduleOnly ? defaultApplyAt(shifts[0]?.start) : ''));
   const whenAt = when ? new Date(when) : null;
   const whenOk = !!whenAt && !Number.isNaN(whenAt.getTime()) && whenAt.getTime() > Date.now() - 60_000;
   const { data: sched } = useQuery({
@@ -149,7 +171,7 @@ export function AssignDiaModal({ code, current, onClose }: {
   });
 
   return (
-    <Modal title={`Assign dia · ${mName(code)}`} subtitle="The dia defines the product this machine is set up to make" icon={Ruler} onClose={onClose} maxW="max-w-md">
+    <Modal title={`${scheduleOnly ? 'Schedule dia' : 'Assign dia'} · ${mName(code)}`} subtitle="The dia defines the product this machine is set up to make" icon={Ruler} onClose={onClose} maxW="max-w-md">
       <div className="space-y-4">
         {/* What it's making right now — the anchor for the change below */}
         {current && (
@@ -170,17 +192,19 @@ export function AssignDiaModal({ code, current, onClose }: {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <span className="label">{current ? 'Change to' : 'DIA / Product'}</span>
-                <button
-                  onClick={() => { setSchedMode((m) => !m); if (!when) setWhen(defaultApplyAt(shifts[0]?.start)); }}
-                  title="Pick a future moment — the machine switches itself then"
-                  className={`inline-flex items-center gap-1 text-[11px] font-medium transition-colors ${schedMode ? 'text-accent' : 'text-steel hover:text-accent'}`}
-                >
-                  <CalendarClock size={11} /> {schedMode ? 'Assign now instead' : 'Schedule for later'}
-                </button>
+                {ctl.assign && ctl.schedule && (
+                  <button
+                    onClick={() => { setSchedMode((m) => !m); if (!when) setWhen(defaultApplyAt(shifts[0]?.start)); }}
+                    title="Pick a future moment — the machine switches itself then"
+                    className={`inline-flex items-center gap-1 text-[11px] font-medium transition-colors ${schedMode ? 'text-accent' : 'text-steel hover:text-accent'}`}
+                  >
+                    <CalendarClock size={11} /> {schedMode ? 'Assign now instead' : 'Schedule for later'}
+                  </button>
+                )}
               </div>
               <select value={diaId} onChange={(e) => pickDia(e.target.value)}
                 className="w-full bg-base border border-line rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
-                <option value="">No dia</option>
+                <option value="">{schedMode ? 'Select a dia…' : 'No dia'}</option>
                 {options.map((d) => (
                   <option key={d._id} value={d._id}>{d.name}{d.dims ? ` · ${d.dims}` : ''}</option>
                 ))}
@@ -271,7 +295,9 @@ export function AssignDiaModal({ code, current, onClose }: {
                   <span className="data font-semibold text-accent">{s.diaName}</span>
                   <span className="text-steel">· {s.stageName} — from {fmtTime(s.applyAt)}</span>
                   {s.createdBy?.name && <span className="text-steel/70">· by {s.createdBy.name}</span>}
-                  <button onClick={() => cancelSchedMut.mutate(s._id)} className="ml-auto font-medium text-steel hover:text-stopped">Cancel</button>
+                  {ctl.schedule && (
+                    <button onClick={() => cancelSchedMut.mutate(s._id)} className="ml-auto font-medium text-steel hover:text-stopped">Cancel</button>
+                  )}
                 </div>
               ))}
             </div>

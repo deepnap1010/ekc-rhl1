@@ -37,8 +37,13 @@ import { fmtMinPerPc as fmtMin, minPerPcToSec as minToSec, secToMinPerPc as secT
 export default function DiaStagesSettings(): JSX.Element {
   const qc = useQueryClient();
   const can = useAuthStore((st) => st.can);
-  const canDia = can('production', 'update');
-  const canCreate = can('production', 'create');
+  // Four separate permissions: add a dia, edit its cycle times, retire or
+  // delete it, and put one on a machine — an admin can grant the last without
+  // the others.
+  const canCreate = can('dia', 'create');
+  const canTimes = can('dia', 'update');
+  const canRetire = can('dia', 'delete');
+  const canAssign = can('dia_assign', 'update');
   const canTemplates = can('settings', 'update');
   const { stageTemplates } = useAppConfig();
 
@@ -75,18 +80,18 @@ export default function DiaStagesSettings(): JSX.Element {
   return (
     <div className="space-y-5">
       <DiametersPanel dias={dias || []} templates={stageTemplates} usageOf={usageOf} machines={machineList || []}
-        canCreate={canCreate} canEdit={canDia} onSaved={refresh} />
+        canCreate={canCreate} canEdit={canTimes} canRetire={canRetire} onSaved={refresh} />
       <StagesPanel dias={dias || []} templates={stageTemplates} machines={machineList || []} canEdit={canTemplates} />
-      <AssignPanel machines={machineList || []} dias={dias || []} asgBy={asgBy} canEdit={canDia} onSaved={refresh} />
+      <AssignPanel machines={machineList || []} dias={dias || []} asgBy={asgBy} canEdit={canAssign} onSaved={refresh} />
     </div>
   );
 }
 
 // ═══ 1 · Diameters ════════════════════════════════════════════════════════════
-function DiametersPanel({ dias, templates, usageOf, machines, canCreate, canEdit, onSaved }: {
+function DiametersPanel({ dias, templates, usageOf, machines, canCreate, canEdit, canRetire, onSaved }: {
   dias: DiaConfig[]; templates: StageTemplate[]; machines: Machine[];
   usageOf: (name: string) => number;
-  canCreate: boolean; canEdit: boolean; onSaved: () => void;
+  canCreate: boolean; canEdit: boolean; canRetire: boolean; onSaved: () => void;
 }): JSX.Element {
   const [name, setName] = useState('');
   const [draft, setDraft] = useState<Record<string, string>>({});   // stage name -> min/pc
@@ -193,16 +198,18 @@ function DiametersPanel({ dias, templates, usageOf, machines, canCreate, canEdit
                 <span className="pill bg-accent/10 text-accent !text-[10px] shrink-0">{usageOf(d.name)} machine{usageOf(d.name) === 1 ? '' : 's'}</span>
                 <span className="text-[11px] text-steel truncate flex-1 min-w-[120px]" title={cycleSummary(d)}>{cycleSummary(d)}</span>
                 <span className="text-[10px] text-steel shrink-0">since {shortDate(d.createdAt || d.updatedAt)}</span>
-                {canEdit && (
+                {(canEdit || canRetire) && (
                   <span className="flex items-center gap-3 shrink-0 text-xs">
-                    <button onClick={() => setEditFor(editFor === d._id ? null : d._id)} className="text-accent hover:underline">
-                      {editFor === d._id ? 'Close' : 'Edit cycles'}
-                    </button>
-                    <button onClick={() => setActive(d, false)} className="text-steel hover:text-primary">Retire</button>
+                    {canEdit && (
+                      <button onClick={() => setEditFor(editFor === d._id ? null : d._id)} className="text-accent hover:underline">
+                        {editFor === d._id ? 'Close' : 'Edit cycles'}
+                      </button>
+                    )}
+                    {canRetire && <button onClick={() => setActive(d, false)} className="text-steel hover:text-primary">Retire</button>}
                   </span>
                 )}
               </div>
-              {editFor === d._id && (
+              {canEdit && editFor === d._id && (
                 <EditCycles dia={d} templates={templates} machines={machines} onSaved={() => { setEditFor(null); onSaved(); }} />
               )}
             </div>
@@ -222,7 +229,7 @@ function DiametersPanel({ dias, templates, usageOf, machines, canCreate, canEdit
                   <span className="data font-bold text-sm text-steel line-through shrink-0">{d.name}</span>
                   <span className="text-[10px] text-steel shrink-0">{shortDate(d.createdAt)} → {shortDate(d.retiredAt)}</span>
                   {held > 0 && <span className="pill bg-idle/10 text-idle !text-[10px] shrink-0">{held} machine{held === 1 ? '' : 's'}</span>}
-                  {canEdit && (
+                  {canRetire && (
                     <span className="ml-auto flex items-center gap-3 shrink-0 text-xs">
                       <button onClick={() => setActive(d, true)} className="text-accent hover:underline">Restore</button>
                       {confirmDelete === d._id ? (

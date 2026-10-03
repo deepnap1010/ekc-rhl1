@@ -28,8 +28,11 @@ export function createApp(): Express {
   app.use(express.json({ limit: '1mb' }));
   if (env.nodeEnv === 'development') app.use(morgan('dev'));
 
-  // Rate limit only the auth + ingest surface
-  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
+  // Rate limit only the auth + ingest surface. The limiter is there to slow
+  // password and token guessing — the POSTs. GET /auth/me needs a valid session
+  // already and every open screen polls it (permissions follow the Roles page),
+  // so it must not use up the allowance that sign-in and renewal share.
+  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100, skip: (req) => req.method === 'GET' });
   app.use('/api/v1/auth', authLimiter);
 
   // Single-service hosting (e.g. Render): when the client has been built, serve its

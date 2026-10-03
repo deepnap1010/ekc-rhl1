@@ -1,6 +1,7 @@
 // server/src/controllers/rbac.controller.ts
 import type { FilterQuery, Types } from 'mongoose';
-import { Role, MODULES, ACTIONS, FULL_PERMISSIONS, SUPER_ADMIN_RE, isSuperAdminRole } from '../models/Role.js';
+import { Role, MODULES, ACTIONS, FULL_PERMISSIONS, isSuperAdminRole } from '../models/Role.js';
+import { PERMISSION_CATALOG, normalizePermissions, grantSuperAdminEverything, migrateProductionSplit } from '../utils/permissions.js';
 import type { IRole } from '../models/Role.js';
 import { User } from '../models/User.js';
 import type { IUser, Deletion } from '../models/User.js';
@@ -30,40 +31,6 @@ async function placeIn(raw: unknown): Promise<string | null> {
   return (await loadDepartments()).some((d) => d.key === k) ? k : null;
 }
 
-// Coerce ANY stored/incoming permissions shape into a clean { module: [actions] }
-// matrix, filtered to valid modules × actions. Self-heals legacy/corrupt data that
-// older seeds wrote — flat "module:action" arrays (→ numeric Map keys) and even
-// char-exploded strings (a bare "dashboard:view" stored as ['d','a','s',…]).
-function normalizePermissions(raw: unknown): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  const add = (mod: string, act: string): void => {
-    const m = mod.trim(); const a = act.trim();
-    if (MODULES.includes(m) && ACTIONS.includes(a)) {
-      if (!out[m]) out[m] = [];
-      if (!out[m].includes(a)) out[m].push(a);
-    }
-  };
-  const parseToken = (tok: string): void => {
-    const i = tok.indexOf(':');
-    if (i > 0) add(tok.slice(0, i), tok.slice(i + 1));
-  };
-  const obj: Record<string, unknown> = raw instanceof Map ? Object.fromEntries(raw) : ((raw as Record<string, unknown>) || {});
-  for (const [k, v] of Object.entries(obj)) {
-    if (MODULES.includes(k)) {
-      (Array.isArray(v) ? v : [v]).forEach((a) => add(k, String(a)));   // proper { module: [actions] }
-    } else if (Array.isArray(v)) {
-      if (v.length && v.every((x) => typeof x === 'string' && (x as string).length === 1)) {
-        parseToken(v.join(''));                                         // char-exploded "module:action"
-      } else {
-        v.forEach((tok) => parseToken(String(tok)));                    // ["module:action", …]
-      }
-    } else if (typeof v === 'string') {
-      parseToken(v);
-    }
-  }
-  return out;
-}
-
 // Structural view of a user as handed to stripUser: a lean/plain object with the
 // role populated to its name/key (or null).
 interface StripableUser {
@@ -80,28 +47,21 @@ interface StripableUser {
   deletion?: unknown;
 }
 
-// The Super Admin grid is read-only in the UI, so nobody could ever tick its boxes:
-// the role was created with an empty matrix and stayed that way. Its access came
-// solely from the user-level isSuperAdmin flag, which left the page claiming "full
-// access" above 84 empty checkboxes — and an employee given the ROLE without the
-// flag got nothing at all. Self-heal: the role that means everything holds
-// everything. Idempotent, so it costs one no-op write per page load.
-async function grantSuperAdminEverything(): Promise<void> {
-  await Role.updateMany(
-    { $or: [{ key: SUPER_ADMIN_RE }, { name: SUPER_ADMIN_RE }] },
-    { $set: { permissions: FULL_PERMISSIONS } },
-  );
-}
-
 // ---- Roles ----
 export const listRoles = asyncHandler(async (req, res) => {
   await grantSuperAdminEverything();
+  // The grid must show what authorize() enforces: a role still stored with an
+  // old Production tick (startup could not reach the database, a restored
+  // backup) is translated before it is listed.
+  await migrateProductionSplit();
   const roles = await Role.find().sort({ isSystem: -1, name: 1 }).lean();
   return ok(res, roles.map((r) => ({ ...r, permissions: normalizePermissions(r.permissions) })));
 });
 
+// The grid's shape AND its meaning: which actions each row offers and what
+// every tick allows (utils/permissions).
 export const rbacMeta = asyncHandler(async (req, res) =>
-  ok(res, { modules: MODULES, actions: ACTIONS })
+  ok(res, { modules: MODULES, actions: ACTIONS, catalog: PERMISSION_CATALOG })
 );
 
 export const createRole = asyncHandler(async (req, res) => {

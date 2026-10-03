@@ -9,11 +9,12 @@ import { productionApi } from '../../api/endpoints';
 import { useAuthStore } from '../../store/auth';
 import { fmtTime } from '../../lib/format';
 import { fmtProcessing, hourlyRate, fmtRate } from '../../lib/targets';
-import { AssignDiaModal, useCurrentAssignment } from './AssignDia';
+import { AssignDiaModal, useCurrentAssignment, useDiaControl } from './AssignDia';
 
 export default function DiaAssignmentSection({ code }: { code: string }): JSX.Element | null {
   const can = useAuthStore((s) => s.can);
   const current = useCurrentAssignment(code);
+  const ctl = useDiaControl();
   const [open, setOpen] = useState(false);
   const { data: history } = useQuery({
     queryKey: ['assignments', 'history', code],
@@ -42,10 +43,10 @@ export default function DiaAssignmentSection({ code }: { code: string }): JSX.El
           ) : (
             <span className="text-sm text-steel flex-1">No DIA assigned — this machine has no production target.</span>
           )}
-          {can('production', 'update') && (
+          {ctl.any && (
             <button onClick={() => setOpen(true)}
               className="shrink-0 px-3 py-1.5 rounded-lg border border-accent/20 bg-accent/5 text-accent text-xs font-medium hover:bg-accent/10">
-              {current ? 'Change' : 'Assign DIA'}
+              {!ctl.assign ? 'Schedule' : current ? 'Change' : 'Assign DIA'}
             </button>
           )}
         </div>

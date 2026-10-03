@@ -6,6 +6,7 @@
 // it never removes the ones a previous schema left behind, and a stale UNIQUE
 // index is not inert — it rejects writes.
 import mongoose from 'mongoose';
+import { grantSuperAdminEverything, migrateProductionSplit } from '../utils/permissions.js';
 
 /** Indexes machine_labels is supposed to have. Anything else on that collection
  *  is from a shape it no longer has. */
@@ -34,11 +35,30 @@ async function repairMachineLabelIndexes(): Promise<void> {
   }
 }
 
-/** Never fatal: a repair that cannot run must not stop the plant monitor. */
+/**
+ * The Production row of the Roles grid became several rows (utils/permissions).
+ * authorize() reads the stored matrix, so the old ticks are translated before
+ * anything serves — a supervisor who could assign a dia yesterday can this
+ * morning. The Super Admin role is given the new rows the same way.
+ */
+async function splitProductionPermissions(): Promise<void> {
+  await grantSuperAdminEverything();
+  const moved = await migrateProductionSplit();
+  if (moved) console.log(`[migrate] production permissions split for ${moved} role${moved === 1 ? '' : 's'}`);
+}
+
+/** Never fatal: a repair that cannot run must not stop the plant monitor —
+ *  and one that fails must not take the next one with it. */
 export async function runStartupMigrations(): Promise<void> {
-  try {
-    await repairMachineLabelIndexes();
-  } catch (e) {
-    console.error('[migrate] failed (continuing):', e instanceof Error ? e.message : e);
+  const steps: [string, () => Promise<void>][] = [
+    ['machine label indexes', repairMachineLabelIndexes],
+    ['production permission split', splitProductionPermissions],
+  ];
+  for (const [name, step] of steps) {
+    try {
+      await step();
+    } catch (e) {
+      console.error(`[migrate] ${name} failed (continuing):`, e instanceof Error ? e.message : e);
+    }
   }
 }

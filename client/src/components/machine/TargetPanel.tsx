@@ -191,7 +191,7 @@ export default function TargetPanel({ code, actRow, dayFrom, dayTo, label = 'Tod
 // ── Who is on the machine ────────────────────────────────────────────────────
 // The handover flow: starting a session closes the previous one, and the
 // targets report splits its rows at that instant — each person answers for the
-// pieces counted on their watch. Holders of production.update change it;
+// pieces counted on their watch. Holders of operator_sessions.update change it;
 // everyone else just sees the name.
 function OperatorBadge({ code }: { code: string }): JSX.Element | null {
   const can = useAuthStore((s) => s.can);
@@ -204,7 +204,7 @@ function OperatorBadge({ code }: { code: string }): JSX.Element | null {
   useEffect(() => {
     if (open && !userId) setUserId(mine?.userId || assignedUser?.id || '');
   }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const editable = can('production', 'update');
+  const editable = can('operator_sessions', 'update');
 
   const { data: sessions } = useQuery({
     queryKey: ['operators', 'current'],

@@ -563,8 +563,8 @@ export const targetsReport = asyncHandler(async (req, res) => {
 
 // PUT /production/breaks { breaks: [{name, start, end}] } — the plant's daily
 // planned pauses. Targets exclude them (see targets.service), so lunch never
-// reads as "behind target". Lives in app_config; gated by production.update
-// because it changes what every target means.
+// reads as "behind target". Lives in app_config; its own permission
+// (breaks.update) because it changes what every target means.
 const TIME_RE = /^\d{2}:\d{2}$/;
 export const setBreaks = asyncHandler(async (req, res) => {
   const breaks = (req.body as { breaks?: unknown })?.breaks;

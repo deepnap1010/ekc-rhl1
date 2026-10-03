@@ -63,14 +63,14 @@ export default function ProductionSetup(): JSX.Element {
               className="flex items-center gap-1.5 border border-accent/30 bg-accent/5 text-accent text-sm font-medium px-3.5 py-2 rounded-lg hover:bg-accent/10 transition-colors">
               <Waypoints size={15} /> Trace Dia <ChevronRight size={15} className="-mr-1" />
             </button>
-            {can('production', 'update') && (
+            {can('dia_schedule', 'update') && (
               <button onClick={() => setSchedOpen(true)}
                 title="Set a dia to switch itself onto a machine at a future moment"
                 className="flex items-center gap-1.5 border border-accent/30 bg-accent/5 text-accent text-sm font-medium px-3.5 py-2 rounded-lg hover:bg-accent/10 transition-colors">
                 <CalendarClock size={15} /> Schedule Dia
               </button>
             )}
-            {can('production', 'create') && (
+            {can('dia', 'create') && (
               <button onClick={() => setEditing('new')}
                 className="flex items-center gap-1.5 bg-accent text-white text-sm font-medium px-3.5 py-2 rounded-lg hover:opacity-90">
                 <Plus size={15} /> New DIA
@@ -116,11 +116,12 @@ export default function ProductionSetup(): JSX.Element {
                 <div className="mt-4 pt-3 border-t border-line flex items-center justify-between text-xs">
                   <span className="text-steel">{d.usedOn ? `Running on ${d.usedOn} machine${d.usedOn === 1 ? '' : 's'}` : 'Not assigned'}</span>
                   <span className="flex gap-2">
-                    {can('production', 'delete') && (
+                    {can('dia', 'delete') && (
                       <button onClick={() => activeMut.mutate({ id: d._id, active: !d.active })}
                         className="text-steel hover:text-primary">{d.active ? 'Deactivate' : 'Reactivate'}</button>
                     )}
-                    {can('production', 'update') && (
+                    {/* Cycle times are their own permission: scheduling a dia does not include re-timing it. */}
+                    {can('dia', 'update') && (
                       <button onClick={() => setEditing(d)} className="flex items-center gap-1 text-accent hover:underline">
                         <Pencil size={11} /> Edit
                       </button>
@@ -135,19 +136,19 @@ export default function ProductionSetup(): JSX.Element {
 
       <OrdersSection dias={dias || []} />
 
-      {can('production', 'update') && <BreaksSection />}
+      {can('breaks', 'update') && <BreaksSection />}
 
-      {can('production', 'admin') && <AuditTrail />}
+      {can('audit', 'view') && <AuditTrail />}
 
       {schedOpen && <ScheduleDiaModal onClose={() => setSchedOpen(false)} />}
-      {editing === 'new' && (
+      {editing === 'new' && can('dia', 'create') && (
         <DiaModal
           dia={null}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ['dia-configs'] }); qc.invalidateQueries({ queryKey: ['assignments'] }); }}
         />
       )}
-      {editing && editing !== 'new' && (
+      {editing && editing !== 'new' && can('dia', 'update') && (
         <EditDiaModal
           dia={editing}
           onClose={() => setEditing(null)}
@@ -186,12 +187,12 @@ function OrdersSection({ dias }: { dias: DiaConfig[] }): JSX.Element | null {
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not update order'),
   });
 
-  if (!(orders || []).length && !can('production', 'create')) return null;
+  if (!(orders || []).length && !can('orders', 'create')) return null;
   return (
     <div className="px-4 sm:px-6 pb-2 space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold text-sm text-primary flex items-center gap-1.5"><ClipboardList size={15} className="text-accent" /> Orders</h2>
-        {can('production', 'create') && (
+        {can('orders', 'create') && (
           <button onClick={() => setCreating(true)} className="flex items-center gap-1 text-xs text-accent hover:underline"><Plus size={12} /> New order</button>
         )}
       </div>
@@ -220,13 +221,13 @@ function OrdersSection({ dias }: { dias: DiaConfig[] }): JSX.Element | null {
                 <div className="h-1.5 bg-line rounded-full overflow-hidden mt-2">
                   <div className="h-full rounded-full bg-accent" style={{ width: `${p}%` }} />
                 </div>
-                {can('production', 'update') && o.status === 'open' && (
+                {can('orders', 'update') && o.status === 'open' && (
                   <div className="mt-3 pt-2 border-t border-line flex gap-3 text-xs">
                     <button onClick={() => statusMut.mutate({ id: o._id, status: 'done' })} className="text-accent hover:underline">Mark done</button>
                     <button onClick={() => statusMut.mutate({ id: o._id, status: 'cancelled' })} className="text-steel hover:text-stopped">Cancel</button>
                   </div>
                 )}
-                {can('production', 'update') && o.status !== 'open' && (
+                {can('orders', 'update') && o.status !== 'open' && (
                   <div className="mt-3 pt-2 border-t border-line text-xs">
                     <button onClick={() => statusMut.mutate({ id: o._id, status: 'open' })} className="text-steel hover:text-accent">Reopen</button>
                   </div>

@@ -28,6 +28,10 @@ const numOrU = (v: string): number | undefined => (v === '' ? undefined : Number
 
 export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.Element {
   const canRename = useAuthStore((st) => st.can)('machines', 'admin');
+  // This tab's cycle time is a note kept in this browser — it feeds no target.
+  // It still reads as "the machine's cycle time", so it follows the same
+  // permission as the real one (Production Targets → a dia's cycle times).
+  const canTimes = useAuthStore((st) => st.can)('dia', 'update');
   const qc = useQueryClient();
   const mName = useMachineName();
   const mTitle = useMachineTitle();
@@ -190,7 +194,8 @@ export default function ConfigurePanel({ machine }: { machine: Machine }): JSX.E
               onChange={(e) => set({ targets: { ...cfg.targets, shiftTarget: numOrU(e.target.value) } })} />
           </Field>
           <Field label="Cycle time (s)">
-            <input className="input" type="number" value={cfg.targets?.cycleTime ?? ''} placeholder="—"
+            <input className="input disabled:opacity-60" type="number" value={cfg.targets?.cycleTime ?? ''} placeholder="—"
+              disabled={!canTimes} title={canTimes ? undefined : 'You do not have permission to edit cycle times'}
               onChange={(e) => set({ targets: { ...cfg.targets, cycleTime: numOrU(e.target.value) } })} />
           </Field>
           <Field label="Mark offline after (min)">

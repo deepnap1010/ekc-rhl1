@@ -43,7 +43,7 @@ r.put('/machines/:code/label', authorize('machines', 'admin'), machine.setMachin
 r.get('/machines/dias', authorize('production'), prod.machineDias); // current dia per machine — MUST stay above /:code
 r.get('/machines/:code', authorize('machines'), machine.getMachine);
 r.get('/machines/:code/hourly', authorize('machines'), machine.machineHourly); // pieces per hour — the target board's bars
-r.post('/machines/:code/dia', authorize('production', 'update'), prod.setMachineDia);   // assign a dia BY NAME
+r.post('/machines/:code/dia', authorize('dia_assign', 'update'), prod.setMachineDia);   // assign a dia BY NAME
 r.get('/machines/:code/dia/history', authorize('production'), prod.machineDiaHistory);
 r.get('/machines/:code/stats', authorize('machines'), machine.machineStats);
 r.get('/machines/:code/series', authorize('history'), machine.machineSeries);
@@ -68,21 +68,24 @@ r.get('/downtime/reasons', authorize('downtime'), downtime.downtimeReasons);   /
 r.patch('/downtime/:id/reason', authorize('downtime', 'update'), downtime.updateReason);
 r.patch('/downtime/:id/ack', authorize('downtime', 'update'), downtime.acknowledgeDowntime);
 
-// Production targets - DIA products, stages, machine assignments (module: production)
+// Production targets - DIA products, stages, machine assignments. Reading any
+// of it is production.view; every WRITE has a row of its own on the Roles grid
+// (utils/permissions), so the admin can let a supervisor schedule a dia
+// without also letting them re-time it.
 r.get('/production/dia', authorize('production'), prod.listDia);
-r.post('/production/dia', authorize('production', 'create'), prod.createDia);
-r.put('/production/dia/:id', authorize('production', 'update'), prod.updateDia);
-r.post('/production/dia/:id/active', authorize('production', 'delete'), prod.setDiaActive);
-r.delete('/production/dia/:id', authorize('production', 'delete'), prod.deleteDia);
+r.post('/production/dia', authorize('dia', 'create'), prod.createDia);
+r.put('/production/dia/:id', authorize('dia', 'update'), prod.updateDia);                // cycle times — per stage, per machine
+r.post('/production/dia/:id/active', authorize('dia', 'delete'), prod.setDiaActive);
+r.delete('/production/dia/:id', authorize('dia', 'delete'), prod.deleteDia);
 r.get('/production/assignments/current', authorize('production'), prod.currentAssignments);
 r.get('/production/assignments', authorize('production'), prod.listAssignments);
-r.post('/production/assignments', authorize('production', 'update'), prod.assignMachine);
-r.delete('/production/assignments/current/:machineRef', authorize('production', 'update'), prod.unassignMachine);
+r.post('/production/assignments', authorize('dia_assign', 'update'), prod.assignMachine);
+r.delete('/production/assignments/current/:machineRef', authorize('dia_assign', 'update'), prod.unassignMachine);
 r.get('/production/targets', authorize('production'), prod.targetsReport);
 r.get('/production/trace', authorize('production'), prod.traceDias); // dia-wise assignment + production story
 r.get('/production/schedule', authorize('production'), prod.listSchedules);            // upcoming + recent dia schedules
-r.post('/production/schedule', authorize('production', 'update'), prod.createSchedule);
-r.delete('/production/schedule/:id', authorize('production', 'update'), prod.cancelSchedule);
+r.post('/production/schedule', authorize('dia_schedule', 'update'), prod.createSchedule);
+r.delete('/production/schedule/:id', authorize('dia_schedule', 'update'), prod.cancelSchedule);
 r.post('/production/schedule/:id/ack', authorize('production'), prod.ackSchedule);     // operator read-receipt
 r.get('/production/class-queue', authorize('production'), events.classQueue);          // operator popup: unanswered production events
 r.get('/production/events', authorize('production'), events.listEvents);               // production-count history (operators: their machines)
@@ -91,14 +94,14 @@ r.post('/production/events/:id/classify', authorize('production'), events.classi
 // (own machines only, checked inside), so an operator who gets one gets both.
 r.get('/production/downtime-queue', authorize('production'), downtime.downtimeQueue);       // spans long enough to ask about, unanswered
 r.post('/production/downtime/:id/reason', authorize('production'), downtime.answerDowntime); // operator popup answer / timeout
-r.put('/production/breaks', authorize('production', 'update'), prod.setBreaks);
+r.put('/production/breaks', authorize('breaks', 'update'), prod.setBreaks);
 r.get('/production/orders', authorize('production'), prod.listOrders);
-r.post('/production/orders', authorize('production', 'create'), prod.createOrder);
-r.patch('/production/orders/:id', authorize('production', 'update'), prod.updateOrder);
+r.post('/production/orders', authorize('orders', 'create'), prod.createOrder);
+r.patch('/production/orders/:id', authorize('orders', 'update'), prod.updateOrder);
 r.get('/production/operators/current', authorize('production'), prod.currentOperators);
-r.post('/production/operators', authorize('production', 'update'), prod.setOperator);
-r.delete('/production/operators/current/:machineRef', authorize('production', 'update'), prod.endOperator);
-r.get('/production/audit', authorize('production', 'admin'), prod.listAudit);
+r.post('/production/operators', authorize('operator_sessions', 'update'), prod.setOperator);
+r.delete('/production/operators/current/:machineRef', authorize('operator_sessions', 'update'), prod.endOperator);
+r.get('/production/audit', authorize('audit'), prod.listAudit);
 
 // Reports
 // Production / downtime / overview reports read /machines/activity — the

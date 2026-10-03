@@ -13,7 +13,7 @@ import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
 import { useAuthStore } from '../store/auth';
-import { AssignDiaModal } from '../components/machine/AssignDia';
+import { AssignDiaModal, useDiaControl } from '../components/machine/AssignDia';
 import DiaTraceModal from '../components/machine/DiaTraceModal';
 import CorrectionModal from '../components/machine/CorrectionModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
@@ -530,7 +530,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   const canOf = useAuthStore((st) => st.can);
   const canWriteCorrection = canOf('corrections', 'create');
   const canCorrect = canWriteCorrection || canOf('corrections', 'view') || canOf('corrections', 'delete');
-  const canSetDia = useAuthStore((st) => st.can)('production', 'update');
+  const canSetDia = useDiaControl().any;   // assign now, or schedule — the modal knows which
   // Renaming is an admin act: one name reaches every user, so one person owns it.
   const canRename = useAuthStore((st) => st.can)('machines', 'admin');
   const qc = useQueryClient();

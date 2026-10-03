@@ -115,9 +115,22 @@ export interface Role {
   updatedAt?: string;
 }
 
+// One row of the Roles grid: what it is called and what each tick allows.
+// A strict row offers only the actions it describes; a parent draws it
+// indented under that module's row.
+export interface PermissionCatalogEntry {
+  module: string;
+  label: string;
+  hint?: string;
+  parent?: string;
+  strict?: boolean;
+  actions: Record<string, string>;
+}
+
 export interface RbacMeta {
   modules: string[];
   actions: string[];
+  catalog?: PermissionCatalogEntry[];
 }
 
 // A department — the group a role sits in. The plant's list is shared

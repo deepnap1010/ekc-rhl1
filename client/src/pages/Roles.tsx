@@ -167,24 +167,45 @@ export default function Roles() {
     onError: (e: unknown) => { qc.invalidateQueries({ queryKey: ['roles'] }); toast.error(e instanceof Error ? e.message : 'Could not create some roles'); },
   });
 
+  // What each row is and what each tick allows comes with the grid's shape
+  // (server utils/permissions). A strict row offers only the actions it
+  // describes — the other boxes gate nothing, so they are not drawn.
+  const allActions = meta?.actions || [];
+  const catalog = useMemo(() => new Map((meta?.catalog || []).map((c) => [c.module, c])), [meta]);
+  const offered = (m: string): string[] => {
+    const c = catalog.get(m);
+    return c?.strict ? allActions.filter((a) => a in c.actions) : allActions;
+  };
+  // A control row is used from its parent's screens: granting one grants the
+  // parent's View with it, so the person can reach what they were given.
+  const withParentView = (next: PermissionDraft, module: string): PermissionDraft => {
+    const parent = catalog.get(module)?.parent;
+    if (!parent || !next[module]?.size || next[parent]?.has('view')) return next;
+    return { ...next, [parent]: new Set([...(next[parent] || []), 'view']) };
+  };
+
   const toggle = (module: string, action: string) => {
     if (!editable) return;
     setDraft((prev) => {
       const next = { ...prev };
       const set = new Set(next[module] || []);
-      if (set.has(action)) set.delete(action); else set.add(action);
+      const adding = !set.has(action);
+      if (adding) set.add(action); else set.delete(action);
       next[module] = set;
-      return next;
+      return adding ? withParentView(next, module) : next;
     });
   };
 
-  // "All" column — toggle every action for a module at once.
-  const allActions = meta?.actions || [];
-  const rowFull = (m: string) => allActions.length > 0 && allActions.every((a) => draft[m]?.has(a));
+  // "All" column — toggle every action the row offers at once.
+  const rowFull = (m: string) => { const acts = offered(m); return acts.length > 0 && acts.every((a) => draft[m]?.has(a)); };
   const toggleRow = (m: string) => {
     if (!editable) return;
-    setDraft((prev) => ({ ...prev, [m]: rowFull(m) ? new Set<string>() : new Set(allActions) }));
+    setDraft((prev) => (rowFull(m) ? { ...prev, [m]: new Set<string>() } : withParentView({ ...prev, [m]: new Set(offered(m)) }, m)));
   };
+  // Control rows ticked while their parent's View is not: the role holds a
+  // permission it cannot reach (the grid says so instead of hiding it).
+  const unreachable = (meta?.catalog || []).filter((c) =>
+    c.parent && (draft[c.module]?.size || 0) > 0 && !draft[c.parent]?.has('view') && !draft[c.parent]?.has('admin'));
 
   if (isLoading) return <div><PageHeader title="Roles & Permissions" /><Spinner /></div>;
 
@@ -291,8 +312,9 @@ export default function Roles() {
           ) : null}
         </div>
 
-        {/* Permission matrix */}
-        <div className="panel p-5">
+        {/* Permission matrix — min-w-0 lets this grid column shrink, so the
+            table scrolls inside its own wrapper instead of widening the page. */}
+        <div className="panel p-5 min-w-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div className="min-w-0">
               <h2 className="font-semibold flex items-center gap-2">
@@ -351,12 +373,27 @@ export default function Roles() {
             </div>
           ) : null}
 
+          {(meta?.catalog || []).length > 0 && (
+            <p className="text-[11px] text-steel mb-3">
+              Hover a box to see exactly what it allows. The rows under <span className="font-medium text-primary">Production</span> are
+              its controls, each granted on its own — a role can schedule a dia without being able to edit its cycle times.
+            </p>
+          )}
+
+          {unreachable.length > 0 && (
+            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+              <span className="font-medium">{catalog.get(unreachable[0].parent || '')?.label || 'Production'} → View is not ticked.</span>{' '}
+              This role holds {unreachable.map((c) => c.label).join(', ')} but cannot open the screens that use {unreachable.length === 1 ? 'it' : 'them'} —
+              tick View, or untick {unreachable.length === 1 ? 'that row' : 'those rows'}.
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             {/* table-fixed + equal-width action columns keep every tick on a clean vertical grid. */}
-            <table className="w-full text-sm table-fixed">
+            <table className="w-full text-sm table-fixed min-w-[720px]">
               <thead>
                 <tr className="text-steel border-b border-line">
-                  <th className="text-left font-normal py-2 label w-36">Module</th>
+                  <th className="text-left font-normal py-2 label w-56">Module</th>
                   {allActions.map((a) => (
                     <th key={a} className="font-normal py-2 label text-center px-1">{a}</th>
                   ))}
@@ -364,16 +401,26 @@ export default function Roles() {
                 </tr>
               </thead>
               <tbody>
-                {(meta?.modules || []).map((m) => (
+                {(meta?.modules || []).map((m) => {
+                  const c = catalog.get(m);
+                  const acts = offered(m);
+                  return (
                   <tr key={m} className="border-t border-line hover:bg-base/40">
-                    <td className="py-2.5 font-medium text-primary">{prettyKey(m)}</td>
+                    <td className={`py-2.5 pr-2 align-top ${c?.parent ? 'pl-4' : ''}`}>
+                      <div className={`font-medium text-primary ${c?.parent ? 'text-[13px]' : ''}`}>{c?.label || prettyKey(m)}</div>
+                      {c?.hint && <div className="text-[10px] text-steel leading-snug">{c.hint}</div>}
+                    </td>
                     {allActions.map((a) => {
+                      // A box this row does not offer gates nothing: leave the cell empty.
+                      if (!acts.includes(a)) return <td key={a} className="text-center px-1 text-line select-none" aria-hidden>·</td>;
                       const on = draft[m]?.has(a);
                       return (
                         <td key={a} className="text-center px-1">
                           <button
                             onClick={() => toggle(m, a)}
                             disabled={!editable}
+                            title={c?.actions?.[a] || undefined}
+                            aria-label={`${c?.label || prettyKey(m)} — ${a}`}
                             className={`w-4 h-4 rounded border transition-colors inline-flex items-center justify-center ${
                               on ? 'bg-accent border-accent' : 'border-line hover:border-steel'
                             } ${!editable ? 'cursor-not-allowed' : ''}`}
@@ -394,7 +441,8 @@ export default function Roles() {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
