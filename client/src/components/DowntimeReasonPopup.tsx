@@ -67,6 +67,13 @@ export function DowntimeReasonCard({ span, reasons, allowCustom, initial = '', b
             {open ? `since ${fmtTime(span.startedAt)} · still ${span.type}` : `${fmtTime(span.startedAt)} → ${fmtTime(span.endedAt)}`}
           </span>
         </div>
+        {/* The ask-after mark was held against the time outside the planned
+            breaks; say what was left out so the number above is not a puzzle. */}
+        {(span.breakMs || 0) > 0 && (
+          <div className="text-sm text-steel mt-1">
+            {fmtDuration(span.breakMs || 0)} of it was the planned break — <span className="font-semibold text-primary">{fmtDuration(Math.max(0, lastedMs - (span.breakMs || 0)))}</span> to explain.
+          </div>
+        )}
         {span.reason && (
           <div className="text-sm text-steel mt-1">Recorded reason: <span className="font-semibold text-primary">{span.reason}</span>{span.reportedBy ? ` — ${span.reportedBy}` : ''}</div>
         )}

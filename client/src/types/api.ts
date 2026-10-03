@@ -278,6 +278,7 @@ export interface DowntimeEvent {
   startedAt: string;
   endedAt: string | null;
   durationMs?: number;
+  breakMs?: number;                       // popup queue only: how much of the span was a planned break
   reason?: string;
   reportedBy?: string;
   reasonSource?: '' | 'popup' | 'edit';   // how the reason got here

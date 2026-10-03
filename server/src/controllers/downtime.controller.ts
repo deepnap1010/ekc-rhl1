@@ -10,6 +10,7 @@ import { machineScope } from '../utils/scope.js';
 import { refIn, refCandidates } from '../utils/machineRef.js';
 import { getDowntimeAskConfig, askedTypes, reasonsFor, shiftSwitchExpr } from '../utils/downtimeAsk.js';
 import { notifyModeOf, popupMachines, popupReaches, isOperatorRole } from '../utils/notifyFlow.js';
+import { loadBreaks, breakOverlapMs, askableMs } from '../utils/breaks.js';
 import { userCan } from '../middleware/auth.js';
 import type { AuthUser } from '../types/auth.js';
 import { loadShifts } from './config.controller.js';
@@ -257,7 +258,8 @@ const QUEUE_RECENT_MS = 2 * 3600_000;
 
 // GET /production/downtime-queue — spans on MY machines that have lasted
 // long enough to ask about and nobody has answered: still open and past the
-// ask-after mark, or closed recently after lasting at least that long.
+// ask-after mark, or closed recently after lasting at least that long — both
+// measured on the time outside the planned breaks.
 // Operators only — an admin browsing the dashboard is not popped for the fleet.
 export const downtimeQueue = asyncHandler(async (req, res) => {
   const cfg = await getDowntimeAskConfig();
@@ -279,7 +281,10 @@ export const downtimeQueue = asyncHandler(async (req, res) => {
   const inOrder = mode === 'popup' && isOperatorRole(user?.role);
   const now = Date.now();
   const minMs = cfg.askAfterMin * 60_000;
-  const rows = await DowntimeEvent.find({
+  const limit = inOrder ? 10 : 50;
+  // The database narrows by the span's whole length (a stop shorter than the
+  // mark can never qualify); the planned breaks are then taken out in Node.
+  const found = await DowntimeEvent.find({
     ...(machines ? { machineId: { $in: [...new Set(machines.flatMap(refCandidates))] } } : {}),
     type: { $in: types },
     reason: { $in: ['', null] },
@@ -288,7 +293,17 @@ export const downtimeQueue = asyncHandler(async (req, res) => {
       { endedAt: null, startedAt: { $lte: new Date(now - minMs) } },
       { endedAt: { $ne: null, $gte: new Date(now - QUEUE_RECENT_MS) }, durationMs: { $gte: minMs } },
     ],
-  }).select(LIST_FIELDS).sort({ startedAt: inOrder ? 1 : -1 }).limit(inOrder ? 10 : 50).maxTimeMS(MAX_MS).lean();
+  }).select(LIST_FIELDS).sort({ startedAt: inOrder ? 1 : -1 }).limit(limit * 4).maxTimeMS(MAX_MS).lean();
+  // A machine standing still through lunch is not a stop anyone has to
+  // explain: the ask-after mark is held against the time OUTSIDE the plant's
+  // planned breaks (Production Targets → Break schedule). A stop from 12:34
+  // to 13:06 over a 12:30–13:00 lunch is six minutes, not thirty-two. The
+  // break share rides along so the card can say what it left out.
+  const breaks = await loadBreaks();
+  const rows = found.map((r) => {
+    const s = new Date(r.startedAt).getTime(), e = r.endedAt ? new Date(r.endedAt).getTime() : now;
+    return { ...r, breakMs: breakOverlapMs(s, e, breaks), askable: askableMs(s, e, breaks) };
+  }).filter((r) => r.askable >= minMs).slice(0, limit).map(({ askable: _askable, ...r }) => r);
   return ok(res, rows);
 });
 

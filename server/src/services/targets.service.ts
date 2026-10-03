@@ -25,6 +25,7 @@ import { pickProductionKey } from '../utils/production.js';
 import { clipSpans, type Span } from './activity.service.js';
 import { productionEventsBy } from './counters.service.js';
 import { loadCorrections, timeCuts, timeSplitWithin, cutOut } from '../utils/corrections.js';
+import { breakOverlapMs } from '../utils/breaks.js';
 
 const IST_MS = 5.5 * 3_600_000;
 const HOUR = 3_600_000;
@@ -48,27 +49,8 @@ export interface TargetRow {
   operator: string | null;   // who was on the machine (operator session), if recorded
 }
 
-/** Overlap of [s, e) with the plant's DAILY break windows (HH:MM, IST). A break
- *  whose end precedes its start wraps midnight. */
-export function breakOverlapMs(s: number, e: number, breaks: Pick<IBreak, 'start' | 'end'>[]): number {
-  if (!breaks.length || e <= s) return 0;
-  const hm = (v: string): number => {
-    const [h, m] = v.split(':').map(Number);
-    return (h * 60 + (m || 0)) * 60_000;
-  };
-  let sum = 0;
-  // Check each break on the interval's own IST day and its neighbours (wraps).
-  const base0 = Math.floor((s + IST_MS) / DAY) * DAY - IST_MS;
-  for (const base of [base0 - DAY, base0, base0 + DAY]) {
-    for (const b of breaks) {
-      const bs = base + hm(b.start);
-      let be = base + hm(b.end);
-      if (be <= bs) be += DAY;
-      sum += Math.max(0, Math.min(be, e) - Math.max(bs, s));
-    }
-  }
-  return sum;
-}
+// The break arithmetic lives in utils/breaks — the downtime ask uses it too.
+export { breakOverlapMs };
 
 export interface OpInterval { s: number; e: number; name: string }
 

@@ -21,6 +21,7 @@ import { ScheduledAssignment } from '../models/ScheduledAssignment.js';
 import { applyDueSchedules } from '../services/schedule.service.js';
 import { refMatch, refIn } from '../utils/machineRef.js';
 import { notifyModeOf, popupMachines, popupReaches } from '../utils/notifyFlow.js';
+import { invalidateBreaksCache } from '../utils/breaks.js';
 import type { AuthUser } from '../types/auth.js';
 import { OperatorSession } from '../models/OperatorSession.js';
 import { AppConfig } from '../models/AppConfig.js';
@@ -579,6 +580,7 @@ export const setBreaks = asyncHandler(async (req, res) => {
   const doc = await AppConfig.findOneAndUpdate(
     { key: 'global' }, { $set: { breaks: clean } }, { new: true, upsert: true },
   ).lean();
+  invalidateBreaksCache();   // the downtime ask reads the schedule too
   audit(req.user as ScopedUser, 'breaks.update', { type: 'config', label: 'Break schedule' },
     { breaks: beforeDoc?.breaks || [] }, { breaks: clean });
   return ok(res, { breaks: doc.breaks });
