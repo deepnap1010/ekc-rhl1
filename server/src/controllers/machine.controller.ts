@@ -809,6 +809,21 @@ export const machineHourly = asyncHandler(async (req, res) => {
         const b = Math.floor((ev.t - offset) / HOUR_MS) * HOUR_MS + offset;
         byHour.set(b, (byHour.get(b) || 0) + ev.made);
       }
+      // Pieces the operator classified away leave the hour they were counted
+      // in, exactly as in the register branch below — or a "Dry Cycle" answer
+      // would lower the card and the board but not these bars. Iterate the
+      // map, not refs: aliases can name the same machine twice.
+      for (const list of (await excludedPiecesBy(refs, fromD, endD)).values()) {
+        for (const x of list) {
+          if (inPiecesPeriod(corr, x.t)) continue;
+          let n = x.n;
+          for (let b = Math.floor((x.t - offset) / HOUR_MS) * HOUR_MS + offset; n > 0 && b >= offset; b -= HOUR_MS) {
+            const have = byHour.get(b) || 0;
+            const take = Math.min(n, have);
+            if (take) { byHour.set(b, have - take); n -= take; }
+          }
+        }
+      }
       // `t` and the {from,to} meta, exactly as the register branch below —
       // the client reads h.t, and `start` rendered every bar as zero.
       return [...byHour.entries()].sort((a, b) => a[0] - b[0])

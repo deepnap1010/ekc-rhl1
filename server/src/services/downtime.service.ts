@@ -11,7 +11,7 @@ import { Machine } from '../models/Machine.js';
 import { DowntimeEvent } from '../models/DowntimeEvent.js';
 import { SweepLock } from '../models/SweepLock.js';
 import { errMessage } from '../utils/http.js';
-import { ensureEventSeed, recordState, recordProduction } from './event.service.js';
+import { ensureEventSeed, recordState, recordProduction, recordDerivedProduction } from './event.service.js';
 import { normalizeStatus } from '../utils/status.js';
 
 const SWEEP_MS = 30_000; // re-evaluate every 30s
@@ -151,6 +151,8 @@ export async function sweepDowntime(): Promise<void> {
       await recordState(ref, state === 'up' ? 'running' : state, now);
       const mm = m as { currentParameters?: Record<string, unknown>; lastReadingAt?: Date };
       await recordProduction(ref, mm.currentParameters, now, mm.lastReadingAt ? new Date(mm.lastReadingAt) : null);
+      // A machine counted from a signal, not a register (config/derivedCounters).
+      await recordDerivedProduction(ref, mm.currentParameters, now);
     }
   } catch (err) {
     console.error('[downtime] sweep error:', errMessage(err));

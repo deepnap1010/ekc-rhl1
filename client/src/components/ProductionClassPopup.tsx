@@ -191,7 +191,9 @@ export function ProductionClassPopup(): JSX.Element | null {
                 <span className="pill bg-running/10 text-running font-bold">+{fmtNum(current.delta || 0)} pc{(current.delta || 0) === 1 ? '' : 's'}</span>
                 <span className="text-[11px] text-steel">{win?.label}</span>
               </div>
-              <div className="text-[11px] text-steel mt-0.5 data">counter {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}</div>
+              <div className="text-[11px] text-steel mt-0.5 data">{current.meta?.derived
+                ? `counted from ${(current.paramKey || 'signal').replace(/_/g, ' ')} cycles`
+                : <>counter {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}</>}</div>
             </>
           ) : counting && can('machines', 'view') ? (
             // Count in flight: hold the line. Flashing the raw register for a
@@ -201,10 +203,13 @@ export function ProductionClassPopup(): JSX.Element | null {
           ) : (
             // No confirmed count for the window yet (or a machine without a
             // recognised counter): the raw register is still an honest answer.
+            // A machine counted from a signal has no register: just the piece.
             <div className="mt-1 flex items-baseline gap-2">
-              <span className="data text-2xl font-bold text-primary tabular-nums">
-                {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}
-              </span>
+              {!current.meta?.derived && (
+                <span className="data text-2xl font-bold text-primary tabular-nums">
+                  {fmtNum(current.prevValue ?? 0)} → {fmtNum(current.newValue ?? 0)}
+                </span>
+              )}
               <span className="pill bg-running/10 text-running font-bold">+{fmtNum(current.delta || 0)} pc{(current.delta || 0) === 1 ? '' : 's'}</span>
             </div>
           )}

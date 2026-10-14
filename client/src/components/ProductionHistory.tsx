@@ -58,7 +58,7 @@ export function ReclassifyModal({ e, onClose }: { e: MachineEventRow; onClose: (
   });
 
   return (
-    <Modal title="Correct this production" subtitle={`${mName(e.machineId)} · ${fmtTime(e.startedAt)} · counter ${fmtNum(e.prevValue ?? 0)} → ${fmtNum(e.newValue ?? 0)}`}
+    <Modal title="Correct this production" subtitle={`${mName(e.machineId)} · ${fmtTime(e.startedAt)} · ${e.meta?.derived ? `counted from ${(e.paramKey || 'signal').replace(/_/g, ' ')} cycles` : `counter ${fmtNum(e.prevValue ?? 0)} → ${fmtNum(e.newValue ?? 0)}`}`}
       icon={Pencil} onClose={onClose} maxW="max-w-md">
       <div className="space-y-4">
         <div>
@@ -240,7 +240,9 @@ export function ProductionHistoryModal({ from, to, machineId, windowLabel, onClo
                             <div className={`text-sm font-semibold tabular-nums ${moved ? 'text-primary' : 'text-steel/60'}`}>
                               {n ? (moved ? `${fmtNum(n.before)} → ${fmtNum(n.after)}` : fmtNum(n.after)) : '—'}
                             </div>
-                            <div className="text-[10px] text-steel/70">counter {fmtNum(r.prevValue ?? 0)} → {fmtNum(r.newValue ?? 0)}</div>
+                            <div className="text-[10px] text-steel/70">{r.meta?.derived
+                              ? `counted from ${(r.paramKey || 'signal').replace(/_/g, ' ')} cycles`
+                              : <>counter {fmtNum(r.prevValue ?? 0)} → {fmtNum(r.newValue ?? 0)}</>}</div>
                           </>
                         );
                       })()}

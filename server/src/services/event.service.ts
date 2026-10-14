@@ -13,10 +13,12 @@ import { OperatorSession } from '../models/OperatorSession.js';
 import { errMessage } from '../utils/http.js';
 import { flattenData } from '../utils/flatten.js';
 import { pickProductionKey } from '../utils/production.js';
-import { refMatch } from '../utils/machineRef.js';
+import { refMatch, refCandidates } from '../utils/machineRef.js';
 import { getProdClassConfig } from '../utils/prodclass.js';
 import { PROD_STEP_PER_MIN } from './activity.service.js';
 import { rememberCounterKey } from './counterKey.service.js';
+import { derivedCounterFor, REFRACTORY_MS } from '../config/derivedCounters.js';
+import { derivedEvents } from './derivedCounter.service.js';
 
 // In-memory last-known values per machine ref. lastState is re-seeded from open
 // sessions on boot; lastCounter starts empty so the first sweep only records a
@@ -131,5 +133,79 @@ export async function recordProduction(ref: string, params: Record<string, unkno
     lastCounter.set(ref, { key, value, at: stamp.getTime() });
   } catch (err) {
     console.error('[events] production error:', errMessage(err));
+  }
+}
+
+// ── derived counters ─────────────────────────────────────────────────────────
+// A machine with no counter register (config/derivedCounters) has no register
+// for recordProduction to watch, so it never had a production event — and the
+// operator's popup, the History log's "+1" rows and every classification hang
+// off those events. BOTTOMMILLING03 had none, ever, while its card counted.
+//
+// This asks the SAME counter the card asks (services/derivedCounter) about the
+// last few minutes, and writes an event for each piece that has none yet.
+// Asking the counter again, rather than keeping a tally here, is what keeps
+// the two in step: the piece the card counts is the piece the popup asks
+// about, a re-cut it folds is one it folds, and a restart resumes exactly
+// where the event log stops. A piece within the counter's own refractory of
+// an event already on file IS that event — the same piece found again by a
+// later sweep, or seen through the other signal a second or two apart.
+const DERIVED_LOOKBACK_MS = 10 * 60_000;     // late readings, a sweep or two missed
+const DERIVED_CATCHUP_MS = 2 * 3_600_000;    // after a (re)start: the popup's own window
+// Per machine: pieces at or before this are never announced. A machine first
+// swept with no production event ever starts at that sweep — switching this
+// on must not hand the operator a popup for every piece already made today.
+const derivedSince = new Map<string, number>();
+
+/** Forget where each derived machine stands — what a restart does. For the
+ *  self-check. */
+export function forgetDerivedCursors(): void { derivedSince.clear(); }
+
+export async function recordDerivedProduction(ref: string, params: Record<string, unknown> | undefined, now: Date): Promise<void> {
+  try {
+    const dc = derivedCounterFor(ref);
+    if (!dc) return;
+    // A register in the payload wins, as everywhere: recordProduction counts it.
+    if (params && Object.keys(params).length && pickProductionKey(flattenData(params))) return;
+    const nowMs = now.getTime();
+    // $in of the exact spellings, never refMatch's regex: a case-insensitive
+    // regex cannot use {machineId, startedAt}, and this runs every 30 s.
+    const ids = refCandidates(ref);
+    let since = derivedSince.get(ref);
+    let lookback = DERIVED_LOOKBACK_MS;
+    if (since === undefined) {
+      since = (await MachineEvent.exists({ machineId: { $in: ids }, kind: 'production' })) ? 0 : nowMs;
+      derivedSince.set(ref, since);
+      lookback = DERIVED_CATCHUP_MS;
+    }
+    const from = Math.max(nowMs - lookback, since);
+    if (from >= nowMs) return;
+    const pieces = (await derivedEvents([ref], dc, new Date(from), now)).filter((p) => p.t > (since as number));
+    if (!pieces.length) return;
+    const have = (await MachineEvent.find({
+      machineId: { $in: ids }, kind: 'production',
+      startedAt: { $gte: new Date(from - REFRACTORY_MS), $lte: new Date(nowMs + REFRACTORY_MS) },
+    }).select({ startedAt: 1 }).lean()).map((e) => +new Date(e.startedAt));
+    const cfg = await getProdClassConfig();
+    for (const p of pieces) {
+      if (have.some((h) => Math.abs(h - p.t) < REFRACTORY_MS)) continue;
+      const at = new Date(p.t);
+      const op = await OperatorSession.findOne({
+        machineRef: refMatch(ref), startedAt: { $lte: at },
+        $or: [{ endedAt: null }, { endedAt: { $gte: at } }],
+      }).sort({ startedAt: -1 }).select({ userName: 1 }).lean().catch(() => null);
+      // No counter, so no prevValue/newValue: the event says only what the
+      // counter says — one piece, from this signal (meta.derived).
+      await MachineEvent.create({
+        machineId: ref, kind: 'production', paramKey: dc.key,
+        delta: p.made, startedAt: at, endedAt: at, durationMs: 0,
+        classification: cfg.defaultValue, classSource: 'default',
+        operatorName: op?.userName || null,
+        meta: { derived: true },
+      });
+      have.push(p.t);
+    }
+  } catch (err) {
+    console.error('[events] derived production error:', errMessage(err));
   }
 }

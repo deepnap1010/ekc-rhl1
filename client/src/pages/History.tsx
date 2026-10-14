@@ -339,7 +339,10 @@ function GlobalEventRow({ e }: { e: MachineEventRow }): JSX.Element {
       </td>
       <td className="px-4 py-2.5 data text-xs text-right">
         {isProd
-          ? <span>{fmtNum(e.prevValue ?? 0)} → {fmtNum(e.newValue ?? 0)}{!reset && <span className="text-running font-semibold"> (+{fmtNum(e.delta || 0)})</span>}</span>
+          ? (e.meta?.derived
+            // Counted from a signal: no register values to show, only the piece.
+            ? <span className="text-running font-semibold">+{fmtNum(e.delta || 0)}</span>
+            : <span>{fmtNum(e.prevValue ?? 0)} → {fmtNum(e.newValue ?? 0)}{!reset && <span className="text-running font-semibold"> (+{fmtNum(e.delta || 0)})</span>}</span>)
           : <span className="text-steel">{e.prevState || '—'} → {e.state}</span>}
       </td>
       <td className="px-4 py-2.5 data text-xs text-right text-primary">

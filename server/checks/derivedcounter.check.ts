@@ -10,7 +10,9 @@
 // HIGH one and every climb had a reading in between. This seeds the floor's
 // own pattern — a reading every 2 s, the head stepping ~94,000 pulses — plus
 // the two jobs each signal is blind to, a re-cut and a PLC dropout, and asks
-// every surface that counts.
+// every surface that counts. Then the operator's popup: the sweep must write a
+// production event for each of those pieces — it never had one before — and
+// an answer of "Dry Cycle" must lower every surface alike.
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { Machine } from '../src/models/Machine.js';
@@ -20,13 +22,19 @@ import { derivedEvents } from '../src/services/derivedCounter.service.js';
 import { computeActivity } from '../src/services/activity.service.js';
 import { productionEventsBy } from '../src/services/counters.service.js';
 import { machineHourly } from '../src/controllers/machine.controller.js';
+import { classQueue } from '../src/controllers/events.controller.js';
+import { MachineEvent } from '../src/models/MachineEvent.js';
+import { Role } from '../src/models/Role.js';
+import { User } from '../src/models/User.js';
+import { recordDerivedProduction, forgetDerivedCursors } from '../src/services/event.service.js';
+import { invalidate } from '../src/utils/cache.js';
 
 let bad = 0;
 const check = (c: boolean, l: string): void => { console.log(`${c ? 'ok  ' : '!!  '}${l}`); if (!c) bad++; };
 
-function call(fn: any, opts: { query?: any; params?: any } = {}): Promise<any> {
+function call(fn: any, opts: { query?: any; params?: any; user?: any } = {}): Promise<any> {
   return new Promise((resolve, reject) => {
-    const req = { query: opts.query || {}, body: {}, params: opts.params || {}, user: { isSuperAdmin: true } } as any;
+    const req = { query: opts.query || {}, body: {}, params: opts.params || {}, user: opts.user || { isSuperAdmin: true } } as any;
     const res = {
       code: 200,
       status(c: number) { this.code = c; return this; },
@@ -44,7 +52,8 @@ const CODE = 'BOTTOMMILLING03';
 const S = 1000, B = 650_000, REST = 3_392;
 const CLIMB = [245_766, 339_844, 433_965, 528_344, 622_439];   // 14 Oct 13:30, as read off the floor
 const DOWN = [443_589, 208_253];
-const T0 = Math.floor(Date.now() / 60_000) * 60_000 - 3 * 3_600_000;   // three hours ago: a closed window
+// An hour ago: a closed window, and inside the popup's own two-hour reach.
+const T0 = Math.floor(Date.now() / 60_000) * 60_000 - 60 * 60_000;
 let t = T0;
 const docs: { machineId: string; timestamp: Date; data: Record<string, unknown> }[] = [];
 const rises: number[] = [];           // when each climb's speed rose — for the boundary tests
@@ -124,6 +133,54 @@ check(boardN === MADE, `the targets board reads ${boardN}`);
 const h = await call(machineHourly, { params: { code: CODE }, query: { from: new Date(T0).toISOString(), to: new Date(END).toISOString() } });
 const bars = (h.hours as { made: number }[]).reduce((n, x) => n + x.made, 0);
 check(bars === MADE, `the hourly bars read ${bars}`);
+
+// ── the operator's popup ─────────────────────────────────────────────────────
+// The 30 s sweep, replayed over the shift. Its first sweep of a machine that
+// never had a production event starts there and announces nothing before it.
+const params = docs[docs.length - 1].data;
+const sweep = async (): Promise<void> => {
+  for (let now = T0; now <= END + 60_000; now += 30_000) await recordDerivedProduction(CODE, params, new Date(now));
+};
+const events = async (): Promise<number> => MachineEvent.countDocuments({ machineId: CODE, kind: 'production' });
+await sweep();
+const evs = await MachineEvent.find({ machineId: CODE, kind: 'production' }).sort({ startedAt: 1 }).lean();
+check(evs.length === MADE, `the sweep writes one production event per piece (${evs.length} of ${MADE})`);
+check(evs.every((e) => e.delta === 1 && e.classSource === 'default' && e.classification === 'OK'
+  && (e.meta as { derived?: boolean } | undefined)?.derived === true && e.paramKey === 'current_stroke_pulse'),
+  'each +1, classified by the default, marked as counted from the signal');
+const counted = (await derivedEvents([CODE], dc, new Date(T0), new Date(END))).map((p) => p.t);
+check(JSON.stringify(evs.map((e) => +new Date(e.startedAt))) === JSON.stringify(counted), 'at exactly the moments the card counts them');
+forgetDerivedCursors();                                                  // what a server restart does
+await sweep();
+check(await events() === MADE, 'a restart sweeping the same hour again writes nothing twice');
+
+await MachineEvent.deleteMany({ machineId: CODE });
+forgetDerivedCursors();
+await recordDerivedProduction(CODE, params, new Date(END));
+await recordDerivedProduction(CODE, params, new Date(END + 30_000));
+check(await events() === 0, 'switched on after the shift: no popup for pieces already made');
+forgetDerivedCursors();
+await sweep();                                                           // the shift's events again, for what follows
+
+// What the BOTTOMMILLING03 terminal polls, signed in as its operator.
+const role = await Role.create({ name: 'Operator', key: 'operator', permissions: { dashboard: ['view'], machines: ['view'], production: ['view'] } });
+const u = new User({ name: 'BOTTOMMILLING03', email: 'bm03@example.test', role: role._id, assignedMachines: [CODE], active: true });
+await u.setPassword('test-only-pw-123');
+await u.save();
+const operator = await User.findById(u._id).populate('role').lean();
+const queue = await call(classQueue, { user: operator });
+check(queue.length === MADE && queue.every((r: { machineId: string }) => r.machineId === CODE), `the operator's popup has every piece (${queue.length})`);
+
+// …and answering one "Dry Cycle" takes it off the card, the board and the bars alike.
+await MachineEvent.updateOne({ _id: queue[0]._id }, { $set: { classification: 'DRY_CYCLE', classSource: 'operator' } });
+invalidate('activity5:');
+invalidate('hourly:');
+const card2 = (await computeActivity(null, new Date(T0), new Date(END), [CODE])).rows[0]?.production;
+const board2 = ((await productionEventsBy([CODE], new Date(T0), new Date(END))).get(CODE) || []).reduce((n, e) => n + e.made, 0);
+const h2 = await call(machineHourly, { params: { code: CODE }, query: { from: new Date(T0).toISOString(), to: new Date(END).toISOString() } });
+const bars2 = (h2.hours as { made: number }[]).reduce((n, x) => n + x.made, 0);
+check(card2 === MADE - 1 && board2 === MADE - 1 && bars2 === MADE - 1,
+  `one piece answered "Dry Cycle": card ${card2}, board ${board2}, bars ${bars2} — all ${MADE - 1}`);
 
 // ── for information: a window edge landing EXACTLY on a reading ──────────────
 // Windows are closed at both ends ([from, to]), so a piece whose first edge is
