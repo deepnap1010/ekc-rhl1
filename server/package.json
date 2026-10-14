@@ -16,7 +16,8 @@
     "check:session": "tsx checks/session.check.ts",
     "check:readonly": "tsx checks/readonly.check.ts",
     "check:permissions": "tsx checks/permissions.check.ts",
-    "check:counterkey": "tsx checks/counterkey.check.ts"
+    "check:counterkey": "tsx checks/counterkey.check.ts",
+    "check:derived": "tsx checks/derivedcounter.check.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

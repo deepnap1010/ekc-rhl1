@@ -13,11 +13,65 @@
 // perfectly reasonable right up until the collection grew.
 import { Telemetry } from '../models/Telemetry.js';
 import { refCandidates } from '../utils/machineRef.js';
-import { derivedCounterFor, REFRACTORY_MS, type DerivedCounter } from '../config/derivedCounters.js';
+import { derivedCounterFor, rulesOf, REFRACTORY_MS, type CountRule, type DerivedCounter } from '../config/derivedCounters.js';
 
 const NUMERIC = ['int', 'long', 'double', 'decimal'];
 
-/** Edge events for one machine inside [from, to].
+/** The moments one rule sees a cycle, for one machine inside `range`.
+ *
+ *  Numeric samples only — a null or '' reading is a MISSING sample, and
+ *  treating it as 0 would read a collector hiccup as a dip and invent a piece.
+ *  Each reading is then judged on its own: HIGH, LOW, or NEITHER (a stroke's
+ *  dead band, the head mid-climb). NEITHER readings are dropped before the
+ *  comparison, so an edge is a HIGH reading whose last JUDGED reading was LOW,
+ *  however many readings the climb took. Asking instead for the reading
+ *  immediately before to be LOW counted nothing through a 69-piece shift on
+ *  BOTTOMMILLING03 (config/derivedCounters). Each reading is judged against
+ *  its OWN travel setting, so a setting the operator moved since changes
+ *  nothing. The first judged reading has no previous verdict, so a window
+ *  opening mid-burst (or mid-stroke) does not count it. Mirrors the Node twin,
+ *  config/derivedCounters#thresholdEdges / #strokeEdges. */
+async function ruleEdges(refs: string[], rule: CountRule, range: Record<string, Date>): Promise<number[]> {
+  const fields: Record<string, unknown> = { pv: { $getField: { field: rule.key, input: '$data' } } };
+  const numeric: Record<string, unknown> = { pv: { $type: NUMERIC } };
+  let low: unknown, high: unknown;
+  if (rule.kind === 'threshold') {
+    // A rise: at or above the threshold, after a reading below it. No dead band.
+    low = { $lt: ['$pv', rule.threshold] };
+    high = { $gte: ['$pv', rule.threshold] };
+  } else {
+    // A climb: from below low×travel to at least high×travel. A reading
+    // carrying the position but no travel cannot be judged and is skipped —
+    // on the floor that is ~3% of samples, none of them edges.
+    fields.tv = { $getField: { field: rule.travelKey, input: '$data' } };
+    numeric.tv = { $type: NUMERIC, $gt: 0 };
+    low = { $lt: ['$pv', { $multiply: ['$tv', rule.low] }] };
+    high = { $gte: ['$pv', { $multiply: ['$tv', rule.high] }] };
+  }
+  const rows = await Telemetry.aggregate([
+    // $in of exact strings, never a regex: a case-insensitive regex cannot use
+    // {machineId, timestamp} and turns this into a full collection scan.
+    { $match: { machineId: { $in: refs.flatMap(refCandidates) }, timestamp: range } },
+    { $addFields: fields },
+    { $match: numeric },
+    // HIGH = 1, LOW = 0, NEITHER = null — and NEITHER says nothing, so it goes.
+    // Only what the comparison needs travels on from here.
+    { $project: { _id: 0, machineId: 1, timestamp: 1, z: { $switch: { branches: [{ case: high, then: 1 }, { case: low, then: 0 }], default: null } } } },
+    { $match: { z: { $ne: null } } },
+    { $setWindowFields: {
+      partitionBy: '$machineId',
+      sortBy: { timestamp: 1 },
+      output: { pz: { $shift: { output: '$z', by: -1, default: null } } },
+    } },
+    { $match: { z: 1, pz: 0 } },
+    { $project: { t: '$timestamp' } },
+  ]).option({ maxTimeMS: 30_000 }).exec() as { t: Date }[];
+  return rows.map((r) => +new Date(r.t));
+}
+
+/** Pieces for one machine inside [from, to]: the cycles every rule of its
+ *  counter sees, merged, with one refractory across all of them — so a piece
+ *  two signals see a few seconds apart is one piece.
  *
  *  The query reaches REFRACTORY_MS BEFORE `from` and the resulting pre-window
  *  edges are dropped afterwards, so the refractory and the baseline carry
@@ -29,57 +83,15 @@ export async function derivedEvents(
 ): Promise<{ t: number; made: number }[]> {
   const range: Record<string, Date> = { $gte: new Date(from.getTime() - REFRACTORY_MS) };
   if (to) range.$lte = to;
-
-  // The two rule kinds share everything but the two tests. Both: numeric
-  // samples only — a null or '' reading is a MISSING sample, and treating it
-  // as 0 would read a collector hiccup as a dip and invent a piece from it.
-  // Each reading is judged against ITSELF ("am I below?", "am I high?") and
-  // the "below" verdict is what gets shifted to the next row — so a stroke's
-  // previous reading is measured against its OWN travel setting, exactly as
-  // strokeEvents does, not against a setting the operator changed since. The
-  // first sample in the window has no previous verdict (default false), so a
-  // window opening mid-burst (or mid-stroke) does not count it, and no piece
-  // is counted twice across adjacent windows.
-  const fields: Record<string, unknown> = { pv: { $getField: { field: dc.key, input: '$data' } } };
-  const numeric: Record<string, unknown> = { pv: { $type: NUMERIC } };
-  let below: unknown, high: unknown;
-  if (dc.kind === 'threshold') {
-    // A rising edge: at or above the threshold, with the previous reading below.
-    below = { $lt: ['$pv', dc.threshold] };
-    high = { $gte: ['$pv', dc.threshold] };
-  } else {
-    // A stroke: from below low×travel to at least high×travel. A reading
-    // carrying the position but no travel cannot be judged and is skipped —
-    // on the floor that is ~3% of samples, none of them edges.
-    fields.tv = { $getField: { field: dc.travelKey, input: '$data' } };
-    numeric.tv = { $type: NUMERIC, $gt: 0 };
-    below = { $lt: ['$pv', { $multiply: ['$tv', dc.low] }] };
-    high = { $gte: ['$pv', { $multiply: ['$tv', dc.high] }] };
-  }
-  const rows = await Telemetry.aggregate([
-    // $in of exact strings, never a regex: a case-insensitive regex cannot use
-    // {machineId, timestamp} and turns this into a full collection scan.
-    { $match: { machineId: { $in: refs.flatMap(refCandidates) }, timestamp: range } },
-    { $addFields: fields },
-    { $match: numeric },
-    { $setWindowFields: {
-      partitionBy: '$machineId',
-      sortBy: { timestamp: 1 },
-      output: { prevBelow: { $shift: { output: below, by: -1, default: false } } },
-    } },
-    { $match: { $expr: { $and: [high, '$prevBelow'] } } },
-    { $project: { _id: 0, t: '$timestamp' } },
-    { $sort: { t: 1 } },
-  ]).option({ maxTimeMS: 30_000 }).exec() as { t: Date }[];
+  const edges = (await Promise.all(rulesOf(dc).map((rule) => ruleEdges(refs, rule, range)))).flat();
 
   // The refractory still belongs in Node: it is a judgement about what counts
   // as one piece, not a property of the data.
   const fromMs = from.getTime();
   const out: { t: number; made: number }[] = [];
   let lastEdge = -Infinity;
-  for (const r of rows) {
-    const t = +new Date(r.t);
-    if (t - lastEdge < REFRACTORY_MS) continue;   // a flap, not a second piece
+  for (const t of edges.sort((a, b) => a - b)) {
+    if (t - lastEdge < REFRACTORY_MS) continue;   // a flap, a re-cut, or the other signal
     lastEdge = t;
     if (t >= fromMs) out.push({ t, made: 1 });    // pre-window edges only set the clock
   }
