@@ -1017,7 +1017,7 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
       {from && to && (
         <div className="mt-4">
           <div className="label mb-1.5">Hourly production</div>
-          <HourlyBars code={t.row.code} from={from} to={to} perHr={rate} height={136} fullDay={fullDay} />
+          <HourlyBars code={t.row.code} from={from} to={to} perHr={rate} height={140} fullDay={fullDay} />
         </div>
       )}
 
@@ -1193,7 +1193,7 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
   // The count over each bar is read from across the floor like the rest of
   // the board, so the tallest bar leaves it a strip: the bars and the target
   // line are scaled into the height under it, and a count never sits on the line.
-  const LABEL_PX = 26;
+  const LABEL_PX = 30;
   const plot = Math.max(40, height - LABEL_PX);
 
   const hh2 = (ms: number) => String(new Date(ms).getHours()).padStart(2, '0');
@@ -1204,7 +1204,7 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
 
   return (
     <div className="overflow-x-auto pb-1">
-      <div className="relative" style={{ minWidth: Math.max(bars.length * 36, 280) }}>
+      <div className="relative" style={{ minWidth: Math.max(bars.length * 40, 280) }}>
         {perHr != null && (
           <div
             className="absolute left-0 right-0 border-t-2 border-dashed border-stopped/60 z-10 pointer-events-none"
@@ -1214,11 +1214,11 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
         )}
         <div className="flex items-end gap-1.5" style={{ height }}>
           {bars.map((b) => (
-            <div key={b.t} className="flex-1 min-w-[28px] flex flex-col items-center justify-end h-full"
+            <div key={b.t} className="flex-1 min-w-[32px] flex flex-col items-center justify-end h-full"
               title={`${slot(b.t)} · ${b.future ? 'upcoming' : `${b.made} pcs${b.running ? ' so far' : ''}${b.goal != null ? ` · ${fmtTarget(b.goal)} due${b.running ? ' by now' : ''}` : ''}`}`}>
               {/* Over the target line, never under it: an hour just short of
                   target puts its count right where the line runs. */}
-              {b.made > 0 && <span className="relative z-20 data text-lg font-bold leading-none mb-1 px-1 py-px rounded bg-surface/85 whitespace-nowrap" style={{ color: met(b) ? TEAL : AMBER }}>{b.made}</span>}
+              {b.made > 0 && <span className="relative z-20 data text-[22px] font-bold leading-none mb-1 px-0.5 py-px rounded bg-surface/85 whitespace-nowrap" style={{ color: met(b) ? TEAL : AMBER }}>{b.made}</span>}
               <div
                 className="w-full rounded-t"
                 style={{
@@ -1235,7 +1235,7 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
         <div className="flex gap-1.5 mt-1.5 border-t border-line pt-1.5">
           {bars.map((b) => (
             <div key={b.t}
-              className={`flex-1 min-w-[28px] text-center data text-[11px] font-semibold tracking-tight tabular-nums ${
+              className={`flex-1 min-w-[32px] text-center data text-[11px] font-semibold tracking-tight tabular-nums ${
                 b.future ? 'text-steel/40' : 'text-primary'}`}>
               {slot(b.t)}
             </div>
