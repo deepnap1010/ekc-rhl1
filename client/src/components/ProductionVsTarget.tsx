@@ -33,7 +33,7 @@ import { processCompare, groupMachines } from '../lib/machineOrder';
 import { isFurnaceRef } from '../lib/temperature';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { resolveRange, shiftDayOn, windowIsLive } from '../store/filters';
-import { fmtNum, fmtDuration, statusStyle } from '../lib/format';
+import { fmtNum, fmtDuration, statusStyle, STATUS } from '../lib/format';
 import type { MachineActivityRow, MachineAssignment } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', SLATE = '#94A3B8', TRACK = '#E2E8F0';
@@ -402,7 +402,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
             className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-steel hover:text-accent transition-colors">
             <ArrowLeft size={13} /> {open.label}
           </button>
-          <OperatorMachineBoard t={openFor} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
+          <OperatorMachineBoard t={openFor} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} wide />
         </div>
       ) : openGroup?.startsWith('heat:') && heatGroups.some((g) => g.key === openGroup) ? (
         /* ── ADMIN, a HEAT group opened — its furnaces, temperature first ── */
@@ -457,7 +457,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
           {lone.length > 0 && (
             <div className={`grid gap-4 ${lone.length > 1 ? 'xl:grid-cols-2' : ''}`}>
               {lone.map((t) => (
-                <OperatorMachineBoard key={t.row.code} t={t} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} />
+                <OperatorMachineBoard key={t.row.code} t={t} windowMs={netMs} from={effFrom} to={effTo} fullDay={barsFullDay} wide={lone.length === 1} />
               ))}
             </div>
           )}
@@ -903,7 +903,15 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
 }
 
 // ── OPERATOR · one assigned machine, everything on one board ─────────────────
-function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow; windowMs: number; from?: string; to?: string; fullDay?: boolean }): JSX.Element {
+// Read at arm's length on the floor, so it leads with the two questions an
+// operator — and a supervisor walking past — both ask: what has it MADE, and
+// where has the TIME gone. Both sit in the first row, in the largest type on
+// the board. The time split used to wait under the hourly chart, a scroll away
+// on the screens these run on. `wide`: this board has the row to itself, so
+// the time tiles sit four across.
+function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: {
+  t: TargetRow; windowMs: number; from?: string; to?: string; fullDay?: boolean; wide?: boolean;
+}): JSX.Element {
   const mName = useMachineName();
   const mTitle = useMachineTitle();
   const pct = t.target ? t.actual / t.target : 0;
@@ -921,26 +929,29 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow
         <span className="text-[11px] text-steel ml-auto">{t.stage} · {fmtProcessing(t.processingSec)}/pc · target {fmtTarget(rate)}/hr</span>
       </div>
 
-      <div className="flex items-center gap-5 mt-3.5 flex-wrap">
-        {/* The big "X of Y produced" ring */}
-        <Donut size={150} thickness={16} emptyColor={TRACK}
-          segments={[
-            { label: 'Produced', value: Math.min(t.actual, t.target), color },
-            { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
-          ]}>
-          <span className="data text-3xl font-bold leading-none text-primary">{fmtNum(t.actual)}</span>
-          <span className="text-[10px] text-steel mt-1 leading-tight">of {fmtTarget(t.target)}<br />part produced</span>
-        </Donut>
-
-        <div className="flex-1 min-w-[200px] space-y-2.5">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-            <Stat label="Performance" value={`${Math.round(pct * 100)}%`} color={color} sub="of target" />
-            <Stat label="Availability" value={`${availPct}%`} color={availPct >= 75 ? TEAL : availPct >= 50 ? AMBER : RED} sub="runtime share" />
-            <Stat label="Actual rate" value={`${madePerHr}/hr`} color={madePerHr >= rate ? TEAL : AMBER} sub={`target ${fmtRate(rate)}/hr`} />
-            <Stat label={wholeDiff(t.diff) >= 0 ? 'Ahead' : 'Behind'} value={String(Math.abs(wholeDiff(t.diff)))} color={wholeDiff(t.diff) >= 0 ? TEAL : RED} sub="pcs vs target" />
-          </div>
-          <Bar actual={t.actual} target={t.target} />
+      {/* First row: what it has made, beside where the time went */}
+      <div className="mt-4 grid gap-5 md:grid-cols-[auto_minmax(0,1fr)] items-center">
+        <div className="flex justify-center">
+          <Donut size={150} thickness={16} emptyColor={TRACK}
+            segments={[
+              { label: 'Produced', value: Math.min(t.actual, t.target), color },
+              { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
+            ]}>
+            <span className="data text-3xl font-bold leading-none text-primary">{fmtNum(t.actual)}</span>
+            <span className="text-[10px] text-steel mt-1 leading-tight">of {fmtTarget(t.target)}<br />part produced</span>
+          </Donut>
         </div>
+        <MachineTime run={t.row.runningMs} idle={t.row.idleMs} stop={t.row.stoppedMs} dark={t.row.offlineMs} wide={wide} />
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          <Stat label="Performance" value={`${Math.round(pct * 100)}%`} color={color} sub="of target" />
+          <Stat label="Availability" value={`${availPct}%`} color={availPct >= 75 ? TEAL : availPct >= 50 ? AMBER : RED} sub="runtime share" />
+          <Stat label="Actual rate" value={`${madePerHr}/hr`} color={madePerHr >= rate ? TEAL : AMBER} sub={`target ${fmtRate(rate)}/hr`} />
+          <Stat label={wholeDiff(t.diff) >= 0 ? 'Ahead' : 'Behind'} value={String(Math.abs(wholeDiff(t.diff)))} color={wholeDiff(t.diff) >= 0 ? TEAL : RED} sub="pcs vs target" />
+        </div>
+        <Bar actual={t.actual} target={t.target} />
       </div>
 
       {/* Hour-by-hour, inline — the operator watches this live */}
@@ -951,19 +962,105 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay }: { t: TargetRow
         </div>
       )}
 
-      {/* The machine's own split of the window */}
-      <div className="grid grid-cols-4 gap-1.5 mt-3.5 pt-3 border-t border-line">
-        <TimeStat label="Runtime" ms={t.row.runningMs} color={TEAL} />
-        <TimeStat label="Idle" ms={t.row.idleMs} color={AMBER} />
-        <TimeStat label="Stopped" ms={t.row.stoppedMs} color={RED} />
-        <TimeStat label="Downtime" ms={t.row.idleMs + t.row.stoppedMs} color="#991B1B" />
-      </div>
-      <div className="text-[10px] text-steel mt-1.5">
-        Total downtime {fmtDuration(t.row.idleMs + t.row.stoppedMs)}
-        {t.row.offlineMs >= 60_000 && <> · signal lost {fmtDuration(t.row.offlineMs)}</>}
-        {t.row.productionFrom && <> · pieces counted at {t.row.productionFrom}</>}
-      </div>
+      {t.row.productionFrom && (
+        <div className="text-[10px] text-steel mt-2">Pieces counted at {t.row.productionFrom}</div>
+      )}
     </div>
+  );
+}
+
+// ── Machine time — the window as the machine spent it ────────────────────────
+// Four readings in big type, then one bar of their proportions: the bar shows
+// at a glance what the numbers say exactly, and the tiles are its legend —
+// same colour, same order. Downtime is shown as what it is, the sum of idle
+// and stopped, so nobody adds four numbers in their head. Signal lost (no data
+// from the machine at all) is its own segment, in the Signal Lost pill's colour.
+const SIGNAL_LOST = STATUS.network.color;
+
+function MachineTime({ run, idle, stop, dark, wide }: {
+  run: number; idle: number; stop: number; dark: number; wide: boolean;
+}): JSX.Element {
+  const seen = run + idle + stop + dark;
+  const share = (ms: number): number => (seen > 0 ? (ms / seen) * 100 : 0);
+  const segs = [
+    { key: 'run', label: 'Runtime', ms: run, cls: 'bg-running' },
+    { key: 'idle', label: 'Idle', ms: idle, cls: 'bg-idle' },
+    { key: 'stop', label: 'Stopped', ms: stop, cls: 'bg-stopped' },
+    { key: 'dark', label: 'Signal lost', ms: dark, cls: '' },
+  ].filter((s) => s.ms > 0);
+  const size = wide ? 'text-3xl xl:text-4xl' : 'text-3xl';
+  return (
+    <div className="min-w-0">
+      <div className="label mb-2">Machine time</div>
+      {/* Four across only where four fit a long day ("13h 44m") at full size. */}
+      <div className={`grid gap-2 ${wide ? 'grid-cols-2 xl:grid-cols-4' : 'grid-cols-2'}`}>
+        <TimeTile label="Runtime" ms={run} tone="running" size={size} />
+        <TimeTile label="Idle" ms={idle} tone="idle" size={size} />
+        <TimeTile label="Stopped" ms={stop} tone="stopped" size={size} />
+        <TimeTile label="Downtime" ms={idle + stop} tone="down" size={size} note="idle + stopped" />
+      </div>
+      <div className="mt-3 flex h-3 rounded-full overflow-hidden bg-line" role="img"
+        aria-label={segs.length ? segs.map((s) => `${s.label} ${fmtDuration(s.ms)}`).join(', ') : 'No time measured yet'}>
+        {segs.map((s) => (
+          <div key={s.key} className={`h-full ${s.cls}`} title={`${s.label} · ${fmtDuration(s.ms)} · ${Math.round(share(s.ms))}%`}
+            style={{ width: `${share(s.ms)}%`, ...(s.key === 'dark' ? { background: SIGNAL_LOST } : {}) }} />
+        ))}
+      </div>
+      {dark >= 60_000 && (
+        <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: SIGNAL_LOST }}>
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: SIGNAL_LOST }} />
+          Signal lost {fmtDuration(dark)} — no data from the machine
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TONE = {
+  running: { box: 'bg-running/10 border-running/25', num: 'text-running' },
+  idle:    { box: 'bg-idle/10 border-idle/25', num: 'text-idle' },
+  stopped: { box: 'bg-stopped/10 border-stopped/25', num: 'text-stopped' },
+  down:    { box: 'bg-base border-line', num: 'text-primary' },
+} as const;
+// The dot names the state; Downtime's is half idle, half stopped — what it adds up.
+const DOT: Record<keyof typeof TONE, string> = {
+  running: 'rgb(var(--c-running))',
+  idle: 'rgb(var(--c-idle))',
+  stopped: 'rgb(var(--c-stopped))',
+  down: 'linear-gradient(90deg, rgb(var(--c-idle)) 50%, rgb(var(--c-stopped)) 50%)',
+};
+
+function TimeTile({ label, ms, tone, size, note }: {
+  label: string; ms: number; tone: keyof typeof TONE; size: string; note?: string;
+}): JSX.Element {
+  // Nothing to report is not an alarm: a tile that reads 0m goes quiet (its
+  // dot keeps the colour, for the bar's legend), so red means stopped time
+  // only when there is some.
+  const quiet = Math.round(ms / 60_000) === 0;
+  const s = TONE[tone];
+  return (
+    <div className={`rounded-xl border px-3 py-2.5 min-w-0 ${quiet ? 'bg-base border-line' : s.box}`} title={`${label}: ${fmtDuration(ms)}`}>
+      <div className="flex items-center gap-1.5">
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: DOT[tone] }} />
+        <span className="label truncate">{label}</span>
+      </div>
+      <div className={`mt-1.5 ${size} ${quiet ? 'text-steel' : s.num}`}><BigDuration ms={ms} /></div>
+      {note && <div className="text-[10px] text-steel mt-1 truncate">{note}</div>}
+    </div>
+  );
+}
+
+// Hours and minutes with the units set small, in proportion to the digits —
+// the digits are what is read from across the floor.
+function BigDuration({ ms }: { ms: number }): JSX.Element {
+  const total = Math.max(0, Math.round(ms / 60_000));
+  const h = Math.floor(total / 60), m = total % 60;
+  const unit = 'text-[0.45em] font-semibold opacity-70 ml-[0.06em]';
+  return (
+    <span className="data font-bold leading-none whitespace-nowrap">
+      {h > 0 && <>{h}<span className={`${unit} mr-[0.3em]`}>h</span></>}
+      {m}<span className={unit}>m</span>
+    </span>
   );
 }
 
