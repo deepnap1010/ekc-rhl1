@@ -33,7 +33,7 @@ import { processCompare, groupMachines } from '../lib/machineOrder';
 import { isFurnaceRef } from '../lib/temperature';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
 import { resolveRange, shiftDayOn, windowIsLive } from '../store/filters';
-import { fmtNum, fmtDuration, statusStyle, STATUS } from '../lib/format';
+import { fmtNum, fmtDuration, statusStyle } from '../lib/format';
 import type { MachineActivityRow, MachineAssignment } from '../types/api';
 
 const TEAL = '#0D9488', AMBER = '#D97706', RED = '#DC2626', SLATE = '#94A3B8', TRACK = '#E2E8F0';
@@ -615,11 +615,12 @@ function FurnaceMachineCard({ r, windowLabel }: { r: MachineActivityRow; windowL
         </div>
       </div>
 
+      {/* No signal-lost tile on the dashboard — it is on the machine's card. */}
       <div className="mt-3 grid grid-cols-4 gap-1.5">
         <TimeStat label="Uptime" ms={r.runningMs} color={TEAL} />
         <TimeStat label="Idle" ms={r.idleMs} color={AMBER} />
         <TimeStat label="Stopped" ms={r.stoppedMs} color={RED} />
-        <TimeStat label="Offline" ms={r.offlineMs} color={SLATE} />
+        <TimeStat label="Downtime" ms={r.idleMs + r.stoppedMs} color="#991B1B" />
       </div>
     </Link>
   );
@@ -652,7 +653,7 @@ function UnmeasuredMachineCard({ r, reason, windowLabel }: {
         <TimeStat label="Uptime" ms={r.runningMs} color={TEAL} />
         <TimeStat label="Idle" ms={r.idleMs} color={AMBER} />
         <TimeStat label="Stopped" ms={r.stoppedMs} color={RED} />
-        <TimeStat label="Offline" ms={r.offlineMs} color={SLATE} />
+        <TimeStat label="Downtime" ms={r.idleMs + r.stoppedMs} color="#991B1B" />
       </div>
     </Link>
   );
@@ -996,7 +997,7 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
             )}
           </Donut>
         </div>
-        <MachineTime run={t.row.runningMs} idle={t.row.idleMs} stop={t.row.stoppedMs} dark={t.row.offlineMs} wide={wide} />
+        <MachineTime run={t.row.runningMs} idle={t.row.idleMs} stop={t.row.stoppedMs} wide={wide} />
       </div>
 
       <div className="mt-4 space-y-2">
@@ -1031,20 +1032,19 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
 // Four readings in big type, then one bar of their proportions: the bar shows
 // at a glance what the numbers say exactly, and the tiles are its legend —
 // same colour, same order. Downtime is shown as what it is, the sum of idle
-// and stopped, so nobody adds four numbers in their head. Signal lost (no data
-// from the machine at all) is its own segment, in the Signal Lost pill's colour.
-const SIGNAL_LOST = STATUS.network.color;
-
-function MachineTime({ run, idle, stop, dark, wide }: {
-  run: number; idle: number; stop: number; dark: number; wide: boolean;
+// and stopped, so nobody adds four numbers in their head.
+// Signal lost (no data from the machine at all) is not on this board: on the
+// floor it read as the machine's own time, and it is the collector's or the
+// network's. It lives on the machine's card on the Machines page instead.
+function MachineTime({ run, idle, stop, wide }: {
+  run: number; idle: number; stop: number; wide: boolean;
 }): JSX.Element {
-  const seen = run + idle + stop + dark;
+  const seen = run + idle + stop;
   const share = (ms: number): number => (seen > 0 ? (ms / seen) * 100 : 0);
   const segs = [
     { key: 'run', label: 'Runtime', ms: run, cls: 'bg-running' },
     { key: 'idle', label: 'Idle', ms: idle, cls: 'bg-idle' },
     { key: 'stop', label: 'Stopped', ms: stop, cls: 'bg-stopped' },
-    { key: 'dark', label: 'Signal lost', ms: dark, cls: '' },
   ].filter((s) => s.ms > 0);
   const size = wide ? 'text-3xl xl:text-4xl' : 'text-3xl';
   return (
@@ -1061,15 +1061,9 @@ function MachineTime({ run, idle, stop, dark, wide }: {
         aria-label={segs.length ? segs.map((s) => `${s.label} ${fmtDuration(s.ms)}`).join(', ') : 'No time measured yet'}>
         {segs.map((s) => (
           <div key={s.key} className={`h-full ${s.cls}`} title={`${s.label} · ${fmtDuration(s.ms)} · ${Math.round(share(s.ms))}%`}
-            style={{ width: `${share(s.ms)}%`, ...(s.key === 'dark' ? { background: SIGNAL_LOST } : {}) }} />
+            style={{ width: `${share(s.ms)}%` }} />
         ))}
       </div>
-      {dark >= 60_000 && (
-        <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: SIGNAL_LOST }}>
-          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: SIGNAL_LOST }} />
-          Signal lost {fmtDuration(dark)} — no data from the machine
-        </div>
-      )}
     </div>
   );
 }

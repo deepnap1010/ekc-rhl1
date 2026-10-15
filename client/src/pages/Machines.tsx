@@ -8,7 +8,7 @@ import { StatusPill, TimeStat } from '../components/ui';
 import Sparkline from '../components/Sparkline';
 import Freshness from '../components/Freshness';
 import PageHeader from '../components/PageHeader';
-import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime } from '../lib/format';
+import { fmtCompact, fmtNum, fmtDuration, prettyKey, prettyType, fmtTime, STATUS } from '../lib/format';
 import { paramLabel, isRawAddress, flattenParams } from '../lib/params';
 import { productionValue, borrowedFrom } from '../lib/production';
 import { windowNetMs, targetUnits, achievementPct, fmtTarget, secToMinPerPc } from '../lib/targets';
@@ -779,7 +779,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
       })()}
 
       {/* TODAY's breakdown: uptime, idle, stopped, and the downtime TOTAL
-          (idle + stopped + signal-lost). */}
+          (idle + stopped). */}
       <div className="mt-auto">
       <div className="grid grid-cols-4 gap-1.5">
         <TimeStat label="Uptime" ms={activity?.runningMs} color={TEAL} />
@@ -787,6 +787,16 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
         <TimeStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
         <TimeStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs : undefined} color="#991B1B" />
       </div>
+      {/* Signal lost lives here, on the machine's own card — not on the
+          dashboard, where it read as the machine's time. It is the network's or
+          the collector's: minutes with no data from the machine at all. */}
+      {activity && activity.offlineMs >= 60_000 && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-medium" style={{ color: STATUS.network.color }}
+          title="Minutes with no data from the machine — the network or its collector, not the machine itself">
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: STATUS.network.color }} />
+          Signal lost {fmtDuration(activity.offlineMs)} — no data from the machine
+        </div>
+      )}
       </div>
 
       {/* Footer — the card is a summary; deep views live behind these links */}
