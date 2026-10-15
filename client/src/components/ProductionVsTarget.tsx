@@ -28,7 +28,7 @@ import { StatusPill, TimeStat } from './ui';
 import { machineApi, productionApi } from '../api/endpoints';
 import { useAppConfig } from '../hooks/useAppConfig';
 import { useAuthStore } from '../store/auth';
-import { windowNetMs, targetUnits, fmtTarget, fmtRate, wholeDiff, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
+import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate, secToMinPerPc } from '../lib/targets';
 import { processCompare, groupMachines } from '../lib/machineOrder';
 import { isFurnaceRef } from '../lib/temperature';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
@@ -66,9 +66,16 @@ interface TargetRow {
   stage: string;         // the assignment's stage name
   dia: string;           // targets exist only for machines with a dia assigned
   processingSec: number; // FROZEN on the assignment snapshot
-  target: number;        // exact — display rounds (fmtTarget)
+  target: number;        // exact — for timing only; everything scored uses `due`
+  // Whole pieces due: what the machine could have FINISHED by now (5.67 → 5,
+  // the 6th still on the machine). Every figure on this board — the ring, the
+  // %, ahead/behind, the group and header totals — scores against it, so
+  // "5 of 5" reads 100% and on target, never 87% beside it.
+  due: number;
   actual: number;
-  diff: number;          // actual - target: negative = behind
+  diff: number;          // actual - due, whole pieces: negative = behind
+  // Live window, no whole piece due yet: when the first one falls due.
+  firstDueAt: number | null;
 }
 
 interface GroupTargets {
@@ -86,6 +93,20 @@ interface UnmeasuredRow { row: MachineActivityRow; reason: string }
 // Attainment (actual/target) drives every color on the board:
 // below 50% red · 50–90% orange · above 90% green.
 const attainColor = (pct: number): string => (pct > 0.9 ? TEAL : pct >= 0.5 ? AMBER : RED);
+// Rates on this page are whole pieces an hour — "17/hr", not "16.7/hr" — read
+// across a floor. What a machine DID rounds to the nearest piece, the closest
+// whole number to the truth; what it is HELD to stays fmtTarget's whole pieces
+// it can finish (3.33 → 3), as the header and the hourly chart print it.
+// Under one an hour is "<1", the way a target under one piece is.
+const wholeRate = (r: number): string => (r <= 0 ? '0' : r < 1 ? '<1' : String(Math.round(r)));
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+/** A machine's ring: made against the whole pieces due — or, before one is
+ *  due, just whether anything has been made yet. */
+const ringOf = (t: { actual: number; due: number }, color: string): { label: string; value: number; color: string }[] => (t.due === 0
+  ? [t.actual > 0 ? { label: 'Produced', value: 1, color } : { label: 'Remaining', value: 1, color: TRACK }]
+  : [{ label: 'Produced', value: Math.min(t.actual, t.due), color }, { label: 'Remaining', value: Math.max(t.due - t.actual, 0), color: TRACK }]);
+/** "15:18" — the plant's own 24-hour clock, as the shifts are written. */
+const clockHM = (ms: number): string => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 const dotColor = (status: string): string =>
   status === 'running' ? TEAL : status === 'idle' ? AMBER : status === 'stopped' ? RED : SLATE;
 
@@ -205,6 +226,8 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
 
   const targets = useMemo<TargetRow[]>(() => {
     const out: TargetRow[] = [];
+    const live = !!effFrom && !!effTo && windowIsLive(new Date(effFrom), new Date(effTo));
+    const now = Date.now();
     for (const row of [...boardRows].sort(processCompare)) {
       if (row.production == null) continue;                       // no counter, nothing to compare
       // Dia FIRST: the dia is the product, so a machine has no rate or target
@@ -213,14 +236,16 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
       if (!a) continue;
       const target = targetUnits(a.snapshot.processingSec, netMs);
       if (target <= 0) continue;
+      const due = Math.floor(target + 1e-9);
       const actual = row.production;
       out.push({
         row, dia: a.snapshot.diaName, stage: a.snapshot.stageName,
-        processingSec: a.snapshot.processingSec, target, actual, diff: actual - target,
+        processingSec: a.snapshot.processingSec, target, due, actual, diff: actual - due,
+        firstDueAt: due === 0 && live ? now + (1 - target) * a.snapshot.processingSec * 1000 : null,
       });
     }
     return out;
-  }, [boardRows, asgBy, netMs]);
+  }, [boardRows, asgBy, netMs, effFrom, effTo]);
 
 
   // Furnaces: no counter — heat IS their output, so the board still owes them a
@@ -331,7 +356,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   }
 
   const totalActual = targets.reduce((n, t) => n + t.actual, 0);
-  const totalTarget = targets.reduce((n, t) => n + t.target, 0);
+  const totalTarget = targets.reduce((n, t) => n + t.due, 0);
   // Today/Yesterday windows frame the hourly bars midnight-to-midnight; every
   // other window shows its last 8 hours.
   const barsFullDay = effLabel === 'Today' || effLabel === 'Yesterday';
@@ -657,8 +682,10 @@ function AttentionLine({ rows }: { rows: MachineActivityRow[] }): JSX.Element {
 // ── ADMIN · one production group ─────────────────────────────────────────────
 function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.Element {
   const actual = g.targets.reduce((n, t) => n + t.actual, 0);
-  const target = g.targets.reduce((n, t) => n + t.target, 0);
+  const target = g.targets.reduce((n, t) => n + t.due, 0);
   const pct = target ? actual / target : 0;
+  // The first minutes of a window owe no whole piece yet: nothing to score.
+  const scored = g.targets.length > 0 && target > 0;
   const dias = [...new Set(g.targets.map((t) => t.dia))];
   // The dots and the machine count take the whole family; the percentage takes
   // only what can be scored. An unmeasurable machine rendered as 0% would read
@@ -681,9 +708,9 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
           {/* A family with nothing scorable shows a dash, not "0%" — zero is a
               performance, a dash is the absence of a measurement. */}
           <div className="data text-2xl font-bold leading-tight tabular-nums whitespace-nowrap"
-            style={{ color: g.targets.length ? attainColor(pct) : 'rgb(var(--c-steel, 100 116 139))' }}>
-            {g.targets.length ? `${Math.round(pct * 100)}%` : '—'}</div>
-          <div className="label mt-0.5">of target</div>
+            style={{ color: scored ? attainColor(pct) : 'rgb(var(--c-steel, 100 116 139))' }}>
+            {scored ? `${Math.round(pct * 100)}%` : '—'}</div>
+          <div className="label mt-0.5">{g.targets.length && !scored ? 'no piece due yet' : 'of target'}</div>
         </div>
       </div>
 
@@ -719,7 +746,7 @@ function GroupCard({ g, onOpen }: { g: GroupTargets; onOpen: () => void }): JSX.
 // The opened group's own summary, beside its machines.
 function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): JSX.Element {
   const actual = g.targets.reduce((n, t) => n + t.actual, 0);
-  const target = g.targets.reduce((n, t) => n + t.target, 0);
+  const target = g.targets.reduce((n, t) => n + t.due, 0);
   const pct = target ? actual / target : 0;
   const run = g.targets.reduce((n, t) => n + t.row.runningMs, 0);
   const idle = g.targets.reduce((n, t) => n + t.row.idleMs, 0);
@@ -730,7 +757,8 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
   // "SPG-06 needs attention"; the summary must not answer "all fine".
   const scorable = g.targets.length > 0;
   const allRows = [...g.targets.map((t) => t.row), ...g.unmeasured.map((u) => u.row)];
-  const avail = windowMs > 0 && scorable ? Math.round((run / (windowMs * g.targets.length)) * 100) : 0;
+  // Capped like the board's: running through a break is not over 100%.
+  const avail = windowMs > 0 && scorable ? Math.min(100, Math.round((run / (windowMs * g.targets.length)) * 100)) : 0;
   return (
     // Deliberately NOT the machine-card look: accent left rail + tinted ground
     // so the eye reads "this is the group's summary", not a sixth machine.
@@ -741,9 +769,9 @@ function GroupSummary({ g, windowMs }: { g: GroupTargets; windowMs: number }): J
         <div className="font-semibold text-sm text-primary truncate">{g.label}</div>
       </div>
       <div className="data text-3xl font-bold leading-tight tabular-nums whitespace-nowrap"
-        style={{ color: scorable ? attainColor(pct) : 'rgb(var(--c-steel, 100 116 139))' }}>
-        {scorable ? `${Math.round(pct * 100)}%` : '—'}</div>
-      <div className="label mt-0.5 mb-3">{scorable ? `of target · ${avail}% availability` : 'nothing scorable in this window'}</div>
+        style={{ color: scorable && target > 0 ? attainColor(pct) : 'rgb(var(--c-steel, 100 116 139))' }}>
+        {scorable && target > 0 ? `${Math.round(pct * 100)}%` : '—'}</div>
+      <div className="label mt-0.5 mb-3">{!scorable ? 'nothing scorable in this window' : target > 0 ? `of target · ${avail}% availability` : `no piece due yet · ${avail}% availability`}</div>
       <div className="flex items-end justify-between gap-2">
         <div><div className="data text-lg font-bold leading-none text-primary">{fmtNum(actual)}</div><div className="label mt-0.5">Produced</div></div>
         <div className="text-right"><div className="data text-lg font-bold leading-none text-steel">{fmtTarget(target)}</div><div className="label mt-0.5">Target</div></div>
@@ -858,18 +886,15 @@ function GroupWeekChart({ g }: { g: GroupTargets }): JSX.Element {
 function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }): JSX.Element {
   const mName = useMachineName();
   const mTitle = useMachineTitle();
-  const pct = t.target ? t.actual / t.target : 0;
-  const color = attainColor(pct);
+  const warming = t.due === 0;
+  const pct = t.due > 0 ? t.actual / t.due : 0;
+  const color = warming ? (t.actual > 0 ? TEAL : SLATE) : attainColor(pct);
   const rate = hourlyRate(t.processingSec);
   return (
     <button onClick={onOpen} className="card p-3.5 w-full flex flex-col text-left transition-all hover:shadow-md hover:border-accent/30 group" title="Open this machine's board">
       <div className="flex items-center gap-3">
-        <Donut size={76} thickness={8} emptyColor={TRACK}
-          segments={[
-            { label: 'Produced', value: Math.min(t.actual, t.target), color },
-            { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
-          ]}>
-          <span className="data text-sm font-bold leading-tight tabular-nums" style={{ color }}>{Math.round(pct * 100)}%</span>
+        <Donut size={76} thickness={8} emptyColor={TRACK} segments={ringOf(t, color)}>
+          <span className="data text-sm font-bold leading-tight tabular-nums" style={{ color }}>{warming ? '—' : `${Math.round(pct * 100)}%`}</span>
         </Donut>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
@@ -880,17 +905,21 @@ function MachineTargetCard({ t, onOpen }: { t: TargetRow; onOpen: () => void }):
             <Ruler size={10} className="shrink-0" /><span className="data font-medium text-primary">{t.dia}</span>
           </div>
           <div className="text-[10px] text-steel mt-0.5 truncate">
-            {t.stage} · {secToMinPerPc(t.processingSec)} min/pc · {fmtRate(rate)}/hr
+            {t.stage} · {secToMinPerPc(t.processingSec)} min/pc · {fmtTarget(rate)}/hr
           </div>
           <div className="flex items-baseline gap-1 mt-1">
             <span className="data text-base font-bold leading-none" style={{ color }}>{fmtNum(t.actual)}</span>
             {/* Whole pieces only. "0.62 behind" is not a state a shift can be
                 in, and it was on every card for the first minutes of a window. */}
-            <span className="text-xs font-semibold text-primary/80">/ {fmtTarget(t.target)} pcs · {wholeDiff(t.diff) === 0 ? 'on target' : wholeDiff(t.diff) > 0 ? `${wholeDiff(t.diff)} ahead` : `${-wholeDiff(t.diff)} behind`}</span>
+            <span className="text-xs font-semibold text-primary/80">
+              {warming
+                ? `made · ${t.firstDueAt ? `target from ${clockHM(t.firstDueAt)}` : 'under 1 piece due'}`
+                : `/ ${fmtNum(t.due)} pcs · ${t.diff === 0 ? 'on target' : t.diff > 0 ? `${t.diff} ahead` : `${-t.diff} behind`}`}
+            </span>
           </div>
         </div>
       </div>
-      <div className="mt-2.5"><Bar actual={t.actual} target={t.target} /></div>
+      <div className="mt-2.5"><Bar actual={t.actual} target={t.due} /></div>
       {/* This machine's OWN split of the window */}
       <div className="grid grid-cols-4 gap-1.5 mt-2.5">
         <TimeStat label="Runtime" ms={t.row.runningMs} color={TEAL} />
@@ -914,11 +943,20 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
 }): JSX.Element {
   const mName = useMachineName();
   const mTitle = useMachineTitle();
-  const pct = t.target ? t.actual / t.target : 0;
-  const color = attainColor(pct);
+  const pct = t.due > 0 ? t.actual / t.due : 0;
   const rate = hourlyRate(t.processingSec);
-  const availPct = windowMs > 0 ? Math.round((t.row.runningMs / windowMs) * 100) : 0;
-  const madePerHr = windowMs > 0 ? Math.round((t.actual / (windowMs / 3600_000)) * 10) / 10 : 0;
+  // The window's planned time leaves the breaks out, and a machine that runs
+  // through lunch would read 107% — availability tops out at all of it.
+  const availPct = windowMs > 0 ? Math.min(100, Math.round((t.row.runningMs / windowMs) * 100)) : 0;
+  const madePerHr = windowMs > 0 ? t.actual / (windowMs / 3600_000) : 0;
+  // Until one whole piece is due, the window is too young to score: on PC07's
+  // 18-minute dia, four minutes into a shift, one piece against 0.2 due read
+  // "1 of <1", "501%", "Ahead 0" and "16.7/hr". Until then the ring says when
+  // the first target piece falls due, and the percentages wait for it.
+  const warming = t.due === 0;
+  const firstDue = t.firstDueAt;
+  const color = warming ? (t.actual > 0 ? TEAL : SLATE) : attainColor(pct);
+  const lead = t.diff;
   return (
     <div className="card p-4">
       {/* Header strip — machine · dia · stage · rate, like the operator screen's part strip */}
@@ -933,19 +971,29 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
       {/* First row: what it has made, beside where the time went */}
       <div className="mt-4 grid gap-5 md:grid-cols-[auto_minmax(0,1fr)] items-center">
         <div className="flex justify-center">
-          <Donut size={150} thickness={16} emptyColor={TRACK}
-            segments={[
-              { label: 'Produced', value: Math.min(t.actual, t.target), color },
-              { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
-            ]}>
+          <Donut size={150} thickness={16} emptyColor={TRACK} segments={ringOf(t, color)}>
             {/* Made, then the target it is measured against — both read from
                 across the floor; the target a step down in size and weight. */}
             <span className="data text-3xl font-bold leading-none text-primary">{fmtNum(t.actual)}</span>
-            <span className="mt-1.5 leading-none whitespace-nowrap">
-              <span className="text-xs text-steel">of </span>
-              <span className="data text-2xl font-bold text-primary/70">{fmtTarget(t.target)}</span>
-            </span>
-            <span className="text-[11px] text-steel mt-1 leading-tight">part produced</span>
+            {warming ? (
+              <>
+                <span className="text-[11px] text-steel mt-1 leading-tight">part produced</span>
+                {firstDue ? (
+                  <>
+                    <span className="text-[11px] text-steel mt-1.5 leading-tight">target from</span>
+                    <span className="data text-lg font-bold leading-tight text-primary/70">{clockHM(firstDue)}</span>
+                  </>
+                ) : <span className="text-[11px] text-steel mt-1.5 leading-tight">under 1 piece due</span>}
+              </>
+            ) : (
+              <>
+                <span className="mt-1.5 leading-none whitespace-nowrap">
+                  <span className="text-xs text-steel">of </span>
+                  <span className="data text-2xl font-bold text-primary/70">{fmtNum(t.due)}</span>
+                </span>
+                <span className="text-[11px] text-steel mt-1 leading-tight">part produced</span>
+              </>
+            )}
           </Donut>
         </div>
         <MachineTime run={t.row.runningMs} idle={t.row.idleMs} stop={t.row.stoppedMs} dark={t.row.offlineMs} wide={wide} />
@@ -953,12 +1001,15 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
 
       <div className="mt-4 space-y-2">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-          <Stat label="Performance" value={`${Math.round(pct * 100)}%`} color={color} sub="of target" />
+          <Stat label="Performance" value={warming ? '—' : `${Math.round(pct * 100)}%`} color={warming ? SLATE : color}
+            sub={warming ? (firstDue ? `from ${clockHM(firstDue)}` : 'under 1 piece due') : 'of target'} />
           <Stat label="Availability" value={`${availPct}%`} color={availPct >= 75 ? TEAL : availPct >= 50 ? AMBER : RED} sub="runtime share" />
-          <Stat label="Actual rate" value={`${madePerHr}/hr`} color={madePerHr >= rate ? TEAL : AMBER} sub={`target ${fmtRate(rate)}/hr`} />
-          <Stat label={wholeDiff(t.diff) >= 0 ? 'Ahead' : 'Behind'} value={String(Math.abs(wholeDiff(t.diff)))} color={wholeDiff(t.diff) >= 0 ? TEAL : RED} sub="pcs vs target" />
+          {/* Whole pieces an hour; the colour from the unrounded figures. */}
+          <Stat label="Actual rate" value={warming ? '—' : `${wholeRate(madePerHr)}/hr`} color={warming ? SLATE : madePerHr >= rate ? TEAL : AMBER}
+            sub={`target ${fmtTarget(rate)}/hr`} />
+          <Stat label={lead === 0 ? 'On target' : lead > 0 ? 'Ahead' : 'Behind'} value={String(Math.abs(lead))} color={lead >= 0 ? TEAL : RED} sub="pcs vs target" />
         </div>
-        <Bar actual={t.actual} target={t.target} />
+        <Bar actual={t.actual} target={t.due} />
       </div>
 
       {/* Hour-by-hour, inline — the operator watches this live */}
@@ -1089,10 +1140,12 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
   code: string; from: string; to: string; perHr: number | null; height?: number; fullDay?: boolean;
 }): JSX.Element {
   const HOUR = 3600_000;
+  const { breaks } = useAppConfig();
   // Clamp "now" to the MINUTE: a raw Date.now() here lands in the query key,
   // and a millisecond-fresh key per render is a self-sustaining refetch loop
   // whenever the window's `to` is still in the future (a running hour/shift).
   const nowMin = Math.floor(Date.now() / 60_000) * 60_000;
+  const winFrom = new Date(from).getTime(), winTo = new Date(to).getTime();
   // Buckets sit on the plant's LOCAL clock hours (07:00–08:00), never UTC's:
   // the request's `from` is a local hour boundary and the server anchors its
   // bucket grid to it.
@@ -1123,14 +1176,25 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
     placeholderData: keepPreviousData,
   });
 
+  // Each hour is judged on what it owed, in whole pieces, as the legend prints
+  // the target: its share of the window with the breaks taken out, and for the
+  // hour still running only what was due by now. An 18-minute dia is 3.33 an
+  // hour and a clock hour holds 3 of its pieces (4 every third hour), so
+  // "made ≥ 3.33" turned a machine on pace amber two hours in three.
   const bars = useMemo(() => {
     const made = new Map((data?.data.hours || []).map((h) => [new Date(h.t).getTime(), h.made]));
-    const out: { t: number; made: number; future: boolean }[] = [];
+    const out: { t: number; made: number; future: boolean; running: boolean; goal: number | null }[] = [];
     for (let b = fromMs; b < renderEnd; b += HOUR) {
-      out.push({ t: b, made: made.get(b) || 0, future: b >= nowMin });
+      const s = Math.max(b, winFrom), e = Math.min(b + HOUR, nowMin, winTo);
+      const due = perHr == null ? null : e > s ? perHr * (windowNetMs(s, e, breaks) / HOUR) : 0;
+      out.push({
+        t: b, made: made.get(b) || 0, future: b >= nowMin, running: b < nowMin && nowMin < b + HOUR,
+        goal: due == null ? null : due >= 1 ? Math.floor(due) : due,
+      });
     }
     return out;
-  }, [data, fromMs, renderEnd, nowMin]);
+  }, [data, fromMs, renderEnd, nowMin, perHr, winFrom, winTo, breaks]);
+  const met = (b: { made: number; goal: number | null }): boolean => b.goal != null && b.made >= b.goal;
   const max = Math.max(...bars.map((b) => b.made), perHr || 0, 1);
 
   const hh2 = (ms: number) => String(new Date(ms).getHours()).padStart(2, '0');
@@ -1146,18 +1210,21 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
           <div
             className="absolute left-0 right-0 border-t-2 border-dashed border-stopped/60 z-10 pointer-events-none"
             style={{ top: `${(1 - perHr / max) * height}px` }}
-            title={`Target ${fmtRate(perHr)}/hr`}
+            title={`Target ${fmtTarget(perHr)}/hr`}
           />
         )}
         <div className="flex items-end gap-1.5" style={{ height }}>
           {bars.map((b) => (
-            <div key={b.t} className="flex-1 min-w-[28px] flex flex-col items-center justify-end h-full" title={`${slot(b.t)} · ${b.future ? 'upcoming' : `${b.made} pcs`}`}>
-              {b.made > 0 && <span className="data text-[10px] font-bold mb-0.5" style={{ color: perHr != null && b.made >= perHr ? TEAL : AMBER }}>{b.made}</span>}
+            <div key={b.t} className="flex-1 min-w-[28px] flex flex-col items-center justify-end h-full"
+              title={`${slot(b.t)} · ${b.future ? 'upcoming' : `${b.made} pcs${b.running ? ' so far' : ''}${b.goal != null ? ` · ${fmtTarget(b.goal)} due${b.running ? ' by now' : ''}` : ''}`}`}>
+              {b.made > 0 && <span className="data text-[10px] font-bold mb-0.5" style={{ color: met(b) ? TEAL : AMBER }}>{b.made}</span>}
               <div
                 className="w-full rounded-t"
                 style={{
                   height: `${(b.made / max) * 100}%`,
-                  background: perHr != null && b.made >= perHr ? TEAL : AMBER,
+                  background: met(b) ? TEAL : AMBER,
+                  // The hour still running is not a verdict yet — drawn lighter.
+                  opacity: b.running ? 0.55 : 1,
                   minHeight: b.made > 0 ? 3 : 0,
                 }}
               />
@@ -1177,6 +1244,9 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
       <div className="flex items-center gap-4 mt-2 text-[10px] text-steel">
         <span className="inline-flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm" style={{ background: TEAL }} /> met the hour's target</span>
         <span className="inline-flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm" style={{ background: AMBER }} /> under target</span>
+        {bars.some((b) => b.running && b.made > 0) && (
+          <span className="inline-flex items-center gap-1.5"><span className="w-3 h-2 rounded-sm" style={{ background: `linear-gradient(90deg, ${TEAL} 50%, ${AMBER} 50%)`, opacity: 0.55 }} /> lighter = this hour so far</span>
+        )}
         {perHr != null && <span className="inline-flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-stopped/60" /> target {fmtTarget(perHr)}/hr</span>}
       </div>
     </div>
