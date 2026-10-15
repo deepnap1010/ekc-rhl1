@@ -14,6 +14,7 @@ import * as events from '../controllers/events.controller.js';
 import * as config from '../controllers/config.controller.js';
 import * as corrections from '../controllers/corrections.controller.js';
 import * as prod from '../controllers/production.controller.js';
+import * as mail from '../controllers/reportMail.controller.js';
 
 const r = Router();
 
@@ -108,6 +109,18 @@ r.get('/production/audit', authorize('audit'), prod.listAudit);
 // Dashboard's dataset — so the page and the report can never disagree.
 r.get('/reports/reliability', authorize('reports'), reports.reliabilityReport);
 r.get('/reports/export', authorize('reports'), exp.exportWorkbook);   // the whole review as one .xlsx
+// Scheduled report emails — that workbook mailed to the people the admin picks,
+// on a schedule (its own row under Reports on the Roles grid). The fixed paths
+// stay above /:id.
+r.get('/report-mails', authorize('report_mail'), mail.listSchedules);
+r.get('/report-mails/status', authorize('report_mail'), mail.mailStatus);
+r.get('/report-mails/preview', authorize('report_mail'), mail.previewSchedule);
+r.get('/report-mails/runs', authorize('report_mail'), mail.listRuns);
+r.post('/report-mails', authorize('report_mail', 'update'), mail.createSchedule);
+r.post('/report-mails/test', authorize('report_mail', 'update'), mail.sendTest);
+r.put('/report-mails/:id', authorize('report_mail', 'update'), mail.updateSchedule);
+r.delete('/report-mails/:id', authorize('report_mail', 'update'), mail.deleteSchedule);
+r.post('/report-mails/:id/send', authorize('report_mail', 'update'), mail.sendNow);
 
 // Alerts — fleet-wide, derived live from the anomaly engine
 r.get('/alerts', authorize('alerts'), alerts.listAlerts);

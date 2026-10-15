@@ -44,6 +44,12 @@ import type {
   MachineLabel,
   ScheduledDia,
   DowntimeReasonsSummary,
+  ReportSchedule,
+  ReportScheduleInput,
+  ReportMailRun,
+  ReportMailStatus,
+  ReportMailPreview,
+  ReportMailOutcome,
 } from '../types/api';
 
 // The response interceptor unwraps to the `{ success, data, meta }` envelope, so
@@ -60,6 +66,8 @@ const patch = <T>(url: string, body?: unknown): Promise<ApiResponse<T>> =>
   api.patch(url, body) as unknown as Promise<ApiResponse<T>>;
 const del = <T>(url: string): Promise<ApiResponse<T>> =>
   api.delete(url) as unknown as Promise<ApiResponse<T>>;
+const put = <T>(url: string, body?: unknown): Promise<ApiResponse<T>> =>
+  api.put(url, body) as unknown as Promise<ApiResponse<T>>;
 
 export const authApi = {
   login: (email: string, password: string) =>
@@ -138,6 +146,20 @@ export const reportsApi = {
   // interceptor hands back `data`, which for a blob request IS the file).
   exportWorkbook: (params: Params) =>
     api.get('/reports/export', { params, responseType: 'blob' }) as unknown as Promise<Blob>,
+};
+
+// That workbook, emailed on a schedule (Reports → Email reports).
+export const reportMailApi = {
+  list: () => get<ReportSchedule[]>('/report-mails'),
+  status: () => get<ReportMailStatus>('/report-mails/status'),
+  // When a draft would send and what each email would cover — nothing saved.
+  preview: (draft: Partial<ReportScheduleInput>) => get<ReportMailPreview>('/report-mails/preview', { draft: JSON.stringify(draft) }),
+  runs: (params?: { scheduleId?: string; limit?: number }) => get<ReportMailRun[]>('/report-mails/runs', params),
+  create: (body: ReportScheduleInput) => post<ReportSchedule>('/report-mails', body),
+  update: (id: string, body: ReportScheduleInput) => put<ReportSchedule>(`/report-mails/${id}`, body),
+  remove: (id: string) => del<{ deleted: boolean }>(`/report-mails/${id}`),
+  sendNow: (id: string) => post<ReportMailOutcome>(`/report-mails/${id}/send`),
+  test: (to?: string) => post<ReportMailOutcome>('/report-mails/test', to ? { to } : {}),
 };
 
 export interface DiaWritePayload {

@@ -8,6 +8,7 @@ import { initSocket } from './sockets/io.js';
 import { startWatchers, stopWatchers } from './services/watch.service.js';
 import { startDowntimeMonitor, stopDowntimeMonitor } from './services/downtime.service.js';
 import { startScheduleTicker, stopScheduleTicker } from './services/schedule.service.js';
+import { startReportMailer, stopReportMailer } from './services/reportMail.service.js';
 import { seedCounterKeys } from './services/counterKey.service.js';
 
 async function start(): Promise<void> {
@@ -26,6 +27,8 @@ async function start(): Promise<void> {
   startDowntimeMonitor();
   // Apply scheduled dia assignments at their minute (and catch up on startup).
   startScheduleTicker();
+  // Mail the scheduled report emails when they come due (never on the review copy).
+  startReportMailer();
 
   server.listen(env.port, () => {
     console.log(`[server] EKC SmartFactory API on :${env.port} (${env.nodeEnv})`);
@@ -39,6 +42,7 @@ async function start(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     stopDowntimeMonitor();
     stopScheduleTicker();
+    stopReportMailer();
     await stopWatchers();
     server.close();
     await disconnectDB();

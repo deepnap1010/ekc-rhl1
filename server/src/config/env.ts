@@ -27,7 +27,24 @@ export interface Env {
   adminName: string;
   adminEmail: string;
   adminPassword: string;
+  smtp: SmtpEnv;
 }
+
+// Outgoing mail, for the scheduled report emails (services/reportMail). Kept
+// in the server's environment, never in the database or the browser: the
+// password stays on the box that sends. No SMTP_HOST = mail is off — schedules
+// can still be set up, and say so.
+export interface SmtpEnv {
+  host: string;
+  port: number;
+  secure: boolean;              // TLS from the first byte (465); otherwise STARTTLS
+  user: string;
+  pass: string;
+  from: string;                 // "EKC SmartFactory <reports@company.com>"
+  rejectUnauthorized: boolean;  // false only behind a firewall that re-signs TLS
+}
+
+const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10) || 587;
 
 export const env: Env = {
   nodeEnv:  process.env.NODE_ENV || 'development',
@@ -56,4 +73,14 @@ export const env: Env = {
   adminName:     process.env.ADMIN_NAME     || 'Super Admin',
   adminEmail:    (process.env.ADMIN_EMAIL   || 'admin@ekc.in').toLowerCase(),
   adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
+
+  smtp: {
+    host: (process.env.SMTP_HOST || '').trim(),
+    port: smtpPort,
+    secure: process.env.SMTP_SECURE ? /^(1|true|yes)$/i.test(process.env.SMTP_SECURE) : smtpPort === 465,
+    user: (process.env.SMTP_USER || '').trim(),
+    pass: process.env.SMTP_PASS || '',
+    from: (process.env.SMTP_FROM || process.env.SMTP_USER || '').trim(),
+    rejectUnauthorized: !/^(0|false|no)$/i.test(process.env.SMTP_TLS_REJECT_UNAUTHORIZED || ''),
+  },
 };

@@ -749,3 +749,83 @@ export interface MachineTick {
 export type TicksMap = Record<string, MachineTick>;
 
 export type MachineUpdate = Machine;
+
+// ─── Report emails ───────────────────────────────────────────────────────────
+// The review workbook mailed on a schedule (server: services/reportMail).
+export type ReportFrequency = 'shift' | 'hours' | 'daily' | 'weekly' | 'monthly';
+export type ReportPeriod = 'auto' | 'shift' | 'hours' | 'day' | 'today' | 'week' | 'month_to_date' | 'month';
+export type ReportRunStatus = 'sent' | 'failed' | 'skipped';
+
+/** What a scheduled email is set to do — the editor's fields. */
+export interface ReportScheduleInput {
+  name: string;
+  enabled: boolean;
+  to: string[];
+  cc: string[];
+  frequency: ReportFrequency;
+  everyHours: number;
+  time: string;
+  weekday: number;
+  monthDay: number;
+  shifts: string[];
+  delayMin: number;
+  period: ReportPeriod;
+  periodHours: number;
+  machines: string[];
+  subject: string;
+  message: string;
+  includeSummary: boolean;
+  attachWorkbook: boolean;
+  skipIfIdle: boolean;
+}
+
+export interface ReportSchedule extends ReportScheduleInput {
+  _id: string;
+  nextRunAt: string | null;
+  lastRun: { at: string; status: ReportRunStatus; detail: string; recipients: number } | null;
+  // The server's own sentences, so the screen never re-derives the schedule.
+  describe: { when: string; covers: string; nextWindow: string | null; retrying: boolean };
+  createdBy?: { id?: string; name?: string };
+  updatedBy?: { id?: string; name?: string };
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ReportMailRun {
+  _id: string;
+  scheduleId: string | null;
+  name: string;
+  trigger: 'schedule' | 'manual' | 'test';
+  due: string | null;
+  at: string;
+  status: ReportRunStatus;
+  detail: string;
+  to: string[];
+  cc: string[];
+  accepted: string[];
+  rejected: { address: string; reason: string }[];
+  window: { from: string; to: string; label: string } | null;
+  file: string;
+  bytes: number;
+  durationMs: number;
+  by?: { id?: string; name?: string };
+}
+
+export interface ReportMailStatus {
+  configured: boolean;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  from: string;
+  tlsVerify: boolean;
+  readOnly: boolean;
+}
+
+export interface ReportMailPreview {
+  describe: { when: string; covers: string };
+  next: { at: string; window: { from: string; to: string; label: string } }[];
+  subject: string;
+}
+
+export interface ReportMailOutcome { status: ReportRunStatus; detail: string; accepted: number }

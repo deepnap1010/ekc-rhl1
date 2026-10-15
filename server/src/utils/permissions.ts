@@ -79,6 +79,12 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
     update: 'Correct how a production event was classified.',
   } },
   { module: 'reports', label: 'Reports', actions: { view: 'Open Reports and export the Excel workbook.' } },
+  { module: 'report_mail', parent: 'reports', label: 'Report emails', strict: true,
+    hint: 'The Excel workbook, emailed on a schedule',
+    actions: {
+      view: 'See the scheduled report emails, who receives them, and what was sent.',
+      update: 'Add, change, pause or delete a scheduled email, choose who receives it, send one now, and send a test email.',
+    } },
   { module: 'employees', label: 'Employees', actions: {
     view: 'See the employee list.',
     create: 'Add an employee.',

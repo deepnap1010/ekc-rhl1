@@ -53,7 +53,7 @@ const HOUR_MS = 3_600_000;
 // file: every production day, shift and date in the workbook is on IST,
 // exactly as the target engine (targets.service) already assumes. A reviewer
 // on a laptop set to UTC must get the same sheet the plant gets.
-const PLANT_TZ_MIN = 330;
+export const PLANT_TZ_MIN = 330;
 
 // ── machine families, in the plant's process order and vocabulary ───────────
 // A machine's FAMILY is the code with its trailing number stripped, aliases
@@ -128,22 +128,83 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 const NOT_INCLUDED = 'Not in this workbook (no machine behind them): WIP stock by size and stage, marketing plan and dispatch, raw-material pipe stock, batch status and approvals, non-moving cylinders, and piece counts for HQT, HST, ESB, marking, stamping and painting. The furnace reports temperature only.';
 
-export const exportWorkbook = asyncHandler(async (req, res) => {
-  const user = req.user as ScopedUser | undefined;
-  const rq = req.query as Record<string, string | undefined>;
-  const from = parseD(rq.from);
-  const toRaw = parseD(rq.to) || new Date();
-  if (!from || from >= toRaw) return fail(res, 400, 'from (and optionally to) must be valid dates, from before to');
-  const to = new Date(Math.min(toRaw.getTime(), Date.now()));
-  if (to.getTime() - from.getTime() > 400 * DAY_MS) return fail(res, 400, 'The export covers at most 400 days at a time');
-  const tzMin = PLANT_TZ_MIN;
-  const windowLabel = String(rq.label || '').slice(0, 80) || `${stamp(from, tzMin)} → ${stamp(to, tzMin)}`;
+/** A request the workbook cannot be built for, and the HTTP status it means. */
+export class WorkbookError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
 
-  // Scope: the user's machines, narrowed to one if asked.
-  const scope = machineScope(user);
+export interface WorkbookRequest {
+  from: Date | null;
+  to?: Date | null;
+  /** The machines to cover; none = every machine the user may see. */
+  machines?: string[] | null;
+  label?: string;
+  user?: ScopedUser;
+  /** Who the cover says built it — the user, unless a scheduled job says so. */
+  generatedBy?: string;
+}
+
+/** The cover sheet's figures, for a scheduled email's body (services/reportMail). */
+export interface WorkbookDigest {
+  scope: string;
+  window: string;
+  from: Date;
+  to: Date;
+  machines: number;
+  reporting: number;
+  production: number;
+  counters: number;
+  target: number | null;
+  achievement: number | null;
+  availability: number | null;
+  runningMs: number;
+  idleMs: number;
+  stoppedMs: number;
+  offlineMs: number;
+  downtimeEvents: number;
+  openNow: number;
+  sections: { name: string; machines: number; production: number | null; target: number | null; achievement: number | null; availability: number | null; downtimeHours: number }[];
+}
+
+export const exportWorkbook = asyncHandler(async (req, res) => {
+  const rq = req.query as Record<string, string | undefined>;
   const one = rq.machineId && rq.machineId !== 'all' ? rq.machineId.trim() : '';
-  if (one && scope && !scope.some((s) => s.toUpperCase() === one.toUpperCase())) return fail(res, 403, 'You are not assigned to this machine');
-  const only = one ? [one] : null;
+  try {
+    const { book, file } = await buildWorkbook({
+      from: parseD(rq.from), to: parseD(rq.to), machines: one ? [one] : null,
+      label: rq.label, user: req.user as ScopedUser | undefined,
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(book);
+  } catch (e) {
+    if (e instanceof WorkbookError) return fail(res, e.status, e.message);
+    throw e;
+  }
+});
+
+/** The plant's review workbook — what Export Excel downloads, and what a
+ *  scheduled report email attaches (services/reportMail): one builder, so the
+ *  file in the inbox is the file on the screen. */
+export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer; file: string; digest: WorkbookDigest }> {
+  const user = q.user;
+  const from = q.from;
+  const toRaw = q.to || new Date();
+  if (!from || from >= toRaw) throw new WorkbookError(400, 'from (and optionally to) must be valid dates, from before to');
+  const to = new Date(Math.min(toRaw.getTime(), Date.now()));
+  if (to.getTime() - from.getTime() > 400 * DAY_MS) throw new WorkbookError(400, 'The export covers at most 400 days at a time');
+  const tzMin = PLANT_TZ_MIN;
+  const windowLabel = String(q.label || '').slice(0, 80) || `${stamp(from, tzMin)} → ${stamp(to, tzMin)}`;
+
+  // Scope: the user's machines, narrowed to the ones asked for.
+  const scope = machineScope(user);
+  const picked = [...new Set((q.machines || []).map((m) => String(m).trim()).filter(Boolean))];
+  if (scope && picked.some((m) => !scope.some((s) => s.toUpperCase() === m.toUpperCase()))) {
+    throw new WorkbookError(403, 'You are not assigned to this machine');
+  }
+  const one = picked.length === 1 ? picked[0] : '';
+  const only = picked.length ? picked : null;
 
   const act = await computeActivity(scope, from, to, only);
   const rows = [...act.rows].sort((a, b) => flowCompare(a.code, b.code));
@@ -212,7 +273,8 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
   const shiftCols = shiftCoverageMin(shifts) < 1440 ? [...shiftNames, 'Off-shift'] : shiftNames;
   const nShifts = Math.max(1, shiftNames.length);
   const period = monthLabel(fullDays);
-  const scopeText = one ? `${nameOf(one)} (${one})` : 'All machines';
+  const scopeText = one ? `${nameOf(one)} (${one})`
+    : only ? (only.length <= 4 ? only.map(nameOf).join(', ') : `${only.length} machines`) : 'All machines';
   // Working days — the plant's divisor for "average per day": production days
   // in the window on which the scope made anything at all.
   const workingDays = touched.filter((d) => rows.some((r) => (md(r.code, d)?.total || 0) > 0)).length;
@@ -298,7 +360,7 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
         kv('Report day (the PDWIP page)', reportDay ? dayCell(reportDay) : ''),
         kv('Working days (days with output — the AVG divisor)', workingDays, 'int'),
         kv('Shifts', shifts.map((s) => `${s.name} ${s.start}–${s.end}`).join(' · ')),
-        kv('Generated', new Date(), 'datetime'), kv('Generated by', user?.name || ''),
+        kv('Generated', new Date(), 'datetime'), kv('Generated by', q.generatedBy ?? user?.name ?? ''),
         kv('Plant clock', `IST (UTC+${Math.floor(tzMin / 60)}:${String(tzMin % 60).padStart(2, '0')})`),
       ] },
     { title: 'FLEET TOTALS', columns: [{ header: 'Metric', key: 'k', width: 40 }, { header: 'Value', key: 'v', width: 36 }],
@@ -622,8 +684,15 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
   const diaTargets = stagesSeen.map((_, i) => [...byDia.values()].reduce((n, g) => n + g.target[i], 0));
   const diaSheet: Sheet = { name: 'BY DIA (size)', blocks: [{
     title: `PRODUCTION BY DIA / SIZE — ${period}`,
-    note: targets ? 'Pieces per size at each stage with a machine behind it, for hours a dia was assigned. TARGET = assigned time ÷ cycle time. These are pieces made, not stock: WIP between stages needs opening balances and scrap this system does not hold. Stages without telemetry (HQT, HST, marking, painting, dispatch) are not shown.' : 'Not computed — the window is longer than 92 days.',
-    bands: [{ label: 'SIZE', span: 2 }, { label: 'PIECES MADE', span: Math.max(1, stagesSeen.length) }, { label: 'TARGET', span: Math.max(1, stagesSeen.length) }, { label: '', span: 1 }],
+    note: !targets ? 'Not computed — the window is longer than 92 days.'
+      : !stagesSeen.length ? 'No dia was assigned to these machines in this window, so there is nothing to show by size.'
+        : 'Pieces per size at each stage with a machine behind it, for hours a dia was assigned. TARGET = assigned time ÷ cycle time. These are pieces made, not stock: WIP between stages needs opening balances and scrap this system does not hold. Stages without telemetry (HQT, HST, marking, painting, dispatch) are not shown.',
+    // With no stage there are no PIECES / TARGET columns for a band to sit
+    // over — the writer refuses a band wider than its block, and that refusal
+    // used to fail the whole export of a dia-less machine or a long window.
+    bands: stagesSeen.length
+      ? [{ label: 'SIZE', span: 2 }, { label: 'PIECES MADE', span: stagesSeen.length }, { label: 'TARGET', span: stagesSeen.length }, { label: '', span: 1 }]
+      : undefined,
     columns: [
       { header: 'DIA', key: 'dia', width: 20 }, { header: 'DIMS', key: 'dims', width: 16 },
       ...stagesSeen.map((s, i) => ({ header: s.toUpperCase(), key: stageKey(i), fmt: 'int' as Fmt, style: 'input' as const, width: 12 })),
@@ -776,9 +845,23 @@ export const exportWorkbook = asyncHandler(async (req, res) => {
   }] };
 
   const book = buildXlsx([summary, analysis, perShift, report, daily, machines, diaSheet, targetSheet, reasonSheet, downtimeSheet, prodSheet, reliabilitySheet, correctionSheet], tzMin);
-  const file = `EKC_SmartFactory_${one ? one.replace(/[^A-Za-z0-9]+/g, '_') + '_' : ''}${stamp(from, tzMin).slice(0, 10)}_to_${stamp(act.to, tzMin).slice(0, 10)}.xlsx`;
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
-  res.setHeader('Cache-Control', 'no-store');
-  return res.send(book);
-});
+  const slug = one ? `${one.replace(/[^A-Za-z0-9]+/g, '_')}_` : only ? `${only.length}_machines_` : '';
+  const file = `EKC_SmartFactory_${slug}${stamp(from, tzMin).slice(0, 10)}_to_${stamp(act.to, tzMin).slice(0, 10)}.xlsx`;
+  // The cover's own figures, read off the rows it printed.
+  const numOrNull = (c: Cell): number | null => (typeof c === 'number' && Number.isFinite(c) ? c : null);
+  const digest: WorkbookDigest = {
+    scope: scopeText, window: windowLabel, from, to: act.to,
+    machines: rows.length, reporting: rows.filter((r) => r.live).length,
+    production, counters,
+    target: targets ? Math.round(tgtAll.target) : null,
+    achievement: targets ? pct(tgtAll.actual, tgtAll.target) : null,
+    availability, runningMs, idleMs, stoppedMs, offlineMs,
+    downtimeEvents: spansAll.length, openNow,
+    sections: sectionRows.map((r) => ({
+      name: String(r.family), machines: numOrNull(r.machines) ?? 0, production: numOrNull(r.production),
+      target: numOrNull(r.target), achievement: numOrNull(r.achieve), availability: numOrNull(r.availability),
+      downtimeHours: numOrNull(r.delay) ?? 0,
+    })),
+  };
+  return { book, file, digest };
+}

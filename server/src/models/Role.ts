@@ -25,6 +25,7 @@ export const MODULES = [
   'downtime',
   'history',
   'reports',
+  'report_mail',        // the review workbook emailed on a schedule — who gets it, and when
   'employees',
   'roles',
   'orgchart',

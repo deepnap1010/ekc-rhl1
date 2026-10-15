@@ -11,7 +11,7 @@ import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import {
   Download, FileBarChart, Clock, ShieldCheck, Factory, Activity, Timer, WifiOff,
-  Gauge as GaugeIcon, CalendarClock, type LucideIcon,
+  Gauge as GaugeIcon, CalendarClock, Mail, type LucideIcon,
 } from 'lucide-react';
 import { reportsApi, machineApi, downtimeApi } from '../api/endpoints';
 import { StatCard, Spinner } from '../components/ui';
@@ -26,6 +26,7 @@ import { liveStatus } from '../lib/machineStatus';
 import TargetsReport from '../components/TargetsReport';
 import DiaScheduleReport from '../components/DiaScheduleReport';
 import { ScheduleDiaModal } from '../components/ScheduleDia';
+import { ReportMailModal } from '../components/ReportMail';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toast';
 import type { MachineActivityRow, MetricValue } from '../types/api';
@@ -47,6 +48,7 @@ export default function Reports() {
   const mTitle = useMachineTitle();
   const [tab, setTab] = useState('overview');
   const [schedOpen, setSchedOpen] = useState(false);
+  const [mailOpen, setMailOpen] = useState(false);
   const can = useAuthStore((st) => st.can);
   const { f, fromISO, toISO, windowLabel } = useGlobalWindow();
   const machineId = f.machineId;
@@ -123,13 +125,24 @@ export default function Reports() {
         title="Reports"
         subtitle={`${scopeLabel} · ${windowLabel}`}
         right={(
-          <button onClick={() => { void exportExcel(); }} disabled={exporting || !fromISO}
-            title="The plant's review workbook for the selected window — PRODUCTION ANALYSIS day-matrix, PER SHIFT, the daily PRODUCTION REPORT with norms and idle hours by reason, plus machines, by-dia, targets, downtime and production detail"
-            className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20 disabled:opacity-60">
-            <Download size={14} /> {exporting ? 'Preparing workbook…' : 'Export Excel'}
-          </button>
+          <div className="flex items-center gap-2">
+            {/* The same workbook, mailed on a schedule — for whoever holds Report emails. */}
+            {can('report_mail', 'view') && (
+              <button onClick={() => setMailOpen(true)}
+                title="Email this workbook to the people you choose — after every shift, every few hours, daily, weekly or monthly"
+                className="flex items-center gap-1.5 border border-line text-primary text-sm px-3 py-1.5 rounded-lg hover:border-accent/30 hover:bg-accent/5">
+                <Mail size={14} /> Email reports
+              </button>
+            )}
+            <button onClick={() => { void exportExcel(); }} disabled={exporting || !fromISO}
+              title="The plant's review workbook for the selected window — PRODUCTION ANALYSIS day-matrix, PER SHIFT, the daily PRODUCTION REPORT with norms and idle hours by reason, plus machines, by-dia, targets, downtime and production detail"
+              className="flex items-center gap-1.5 bg-accent/10 text-accent border border-accent/20 text-sm px-3 py-1.5 rounded-lg hover:bg-accent/20 disabled:opacity-60">
+              <Download size={14} /> {exporting ? 'Preparing workbook…' : 'Export Excel'}
+            </button>
+          </div>
         )}
       />
+      {mailOpen && <ReportMailModal onClose={() => setMailOpen(false)} />}
 
       <div className="px-4 sm:px-6 pb-8 space-y-5 pt-5">
         {/* The Dashboard's selection — one bar, both pages. */}
