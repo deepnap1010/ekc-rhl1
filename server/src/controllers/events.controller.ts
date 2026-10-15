@@ -168,8 +168,12 @@ export const classQueue = asyncHandler(async (req, res) => {
   // dismisses locally, so it reads newest first: the rows it has already
   // closed must never bury what just happened.
   const inOrder = mode === 'popup' && isOperatorRole(user?.role);
+  // A climb the engine refused (meta.implausible) was never counted, so there
+  // is nothing in it to classify: CUTTINGMACHINE07's operator was asked about
+  // twenty-five "+2,725" jumps in one morning, instead of the real pieces.
   const rows = await MachineEvent.find({
     kind: 'production', classSource: 'default', delta: { $gt: 0 },
+    'meta.implausible': { $ne: true },
     ...(machines ? { machineId: { $in: machines.map(refMatch) } } : {}),
     startedAt: { $gte: new Date(Date.now() - QUEUE_WINDOW_MS) },
   }).sort({ startedAt: inOrder ? 1 : -1 }).limit(inOrder ? 25 : 100).lean();

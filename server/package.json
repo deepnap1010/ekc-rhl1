@@ -17,7 +17,8 @@
     "check:readonly": "tsx checks/readonly.check.ts",
     "check:permissions": "tsx checks/permissions.check.ts",
     "check:counterkey": "tsx checks/counterkey.check.ts",
-    "check:derived": "tsx checks/derivedcounter.check.ts"
+    "check:derived": "tsx checks/derivedcounter.check.ts",
+    "check:replay": "tsx checks/replay.check.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
