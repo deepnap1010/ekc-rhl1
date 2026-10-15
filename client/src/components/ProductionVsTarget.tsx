@@ -925,7 +925,8 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
       <div className="flex items-center gap-2.5 flex-wrap pb-3 border-b border-line">
         <span className="data font-bold text-sm text-primary" title={mTitle(t.row.code)}>{mName(t.row.code)}</span>
         <StatusPill status={t.row.status} title={pillTitle(t.row)} />
-        <span className="inline-flex items-center gap-1 pill bg-accent/10 text-accent data !text-[10px]"><Ruler size={10} /> {t.dia}</span>
+        {/* The dia is what the operator checks the job against — readable, not a footnote. */}
+        <span className="inline-flex items-center gap-1.5 pill bg-accent/10 text-accent data !text-[13px] !font-semibold !px-2.5 !py-1"><Ruler size={13} /> {t.dia}</span>
         <span className="text-[11px] text-steel ml-auto">{t.stage} · {fmtProcessing(t.processingSec)}/pc · target {fmtTarget(rate)}/hr</span>
       </div>
 
@@ -937,8 +938,14 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
               { label: 'Produced', value: Math.min(t.actual, t.target), color },
               { label: 'Remaining', value: Math.max(t.target - t.actual, 0), color: TRACK },
             ]}>
+            {/* Made, then the target it is measured against — both read from
+                across the floor; the target a step down in size and weight. */}
             <span className="data text-3xl font-bold leading-none text-primary">{fmtNum(t.actual)}</span>
-            <span className="text-[10px] text-steel mt-1 leading-tight">of {fmtTarget(t.target)}<br />part produced</span>
+            <span className="mt-1.5 leading-none whitespace-nowrap">
+              <span className="text-xs text-steel">of </span>
+              <span className="data text-2xl font-bold text-primary/70">{fmtTarget(t.target)}</span>
+            </span>
+            <span className="text-[11px] text-steel mt-1 leading-tight">part produced</span>
           </Donut>
         </div>
         <MachineTime run={t.row.runningMs} idle={t.row.idleMs} stop={t.row.stoppedMs} dark={t.row.offlineMs} wide={wide} />
@@ -1050,12 +1057,13 @@ function TimeTile({ label, ms, tone, size, note }: {
   );
 }
 
-// Hours and minutes with the units set small, in proportion to the digits —
-// the digits are what is read from across the floor.
+// Hours and minutes with the units a step below the digits — large enough to
+// read across the floor ("6h 20m", not "6 20"), small enough that the digits
+// still lead.
 function BigDuration({ ms }: { ms: number }): JSX.Element {
   const total = Math.max(0, Math.round(ms / 60_000));
   const h = Math.floor(total / 60), m = total % 60;
-  const unit = 'text-[0.45em] font-semibold opacity-70 ml-[0.06em]';
+  const unit = 'text-[0.65em] font-semibold opacity-85 ml-[0.08em]';
   return (
     <span className="data font-bold leading-none whitespace-nowrap">
       {h > 0 && <>{h}<span className={`${unit} mr-[0.3em]`}>h</span></>}
