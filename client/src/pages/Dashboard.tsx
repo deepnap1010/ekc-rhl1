@@ -133,12 +133,13 @@ export default function Dashboard() {
   }, [rows]);
   const lastIsLive = lastReading != null && (Date.now() - lastReading) <= 120_000;
 
-  // How the window was actually spent — the ONE place these five figures live.
+  // How the window was actually spent. Signal lost is not on the dashboard —
+  // it read as the machines' own time and is the network's or the
+  // collectors'; it is in each machine page's small print.
   const timeSeg = [
     { key: 'running', label: 'Runtime', value: t.runningMs, color: TEAL },
     { key: 'idle', label: 'Idle', value: t.idleMs, color: AMBER },
     { key: 'stopped', label: 'Stopped', value: t.stoppedMs, color: RED },
-    { key: 'offline', label: 'Signal lost', value: t.offlineMs, color: SLATE },
   ].filter((s) => s.value > 0);
   const observedMs = t.runningMs + t.downtimeMs;
 

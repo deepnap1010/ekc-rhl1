@@ -1017,7 +1017,7 @@ function OperatorMachineBoard({ t, windowMs, from, to, fullDay, wide = false }: 
       {from && to && (
         <div className="mt-4">
           <div className="label mb-1.5">Hourly production</div>
-          <HourlyBars code={t.row.code} from={from} to={to} perHr={rate} height={110} fullDay={fullDay} />
+          <HourlyBars code={t.row.code} from={from} to={to} perHr={rate} height={136} fullDay={fullDay} />
         </div>
       )}
 
@@ -1190,6 +1190,11 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
   }, [data, fromMs, renderEnd, nowMin, perHr, winFrom, winTo, breaks]);
   const met = (b: { made: number; goal: number | null }): boolean => b.goal != null && b.made >= b.goal;
   const max = Math.max(...bars.map((b) => b.made), perHr || 0, 1);
+  // The count over each bar is read from across the floor like the rest of
+  // the board, so the tallest bar leaves it a strip: the bars and the target
+  // line are scaled into the height under it, and a count never sits on the line.
+  const LABEL_PX = 26;
+  const plot = Math.max(40, height - LABEL_PX);
 
   const hh2 = (ms: number) => String(new Date(ms).getHours()).padStart(2, '0');
   const slot = (ms: number) => `${hh2(ms)}-${hh2(ms + HOUR)}`;
@@ -1203,7 +1208,7 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
         {perHr != null && (
           <div
             className="absolute left-0 right-0 border-t-2 border-dashed border-stopped/60 z-10 pointer-events-none"
-            style={{ top: `${(1 - perHr / max) * height}px` }}
+            style={{ top: `${LABEL_PX + (1 - perHr / max) * plot}px` }}
             title={`Target ${fmtTarget(perHr)}/hr`}
           />
         )}
@@ -1211,11 +1216,13 @@ function HourlyBars({ code, from, to, perHr, height = 160, fullDay = false }: {
           {bars.map((b) => (
             <div key={b.t} className="flex-1 min-w-[28px] flex flex-col items-center justify-end h-full"
               title={`${slot(b.t)} · ${b.future ? 'upcoming' : `${b.made} pcs${b.running ? ' so far' : ''}${b.goal != null ? ` · ${fmtTarget(b.goal)} due${b.running ? ' by now' : ''}` : ''}`}`}>
-              {b.made > 0 && <span className="data text-[10px] font-bold mb-0.5" style={{ color: met(b) ? TEAL : AMBER }}>{b.made}</span>}
+              {/* Over the target line, never under it: an hour just short of
+                  target puts its count right where the line runs. */}
+              {b.made > 0 && <span className="relative z-20 data text-lg font-bold leading-none mb-1 px-1 py-px rounded bg-surface/85 whitespace-nowrap" style={{ color: met(b) ? TEAL : AMBER }}>{b.made}</span>}
               <div
                 className="w-full rounded-t"
                 style={{
-                  height: `${(b.made / max) * 100}%`,
+                  height: `${(b.made / max) * plot}px`,
                   background: met(b) ? TEAL : AMBER,
                   // The hour still running is not a verdict yet — drawn lighter.
                   opacity: b.running ? 0.55 : 1,
