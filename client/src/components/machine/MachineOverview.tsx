@@ -343,6 +343,13 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
           </div>
           <div className="text-[10px] text-steel/60 mt-3">
             {fmtNum(actRow?.readings || 0)} readings{win ? ` · ${fmtTime(win.from)} → ${fmtTime(win.to)}` : ''}
+            {/* Signal lost — minutes with no data from the machine — is the
+                network's or the collector's time, not the machine's, and read as
+                the machine's wherever it was shown big. It is only here, in the
+                small print, for whoever looks for it. */}
+            {actRow && actRow.offlineMs >= 60_000 && (
+              <span title="Minutes with no data from the machine — the network or its collector, not the machine itself"> · signal lost {fmtDuration(actRow.offlineMs)}</span>
+            )}
           </div>
         </Panel>
       </div>
