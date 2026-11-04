@@ -294,6 +294,15 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
   const priorTotal = (code: string, uptoDay: string): number =>
     (prior?.rows || []).filter((r) => r.code.toUpperCase() === code.toUpperCase() && r.day <= uptoDay).reduce((n, r) => n + r.total, 0);
   const sameMonth = (d: string): boolean => !!reportDay && d.slice(0, 7) === reportDay.slice(0, 7);
+  // The days of this month BEFORE the window. MONTHLY CUM. has always counted
+  // them and the day grid has always left them blank, so the cumulative column
+  // was the only place they appeared: PC05's row read 58 and 55 against a cum
+  // of 166, and nothing on the page said where the other 53 came from. They
+  // are printed now — white, not the yellow of the window's own days — and no
+  // figure that reads the window counts them.
+  const mdAny = (code: string, day: string): MachineDay | undefined =>
+    md(code, day) ?? prior?.byMachineDay.get(`${code.toUpperCase()}|${day}`);
+  const carriedIn = new Set((prior?.days || []).filter((d) => sameMonth(d) && !inWindow.has(d)));
   const monthDays = touched.filter((d) => sameMonth(d) && d <= (reportDay || ''));
   const machineTotal = (code: string, dayList: string[]): number => dayList.reduce((n, d) => n + (md(code, d)?.total || 0), 0);
   const machineAssigned = (code: string, dayList: string[]): { pieces: number; target: number } =>
@@ -402,15 +411,23 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
   // day÷3 — and the averages over the visible working-days divisor.
   const matrixOk = days.length <= MAX_MATRIX_DAYS;
   const dayCols: Column[] = days.map((d) => ({ header: dayCell(d), key: dayKey(d), fmt: 'int', style: 'input', width: 7 }));
-  const firstDay = dayKey(days[0] || ''), lastDay = dayKey(days[days.length - 1] || '');
-  // A day outside the window, or one the machine was never heard on, is blank — not 0.
-  // A day outside the window, or one the machine was never heard on, is blank — not 0;
-  // a day a correction speaks for is a figure, however dark the machine was.
+  // TOTAL and DAYS WITH OUTPUT sum from the window's FIRST day, not the grid's:
+  // the carried-in columns sit to their left and must not join them. (They can
+  // only ever sit there: a window that starts before the month's first
+  // production day has no earlier day to carry in — see carriedIn.)
+  const firstDay = dayKey(touched[0] || days[0] || ''), lastDay = dayKey(days[days.length - 1] || '');
+  // A day the machine was never heard on is blank — not 0; a day a correction
+  // speaks for is a figure, however dark the machine was. A day outside the
+  // window is blank too, unless it is one this month carried in (gridCell).
   const heard = (x: MachineDay | undefined): boolean => (x?.readings || 0) > 0 || !!x?.corrected;
   const dayVal = (x: MachineDay | undefined, d: string, v: number): number | null => (inWindow.has(d) && heard(x) ? v : null);
+  /** A day column: the window's own days as counted figures, the days carried
+   *  in from earlier this month plain and white beside them. */
+  const gridCell = (x: MachineDay | undefined, d: string, v: number): Cell =>
+    (!heard(x) ? null : inWindow.has(d) ? v : carriedIn.has(d) ? { v, style: 'calc' } : null);
   const matrixBlockHead = {
     title: `PRODUCTION ANALYSIS - MONTH ${period}`,
-    note: `Pieces per production day (${shifts[0]?.start || '07:00'} → ${shifts[0]?.start || '07:00'} next day, plant clock) · ${scopeText} · yellow = counted pieces, white = formulas · ACHIEVE % = pieces made inside assigned hours ÷ required · working days: ${workingDays} (the AVG divisor) · blank = outside the window, or no signal from the machine that day`,
+    note: `Pieces per production day (${shifts[0]?.start || '07:00'} → ${shifts[0]?.start || '07:00'} next day, plant clock) · ${scopeText} · yellow = counted pieces in the selected window, white = a formula, or a day earlier this month carried into MONTHLY CUM. on the day pages but never into this sheet's TOTAL · ACHIEVE % = pieces made inside assigned hours ÷ required · working days: ${workingDays} (the AVG divisor) · blank = still to come, or no signal from the machine that day`,
     bands: [{ label: 'M/C SECTION', span: 1 }, { label: 'DAILY PRODUCTION (pieces)', span: Math.max(1, days.length) }, { label: 'MONTH', span: 5 }, { label: 'PER SHIFT', span: shiftCols.length }, { label: 'AVERAGE', span: 2 }],
   };
   const matrixCols: Column[] = [
@@ -451,9 +468,11 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
       const s = zero();
       const row: Row = { name: nameOf(r.code) };
       for (const d of days) {
-        const x = md(r.code, d);
-        const v = dayVal(x, d, x?.total || 0);
-        row[dayKey(d)] = v; s.byDay[d] = v || 0; s.total += v || 0; if ((v || 0) > 0) s.wd += 1;
+        const x = mdAny(r.code, d);
+        const v = heard(x) ? x?.total || 0 : 0;
+        row[dayKey(d)] = gridCell(x, d, v);
+        if (!inWindow.has(d)) { if (carriedIn.has(d)) s.byDay[d] = v; continue; }   // shown, never summed into the window
+        s.byDay[d] = v; s.total += v; if (v > 0) s.wd += 1;
         s.target += x?.targetTotal || 0; s.assigned += x?.assignedTotal || 0;
         shiftCols.forEach((sh, si) => { s.sh[si] += x?.pieces[sh] || 0; });
       }
@@ -464,7 +483,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
     }
     const end = rowOf(i - 1);
     const sub: Row = { __style: 'total', name: `${sec} — TOTAL`, ...perRow(secS) };
-    for (const d of days) sub[dayKey(d)] = inWindow.has(d) ? fv(rangeFormula(dayKey(d), start, end), secS.byDay[d]) : null;
+    for (const d of days) sub[dayKey(d)] = inWindow.has(d) || carriedIn.has(d) ? fv(rangeFormula(dayKey(d), start, end), secS.byDay[d]) : null;
     sub.total = fv(rangeFormula('total', start, end), secS.total);
     sub.target = fv(rangeFormula('target', start, end), Math.round(secS.target));
     sub.assigned = fv(rangeFormula('assigned', start, end), secS.assigned);
@@ -473,7 +492,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
     matrixRows.push(sub); i += 1; addTo(grandS, secS);
   }
   const grand: Row = { __style: 'grand', name: 'TOTAL', ...perRow(grandS) };
-  for (const d of days) grand[dayKey(d)] = inWindow.has(d) ? fv(sumFormula(dayKey(d), sectionTotalRows), grandS.byDay[d]) : null;
+  for (const d of days) grand[dayKey(d)] = inWindow.has(d) || carriedIn.has(d) ? fv(sumFormula(dayKey(d), sectionTotalRows), grandS.byDay[d]) : null;
   grand.total = fv(sumFormula('total', sectionTotalRows), grandS.total);
   grand.target = fv(sumFormula('target', sectionTotalRows), Math.round(grandS.target));
   grand.assigned = fv(sumFormula('assigned', sectionTotalRows), grandS.assigned);
@@ -491,9 +510,11 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
       const s = zero();
       const row: Row = { name: nameOf(r.code), shift: sh };
       for (const d of days) {
-        const x = md(r.code, d);
-        const v = dayVal(x, d, x?.pieces[sh] || 0);
-        row[dayKey(d)] = v; s.byDay[d] = v || 0; s.total += v || 0;
+        const x = mdAny(r.code, d);
+        const v = heard(x) ? x?.pieces[sh] || 0 : 0;
+        row[dayKey(d)] = gridCell(x, d, v);
+        if (!inWindow.has(d)) { if (carriedIn.has(d)) s.byDay[d] = v; continue; }
+        s.byDay[d] = v; s.total += v;
         s.target += x?.target[sh] || 0; s.assigned += x?.assignedPieces[sh] || 0;
       }
       row.total = fv(`SUM({col:${firstDay}}{row}:{col:${lastDay}}{row})`, s.total);
@@ -508,7 +529,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
     const s = shiftSums.get(sh)!;
     const row: Row = { __style: 'grand', name: `ALL MACHINES — ${shiftHeader(sh, si)}`, shift: sh };
     const sumif = (col: string, v: Scalar): Cell => fv(`SUMIF({col:shift}{first}:{col:shift}{last},"${sh.replace(/"/g, '""')}",{col:${col}}{first}:{col:${col}}{last})`, v);
-    for (const d of days) row[dayKey(d)] = inWindow.has(d) ? sumif(dayKey(d), s.byDay[d]) : null;
+    for (const d of days) row[dayKey(d)] = inWindow.has(d) || carriedIn.has(d) ? sumif(dayKey(d), s.byDay[d]) : null;
     row.total = sumif('total', s.total); row.target = sumif('target', Math.round(s.target)); row.assigned = sumif('assigned', s.assigned);
     row.achieve = fv('IF({col:target}{row}>0,{col:assigned}{row}/{col:target}{row},"")', s.target > 0 ? s.assigned / s.target : '');
     row.avg = fv(`{col:total}{row}/${avgDivisor}`, s.total / avgDivisor);
@@ -554,7 +575,12 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
       cycle: x?.dia?.cycleSec ?? null,
       norms: has ? norm(x) : null,
       total: has ? fv(`SUM({col:s0}{row}:{col:s${shiftCols.length - 1}}{row})`, x?.total || 0) : null,
-      cum: has ? cum : null,
+      // What MONTHLY CUM. adds to TOTAL: the month's pieces up to the day
+      // before this row. Unprinted, it was the one figure on the page a
+      // reader could not check — and the cum is its sum now, so clicking the
+      // cell shows the addition instead of a number from nowhere.
+      before: has && cum != null ? cum - (x?.total || 0) : null,
+      cum: has && cum != null ? fv('{col:before}{row}+{col:total}{row}', cum) : null,
       shiftsN: x ? (shiftNames.filter((s) => (x.target[s] || 0) > 0).length || shiftNames.filter((s) => (x.pieces[s] || 0) > 0).length) || null : null,
       target: x && x.targetTotal > 0 ? Math.round(x.targetTotal) : null,
       assigned: x && x.targetTotal > 0 ? x.assignedTotal : null,
@@ -571,19 +597,20 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
     { header: 'M/C SECTION', key: 'name', width: 22 }, { header: 'SIZE (dia)', key: 'size', width: 24 },
     { header: 'CYCLE (s)', key: 'cycle', fmt: 'int', width: 8 }, { header: 'NORMS / SHIFT', key: 'norms', fmt: 'int', width: 9 },
     ...shiftCols.map((s, si) => ({ header: shiftHeader(s, si), key: `s${si}`, fmt: 'int' as Fmt, width: 9 })),
-    { header: 'TOTAL', key: 'total', fmt: 'int', style: 'bold', width: 9 }, { header: 'MONTHLY CUM.', key: 'cum', fmt: 'int', width: 10 }, { header: 'SHIFTS', key: 'shiftsN', fmt: 'int', width: 7 },
+    { header: 'TOTAL', key: 'total', fmt: 'int', style: 'bold', width: 9 }, { header: 'EARLIER THIS MONTH', key: 'before', fmt: 'int', width: 10 },
+    { header: 'MONTHLY CUM.', key: 'cum', fmt: 'int', width: 10 }, { header: 'SHIFTS', key: 'shiftsN', fmt: 'int', width: 7 },
     { header: 'DAY NORM', key: 'target', fmt: 'int', width: 9 }, { header: 'PCS IN ASSIGNED HRS', key: 'assigned', fmt: 'int', width: 10 }, { header: 'NORMS vs ACTUAL (%)', key: 'pctNorm', fmt: 'pct0', width: 10 },
     ...reasonColumns,
     { header: 'TOTAL DELAY HRS.', key: 'delay', fmt: 'dec1', style: 'delay', width: 10 }, { header: 'SIGNAL LOST HRS.', key: 'offH', fmt: 'dec1', width: 10 },
     { header: 'REASONS', key: 'reasons', width: 40 }, { header: "TODAY'S STATUS", key: 'status', width: 12 },
   ];
   const pdwipBands = (lead: number): Block['bands'] => [
-    { label: '', span: lead }, { label: 'SIZE', span: 1 }, { label: 'NORMS', span: 2 }, { label: 'PRODUCTION (pieces)', span: shiftCols.length + 3 }, { label: 'NORMS vs ACTUAL', span: 3 },
+    { label: '', span: lead }, { label: 'SIZE', span: 1 }, { label: 'NORMS', span: 2 }, { label: 'PRODUCTION (pieces)', span: shiftCols.length + 4 }, { label: 'NORMS vs ACTUAL', span: 3 },
     { label: 'IDLE HRS. BY REASON', span: reasonCols.length, style: 'delay' }, { label: 'DELAY', span: 2 }, { label: '', span: 2 },
   ];
   const cumTo = (code: string, day: string): number => priorTotal(code, day) + touched.filter((d) => sameMonth(d) && d <= day).reduce((n, d) => n + (md(code, d)?.total || 0), 0);
   const reportRows: Row[] = reportDay ? rows.map((r) => pdwipRow(r, reportDay, cumTo(r.code, reportDay), true)) : [];
-  const sumCols = [...shiftCols.map((_, si) => `s${si}`), 'total', 'cum', 'target', 'assigned', ...reasonCols.map((_, ri) => reasonKey(ri)), 'delay', 'offH'];
+  const sumCols = [...shiftCols.map((_, si) => `s${si}`), 'total', 'before', 'cum', 'target', 'assigned', ...reasonCols.map((_, ri) => reasonKey(ri)), 'delay', 'offH'];
   const num = (c: Cell): number => (typeof c === 'number' ? c : c && typeof c === 'object' && !(c instanceof Date) && typeof c.v === 'number' ? c.v : 0);
   const totalRow = (label: string, of: Row[]): Row => {
     const t: Row = { __style: 'grand', name: label };
@@ -608,7 +635,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
   const statTotal = (c: string): number => sectionStats.reduce((n, r) => n + num(r[c]), 0);
   const report: Sheet = { name: 'PDWIP', landscape: true, blocks: reportDay ? [
     { title: `PRODUCTION REPORT — DATE ${dayLabel(reportDay)}`,
-      note: `The production day ${dayLabel(reportDay)} (${shifts[0]?.start || '07:00'} → ${shifts[0]?.start || '07:00'} next day) · ${scopeText}. NORMS/SHIFT = pieces a full shift makes at the assigned dia's cycle time; DAY NORM = the day's target for the hours a dia was assigned (planned breaks excluded) and NORMS vs ACTUAL compares the pieces made in those hours with it; blank = no dia assigned or no signal. Idle hours are the recorded idle/stopped spans while the machine was heard, filed under the operator's reason ("${NONE}" includes spans shorter than the ${askCfg.askAfterMin}-minute ask threshold); signal lost is kept apart. MONTHLY CUM. runs from the 1st of the month.`,
+      note: `The production day ${dayLabel(reportDay)} (${shifts[0]?.start || '07:00'} → ${shifts[0]?.start || '07:00'} next day) · ${scopeText}. NORMS/SHIFT = pieces a full shift makes at the assigned dia's cycle time; DAY NORM = the day's target for the hours a dia was assigned (planned breaks excluded) and NORMS vs ACTUAL compares the pieces made in those hours with it; blank = no dia assigned or no signal. Idle hours are the recorded idle/stopped spans while the machine was heard, filed under the operator's reason ("${NONE}" includes spans shorter than the ${askCfg.askAfterMin}-minute ask threshold); signal lost is kept apart. MONTHLY CUM. runs from the 1st of the month and is EARLIER THIS MONTH (the 1st up to the day before) + TOTAL; PRODUCTION ANALYSIS prints those earlier days in white.`,
       bands: pdwipBands(1), columns: pdwipColumns, rows: [...reportRows, totalRow('TOTAL', reportRows)], freezeCols: 1 },
     { title: `CURRENT MONTH'S CUMULATIVE STATISTICS — ${monthOf(reportDay)} to ${dayLabel(reportDay)}`,
       note: `AVG / DAY = TOTAL CUM. ÷ ${monthWorkingDays} working day${monthWorkingDays === 1 ? '' : 's'} (days this month with any output); WORKING DAYS per section is information only.`,
