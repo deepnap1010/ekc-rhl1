@@ -311,8 +311,15 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
   const norm = (x: MachineDay | undefined): number | null => (x?.dia?.cycleSec ? Math.round(Math.max(...shifts.map(shiftLengthSec)) / x.dia.cycleSec) : null);
 
   // ── per-machine rollups from the span and target logs ─────────────────────
+  // Signal lost is not downtime anywhere else in this workbook — its minutes
+  // are kept out of idle + stopped and printed in a column of their own — so
+  // it is not a downtime EVENT either. Counting it was pulling MTBF and MTTR
+  // down on exactly the machines with a flaky collector: one more span in the
+  // divisor, and not one minute of it in the time being divided. The span log
+  // on the 'Downtime events' sheet still lists them, under Type.
+  const downSpans = spansAll.filter((s) => s.type !== 'offline');
   const eventsBy = new Map<string, number>();
-  for (const s of spansAll) eventsBy.set(s.machineId.toUpperCase(), (eventsBy.get(s.machineId.toUpperCase()) || 0) + 1);
+  for (const s of downSpans) eventsBy.set(s.machineId.toUpperCase(), (eventsBy.get(s.machineId.toUpperCase()) || 0) + 1);
   type TargetSum = { target: number; targetAdj: number; actual: number; assignedSec: number; downtimeSec: number; breakSec: number; operators: Set<string> };
   const tgtByMachine = new Map<string, TargetSum>();
   const tgtByMachineDia = new Map<string, TargetSum & { machineRef: string; dia: string; dims: string; stage: string; processingSec: number }>();
@@ -336,7 +343,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
   const production = rows.reduce((n, r) => n + machineTotal(r.code, touched), 0);
   const counters = rows.filter((r) => r.production != null).length;
   const availability = pct(runningMs, windowMs * rows.length);
-  const openNow = spansAll.filter((s) => !s.endedAt).length;
+  const openNow = downSpans.filter((s) => !s.endedAt).length;
   const noReasonMs = plant.rows.reduce((n, r) => n + (r.downtimeByReason[''] || 0), 0);
   const reasonedMs = plant.rows.reduce((n, r) => n + r.downtimeMs.idle + r.downtimeMs.stopped, 0);
   const tgtAll = [...tgtByMachine.values()].reduce((a, s) => ({ target: a.target + s.target, actual: a.actual + s.actual }), { target: 0, actual: 0 });
@@ -381,7 +388,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
         kv('Availability (runtime ÷ window)', availability, 'pct0'),
         kv('Runtime', runningMs, 'dur'), kv('Idle', idleMs, 'dur'), kv('Stopped', stoppedMs, 'dur'), kv('Downtime (idle + stopped)', idleMs + stoppedMs, 'dur'),
         kv('Signal lost (no data — not downtime)', offlineMs, 'dur'),
-        kv('Downtime events in window', spansAll.length, 'int'), kv('Downtime open now', openNow, 'int'),
+        kv('Downtime events in window (idle + stopped)', downSpans.length, 'int'), kv('Downtime open now', openNow, 'int'),
         kv(`Downtime with no reason recorded (includes spans under the ${askCfg.askAfterMin}-min ask threshold)`, pct(noReasonMs, reasonedMs), 'pct0'),
       ] },
     { title: 'BY SECTION', note: `PRODUCTION and TARGET from the plant grid; ACHIEVE % = pieces made inside assigned hours ÷ target; AVG / DAY = production ÷ ${workingDays} working day${workingDays === 1 ? '' : 's'}; DELAY HRS. from the downtime log (idle + stopped, while the machine was heard); runtime and availability from the activity engine.`,
@@ -792,7 +799,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
 
   // ═══ 10 · Downtime events ═══════════════════════════════════════════════
   const downtimeSheet: Sheet = { name: 'Downtime events', blocks: [{
-    note: `The span log as recorded (not clipped to the machine's presence — the review sheets are)${spans.length >= MAX_ROWS ? `; the first ${MAX_ROWS} spans of the window — narrow the window for the rest` : ''}.`,
+    note: `The span log as recorded, signal-lost spans included (see Type; they are listed, never counted as downtime events) — not clipped to the machine's presence, as the review sheets are${spans.length >= MAX_ROWS ? `; the first ${MAX_ROWS} spans of the window — narrow the window for the rest` : ''}.`,
     columns: [
       { header: 'Machine', key: 'name', width: 18 }, { header: 'Type', key: 'type', width: 10 }, { header: 'Started', key: 'startedAt', fmt: 'datetime', width: 18 }, { header: 'Ended', key: 'endedAt', fmt: 'datetime', width: 18 },
       { header: 'Duration', key: 'duration', fmt: 'dur' }, { header: 'In window', key: 'inWindow', fmt: 'dur' }, { header: 'Shift', key: 'shift', width: 10 },
@@ -832,7 +839,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
 
   // ═══ 12 · Reliability ═══════════════════════════════════════════════════
   const reliabilitySheet: Sheet = { name: 'Reliability', blocks: [{
-    note: 'Availability = runtime ÷ window. MTBF = runtime ÷ downtime events; MTTR = downtime ÷ events. Time from the activity engine; events are the recorded idle/stopped/signal-lost spans overlapping the window.',
+    note: 'Availability = runtime ÷ window. MTBF = runtime ÷ downtime events; MTTR = downtime ÷ events. Time from the activity engine; events are the recorded idle and stopped spans overlapping the window. Signal lost is the network or the collector, not the machine: it is neither downtime nor an event, and has its own column.',
     columns: [
       { header: 'Machine', key: 'name', width: 18 }, { header: 'Availability', key: 'availability', fmt: 'pct0' }, { header: 'Runtime', key: 'runningMs', fmt: 'dur' },
       { header: 'Downtime', key: 'downMs', fmt: 'dur' }, { header: 'Signal lost', key: 'offlineMs', fmt: 'dur' }, { header: 'Events', key: 'events', fmt: 'int' }, { header: 'MTBF', key: 'mtbf', fmt: 'dur' }, { header: 'MTTR', key: 'mttr', fmt: 'dur' },
@@ -883,7 +890,7 @@ export async function buildWorkbook(q: WorkbookRequest): Promise<{ book: Buffer;
     target: targets ? Math.round(tgtAll.target) : null,
     achievement: targets ? pct(tgtAll.actual, tgtAll.target) : null,
     availability, runningMs, idleMs, stoppedMs, offlineMs,
-    downtimeEvents: spansAll.length, openNow,
+    downtimeEvents: downSpans.length, openNow,
     sections: sectionRows.map((r) => ({
       name: String(r.family), machines: numOrNull(r.machines) ?? 0, production: numOrNull(r.production),
       target: numOrNull(r.target), achievement: numOrNull(r.achieve), availability: numOrNull(r.availability),
