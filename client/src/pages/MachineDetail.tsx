@@ -14,7 +14,7 @@ import MachineOverview from '../components/machine/MachineOverview';
 import ParametersModal from '../components/machine/MachineParameters';
 import MachineTimeline from '../components/machine/MachineTimeline';
 import { fmtNum, fmtTime, fmtDuration, prettyType } from '../lib/format';
-import { effectiveStatus } from '../lib/machineStatus';
+import { effectiveStatus, collectorNote } from '../lib/machineStatus';
 import { useMachineLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine } from '../types/api';
@@ -78,6 +78,10 @@ export default function MachineDetail() {
     status: live?.status || machine.status,
     lastReadingAt: lastSeenAt ? new Date(lastSeenAt).toISOString() : null,
   });
+  // Why the collector has nothing, in its own words — the same sentence the
+  // Machines card shows, so the two surfaces cannot explain one machine
+  // differently.
+  const note = collectorNote(live?.currentParameters || machine.liveParameters || machine.latestData);
   const title = cfg.displayName || machine.name || id;
   const typeLabel = machine.type && machine.type !== 'UNKNOWN' ? prettyType(machine.type) : 'Unclassified';
 
@@ -102,7 +106,7 @@ export default function MachineDetail() {
           <div className="flex items-center gap-3">
             <DiaChip code={String(id)} />
             <FreshnessPill lastSeenAt={lastSeenAt} />
-            <StatusPill status={status} />
+            <StatusPill status={status} title={note.text || undefined} />
           </div>
         </div>
       </div>
@@ -133,7 +137,7 @@ export default function MachineDetail() {
         {tab === 'overview'   && <MachineOverview key={`ov-${id}`} machine={machine} status={status} lastSeenAt={lastSeenAt} onTab={setTab} />}
         {tab === 'history'   && <MachineTimeline key={`tl-${id}`} machine={machine} code={String(id)} />}
         {tab === 'downtime'  && <DowntimeTab key={`dt-${id}`} code={id} />}
-        {tab === 'specs'     && <SpecsTab machine={machine} status={status} lastSeenAt={lastSeenAt} />}
+        {tab === 'specs'     && <SpecsTab machine={machine} status={status} statusNote={note.text} lastSeenAt={lastSeenAt} />}
         {tab === 'configure' && <ConfigurePanel key={`cf-${id}`} machine={machine} />}
       </div>
 
@@ -263,7 +267,7 @@ function DowntimeTab({ code }: { code?: string }) {
 }
 
 // ─── Specs ───────────────────────────────────────────────────────────────────
-function SpecsTab({ machine, status, lastSeenAt }: { machine: Machine; status?: string; lastSeenAt?: string | Date | null }) {
+function SpecsTab({ machine, status, statusNote, lastSeenAt }: { machine: Machine; status?: string; statusNote?: string; lastSeenAt?: string | Date | null }) {
   const id = machine.machineId || machine.id;
   return (
     <div className="max-w-3xl space-y-5">
@@ -273,7 +277,7 @@ function SpecsTab({ machine, status, lastSeenAt }: { machine: Machine; status?: 
           <InfoRow label="Machine ID" value={String(id || '—').toUpperCase()} mono />
           <InfoRow label="Name" value={machine.name || '—'} />
           <InfoRow label="Type" value={machine.type && machine.type !== 'UNKNOWN' ? prettyType(machine.type) : 'Unclassified'} />
-          <InfoRow label="Status" value={<StatusPill status={status} />} />
+          <InfoRow label="Status" value={<StatusPill status={status} title={statusNote || undefined} />} />
           <InfoRow label="Active" value={machine.isActive ? 'Yes' : 'No'} />
           <InfoRow label="Freshness" value={<FreshnessPill lastSeenAt={lastSeenAt} />} />
           <InfoRow label="Registered" value={fmtTime(machine.registeredAt)} />

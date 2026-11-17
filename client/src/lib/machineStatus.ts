@@ -57,6 +57,38 @@ export function liveStatus(
   );
 }
 
+/** What the COLLECTOR says about its own link to the machine, in its own words.
+ *  SPG07 and SPG08 run a collector that posts `state_reason` and `master`
+ *  beside the status — e.g. `state_reason: 'PLC disconnected (no frames)'`
+ *  with `master: 'silent'` — and we threw both away.
+ *
+ *  That cost us a real, reported contradiction on 2026-11-17: SPG07's PLC had
+ *  been unreachable for 1 h 45 m while its `status` field kept flipping, 1,651
+ *  times in 75 minutes — one change every 2.7 seconds. Two screens opened
+ *  seconds apart each faithfully showed the latest reading and so honestly
+ *  disagreed about the same machine, and both of them printed a bare
+ *  "Stopped", which reads as THE MACHINE having stopped. It had not. The link
+ *  to it was dead, and the collector said so in every one of those readings.
+ *
+ *  So we quote it. What this does NOT do is rewrite the status word: the
+ *  reports still count that time exactly as the collector reported it, and a
+ *  caption that quietly disagreed with the reliability sheet would only move
+ *  the contradiction somewhere else instead of answering it. */
+export interface CollectorNote {
+  /** The collector's sentence, quoted — '' when it posts none. */
+  text: string;
+  /** Its unambiguous "I cannot see the machine" flag. Unknown values are not
+   *  it: anything other than a silent master leaves this false. */
+  linkDown: boolean;
+}
+
+export function collectorNote(params?: Record<string, unknown> | null): CollectorNote {
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const reason = str(params?.state_reason);
+  const linkDown = str(params?.master).toLowerCase() === 'silent';
+  return { text: reason || (linkDown ? 'PLC silent — no frames from the machine' : ''), linkDown };
+}
+
 export interface StatusTally {
   total: number;
   running: number;

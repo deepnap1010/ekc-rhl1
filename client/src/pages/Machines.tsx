@@ -18,7 +18,7 @@ import DiaTraceModal from '../components/machine/DiaTraceModal';
 import CorrectionModal from '../components/machine/CorrectionModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
-import { statusCounts, liveStatus, isStale } from '../lib/machineStatus';
+import { statusCounts, liveStatus, isStale, collectorNote } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -495,6 +495,8 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   const own       = flattenParams(Object.keys(cp).length ? cp : (machine.latestData || {}));
   const params    = own;
   const status    = liveStatus(machine, liveTick);
+  // The collector's sentence about its own link to the machine, when it posts one.
+  const note      = collectorNote(params);
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
 
   // ── The card answers for the shift on the floor, dark or not ─────────────
@@ -677,8 +679,13 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
           {subtitle && <div className="text-[11px] text-steel mt-0.5 truncate">{subtitle}</div>}
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <StatusPill status={status} />
+          {/* The collector's own words for why it has nothing, when it sends
+              them — otherwise a flapping "Stopped" is all the floor sees. */}
+          <StatusPill status={status} title={note.text || undefined} />
           <Freshness lastReadingAt={lastSeen} />
+          {note.linkDown && (
+            <div className="text-[10px] text-idle text-right max-w-[140px] leading-tight" title={note.text}>{note.text}</div>
+          )}
         </div>
       </div>
 
