@@ -205,7 +205,7 @@ export default function Dashboard() {
             assignment engine: group cards → machines → full operator board,
             with its own window filter (per hour / per shift / today…). */}
         <ProductionVsTarget rows={rows} windowMs={windowMs} windowLabel={windowLabel}
-          from={fromISO} to={toISO} statusNow={statusNow} onMachineOpen={onMachineOpen} />
+          from={fromISO} to={toISO} pagePreset={f.preset} statusNow={statusNow} onMachineOpen={onMachineOpen} />
 
         {/* ── Fleet totals for the same window, under the groups they sum.
             Hidden while ONE machine's board is open above: a fleet donut

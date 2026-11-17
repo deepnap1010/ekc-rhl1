@@ -32,7 +32,7 @@ import { windowNetMs, targetUnits, fmtTarget, fmtProcessing, hourlyRate, secToMi
 import { processCompare, groupMachines } from '../lib/machineOrder';
 import { isFurnaceRef } from '../lib/temperature';
 import { useMachineName, useMachineTitle } from '../lib/machineName';
-import { resolveRange, shiftDayOn, windowIsLive } from '../store/filters';
+import { resolveRange, shiftDayOn, windowIsLive, type DatePreset } from '../store/filters';
 import { fmtNum, fmtDuration, statusStyle } from '../lib/format';
 import type { MachineActivityRow, MachineAssignment } from '../types/api';
 
@@ -55,6 +55,10 @@ interface Props {
   windowLabel: string;
   from?: string;
   to?: string;
+  /** The PAGE filter's preset. The board's own per-shift window lands on the
+   *  day this names, so "Shift A" here means the same Shift A the panels
+   *  around it are showing. */
+  pagePreset?: DatePreset;
   /** Fires with true while ONE machine's full board is on screen — the page
    *  hides its fleet-wide panels then, so a fleet donut cannot sit under a
    *  single machine's numbers looking like part of them. */
@@ -115,7 +119,7 @@ const dotColor = (status: string): string =>
 type WinMode = '' | 'hour' | 'shift' | 'today' | 'yesterday';
 const hourLabel = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`;
 
-export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to, statusNow, onMachineOpen }: Props): JSX.Element | null {
+export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, to, statusNow, pagePreset, onMachineOpen }: Props): JSX.Element | null {
   const { shifts, breaks } = useAppConfig();
   const mName = useMachineName();
   const mTitle = useMachineTitle();
@@ -150,6 +154,17 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   const [hFrom, setHFrom] = useState(nowHour);      // per-hour: from which hour…
   const [hTo, setHTo] = useState(nowHour + 1);      // …to which hour (today)
 
+  // The DAY a per-shift selection here lands on. The PAGE filter owns it: with
+  // the page on Yesterday, "Shift A" on this board means yesterday's Shift A.
+  // It was hardcoded to today, so a board under a Yesterday page quietly
+  // answered for a different day than everything around it — PC08 read 6 pcs
+  // beside a production-history popup listing 10, and the only hint was this
+  // panel's own subtitle. A multi-day page window (This Week, This Month) has
+  // no single day a shift could mean, so those keep the running one, and the
+  // subtitle keeps saying which day it is either way.
+  const shiftDay: 'today' | 'yesterday' = pagePreset === 'yesterday' ? 'yesterday' : 'today';
+  const shiftDayLabel = shiftDay === 'yesterday' ? 'Yesterday' : 'Today';
+
   // "Today" must keep counting: without a clock input the memo below would
   // freeze the window at selection time and the 30s poll would re-read the
   // same stale range forever. A minute-stamp recomputes it (and rolls the
@@ -168,13 +183,13 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
     }
     if (mode === 'shift') {
       if (!shiftName) return null;
-      return resolveRange({ preset: 'today', shiftName, customFrom: '', customTo: '' }, shifts);
+      return resolveRange({ preset: shiftDay, shiftName, customFrom: '', customTo: '' }, shifts);
     }
     // Per hour — a chosen slice of today; 24 means midnight at the end of it.
     if (hTo <= hFrom) return null;
     const base = new Date(); base.setHours(0, 0, 0, 0);
     return { from: new Date(base.getTime() + hFrom * 3600_000), to: new Date(base.getTime() + hTo * 3600_000) };
-  }, [mode, shiftName, hFrom, hTo, shifts, minuteStamp]);
+  }, [mode, shiftName, shiftDay, hFrom, hTo, shifts, minuteStamp]);
 
   const fromISO = ownRange?.from.toISOString();
   const toISO = ownRange?.to.toISOString();
@@ -194,7 +209,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
   const effFrom = own ? fromISO : from;
   const effTo = own ? toISO : to;
   const effLabel = mode === 'hour' ? `${hourLabel(hFrom)} → ${hourLabel(hTo)} · Today`
-    : mode === 'shift' ? (shiftName ? `${shiftName} · Today` : 'Pick a shift')
+    : mode === 'shift' ? (shiftName ? `${shiftName} · ${shiftDayLabel}` : 'Pick a shift')
     : mode === 'today' ? 'Today'
     : mode === 'yesterday' ? 'Yesterday'
     : windowLabel;
@@ -387,7 +402,7 @@ export default function ProductionVsTarget({ rows, windowMs, windowLabel, from, 
             <option value="yesterday">Yesterday</option>
           </select>
           {mode === 'shift' && (
-            <select value={shiftName} onChange={(e) => setShiftName(e.target.value)} className={selCls(!!shiftName)} title="Which shift (today)">
+            <select value={shiftName} onChange={(e) => setShiftName(e.target.value)} className={selCls(!!shiftName)} title={`Which shift (${shiftDayLabel.toLowerCase()})`}>
               <option value="">Pick a shift…</option>
               {shifts.map((sh) => <option key={sh.name} value={sh.name}>{sh.name} · {sh.start}–{sh.end}</option>)}
             </select>
