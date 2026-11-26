@@ -53,6 +53,17 @@ export function sessionStateAt(sessions: StateSession[], t: number): string | nu
   return null;
 }
 
+/** True when the collector is telling us it cannot reach the machine at all.
+ *  SPG07 and SPG08 post `master: 'silent'` with a `state_reason` naming the
+ *  fault ('PLC disconnected (no frames)'). Only an explicit 'silent' counts:
+ *  any other value, or none at all, leaves the reading's own status alone, so
+ *  a collector we have never met cannot be reclassified by accident. */
+export function linkIsDown(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const m = (data as Record<string, unknown>).master;
+  return typeof m === 'string' && m.trim().toLowerCase() === 'silent';
+}
+
 /** The canonical status, or the trimmed original when it is not one we know. */
 export function normalizeStatus(raw: unknown): string {
   const s = String(raw ?? '').trim();

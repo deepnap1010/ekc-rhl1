@@ -15,6 +15,9 @@ export interface ITelemetry {
   // payload land here, and without it their per-reading state was thrown away
   // at ingest and only the machine document's latest value survived.
   status?: string;
+  // What the collector called it when we booked the reading as offline because
+  // it could not reach the PLC — kept so the swap is auditable, never guessed.
+  reportedStatus?: string;
   timestamp?: Date;
   receivedAt?: Date;
   // Schema-agnostic metric map (Mixed): keys vary per machine type.
@@ -27,6 +30,7 @@ const telemetrySchema = new mongoose.Schema<ITelemetry>(
     machineName: { type: String },
     machineType: { type: String },
     status:      { type: String },
+    reportedStatus: { type: String },
     timestamp:   { type: Date },
     receivedAt:  { type: Date },
     data:        { type: mongoose.Schema.Types.Mixed, default: {} },

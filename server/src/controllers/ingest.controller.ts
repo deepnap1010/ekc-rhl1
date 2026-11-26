@@ -8,7 +8,7 @@ import type { AnyBulkWriteOperation } from 'mongoose';
 import { Machine, type IMachine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
-import { normalizeStatus } from '../utils/status.js';
+import { normalizeStatus, linkIsDown } from '../utils/status.js';
 import { env } from '../config/env.js';
 
 interface Reading {
@@ -77,8 +77,20 @@ export const ingest = asyncHandler(async (req, res) => {
     // the latest value — so for every collector that sends its status beside the
     // payload rather than inside it, the history had no per-minute state at all
     // and the timeline fell back to reconstructing one from downtime spans.
-    const status = r.status ? normalizeStatus(r.status) : '';
-    telemetry.push({ machineId: id, machineName: name, machineType: type, timestamp: ts, receivedAt: now, data, ...(status ? { status } : {}) });
+    const reported = r.status ? normalizeStatus(r.status) : '';
+    // A collector that cannot reach the PLC is not reporting the MACHINE's
+    // state, it is reporting its own blindness — and the rest of the payload
+    // goes stale with it. On 2026-11-26 SPG07's totals and state_elapsed came
+    // back byte-identical to the values it last sent on 2026-11-17: a nine-day
+    // old snapshot, republished nine times a second. Stored as the collector's
+    // own word that reads as 110,407 readings of "stopped" in one shift, which
+    // is downtime the machine never had, on a machine that was making pieces.
+    // We book it as offline — no data, which is exactly what it is, and which
+    // b2e68f2 already keeps out of downtime. The collector's own word is kept
+    // beside it rather than discarded, so nothing is lost by the swap.
+    const blind = linkIsDown(data);
+    const status = blind ? 'offline' : reported;
+    telemetry.push({ machineId: id, machineName: name, machineType: type, timestamp: ts, receivedAt: now, data, ...(status ? { status } : {}), ...(blind && reported ? { reportedStatus: reported } : {}) });
 
     const set: Partial<IMachine> = { machineId: id, code: id, currentParameters: data, lastReadingAt: ts, lastSeenAt: now };
     if (name) set.name = name;
