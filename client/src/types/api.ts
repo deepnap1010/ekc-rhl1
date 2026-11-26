@@ -239,6 +239,7 @@ export interface MachineActivityRow {
   idleMs: number;
   stoppedMs: number;
   offlineMs: number;
+  unaccountedMs?: number;         // window time none of the four buckets covers
   production: number | null;      // production counter delta over the range
   productionKey: string | null;   // which signal the delta was read from
   productionFrom: string | null;  // set when an UPSTREAM machine counted it

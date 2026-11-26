@@ -350,6 +350,10 @@ export default function MachineOverview({ machine, status, lastSeenAt, onTab }: 
             {actRow && actRow.offlineMs >= 60_000 && (
               <span title="Minutes with no data from the machine — the network or its collector, not the machine itself"> · signal lost {fmtDuration(actRow.offlineMs)}</span>
             )}
+            {/* …and the time the machine's own counters never claimed. */}
+            {actRow && (actRow.unaccountedMs ?? 0) >= 60_000 && (
+              <span title="Window time the machine's own run / idle / stopped counters never claimed — they do not tick while its motors are off or it is in manual mode"> · {fmtDuration(actRow.unaccountedMs as number)} in no state</span>
+            )}
           </div>
         </Panel>
       </div>

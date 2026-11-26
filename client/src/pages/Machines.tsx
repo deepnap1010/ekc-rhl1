@@ -793,6 +793,21 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
         <TimeStat label="Stopped" ms={activity?.stoppedMs} color={RED} />
         <TimeStat label="Downtime" ms={activity ? activity.idleMs + activity.stoppedMs : undefined} color="#991B1B" />
       </div>
+      {/* The window the four tiles do NOT cover. Neither figure is the
+          machine's fault and neither belongs in a tile, but a card whose
+          numbers come to 91 of 196 minutes with nothing saying why is worse
+          than a line of small print that admits it. */}
+      {!!activity && (activity.offlineMs >= 60_000 || (activity.unaccountedMs ?? 0) >= 60_000) && (
+        <div className="text-[10px] text-steel/70 mt-1 text-center truncate">
+          {activity.offlineMs >= 60_000 && (
+            <span title="Minutes with no data from the machine - the network or its collector, not the machine itself">signal lost {fmtDuration(activity.offlineMs)}</span>
+          )}
+          {activity.offlineMs >= 60_000 && (activity.unaccountedMs ?? 0) >= 60_000 && ' · '}
+          {(activity.unaccountedMs ?? 0) >= 60_000 && (
+            <span title="Window time the machine's own run / idle / stopped counters never claimed - they do not tick while its motors are off or it is in manual mode">{fmtDuration(activity.unaccountedMs as number)} in no state</span>
+          )}
+        </div>
+      )}
       </div>
 
       {/* Footer — the card is a summary; deep views live behind these links */}

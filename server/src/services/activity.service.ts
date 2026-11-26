@@ -34,6 +34,15 @@ export interface ActivityRow {
   idleMs: number;
   stoppedMs: number;
   offlineMs: number;
+  // Window time the four buckets above do NOT cover. A machine whose own books
+  // are trusted is credited exactly what its counters moved, and they need not
+  // cover the clock: SPG06's run/idle/stop registers advanced 96 minutes across
+  // a 207-minute shift — they do not tick while its motors are off — and the
+  // other 111 minutes used to vanish, leaving four tiles that could not be
+  // reconciled against the window and nothing on screen admitting it. The
+  // engine only ever trimmed an EXCESS; a shortfall went unnoticed. Named here
+  // so a surface can show it instead of quietly losing it.
+  unaccountedMs: number;
   production: number | null; // counter delta over the range
   productionKey: string | null;
   // Set when this machine's count was made by the machine UPSTREAM of it: the
@@ -645,6 +654,7 @@ export async function computeActivity(
       status, live: readings > 0, readings,
       firstSeen: t?.firstSeen || null, lastSeen: t?.lastSeen || null,
       runningMs, idleMs: down.idle, stoppedMs: down.stopped, offlineMs: down.offline,
+      unaccountedMs: Math.max(0, windowMs - runningMs - down.idle - down.stopped - down.offline),
       production: prod?.production ?? null,
       productionKey: prod?.key ?? null,
       productionFrom: null,
@@ -803,6 +813,7 @@ async function applyCorrections(
       const cut = Math.min(row[k], excess);
       row[k] -= cut; excess -= cut;
     }
+    row.unaccountedMs = Math.max(0, windowMs - row.runningMs - row.idleMs - row.stoppedMs - row.offlineMs);
     const observed: [string, number][] = [['running', row.runningMs], ['idle', row.idleMs], ['stopped', row.stoppedMs]];
     observed.sort((a, b) => b[1] - a[1]);
     if (observed[0][1] > 0) row.status = observed[0][0];
