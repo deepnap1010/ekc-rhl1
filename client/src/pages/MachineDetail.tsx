@@ -14,7 +14,7 @@ import MachineOverview from '../components/machine/MachineOverview';
 import ParametersModal from '../components/machine/MachineParameters';
 import MachineTimeline from '../components/machine/MachineTimeline';
 import { fmtNum, fmtTime, fmtDuration, prettyType } from '../lib/format';
-import { effectiveStatus, collectorNote } from '../lib/machineStatus';
+import { effectiveStatus, collectorNote, linkUnstable } from '../lib/machineStatus';
 import { useMachineLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine } from '../types/api';
@@ -83,6 +83,8 @@ export default function MachineDetail() {
   // Machines card shows, so the two surfaces cannot explain one machine
   // differently.
   const note = collectorNote(live?.currentParameters || machine.liveParameters || machine.latestData);
+  const blind = linkUnstable(machine.linkLastSilentAt);
+  const blindWhy = note.linkDown && note.text ? note.text : 'PLC unreachable';
   const title = cfg.displayName || machine.name || id;
   const typeLabel = machine.type && machine.type !== 'UNKNOWN' ? prettyType(machine.type) : 'Unclassified';
 
@@ -106,8 +108,8 @@ export default function MachineDetail() {
           </div>
           <div className="flex items-center gap-3">
             <DiaChip code={String(id)} />
-            <FreshnessPill lastSeenAt={lastSeenAt} />
-            <StatusPill status={status} title={note.text || undefined} />
+            <FreshnessPill lastSeenAt={lastSeenAt} blind={blind} />
+            <StatusPill status={status} title={blind ? blindWhy : (note.text || undefined)} />
           </div>
         </div>
       </div>

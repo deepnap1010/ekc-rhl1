@@ -18,7 +18,7 @@ import DiaTraceModal from '../components/machine/DiaTraceModal';
 import CorrectionModal from '../components/machine/CorrectionModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
-import { statusCounts, liveStatus, isStale, collectorNote } from '../lib/machineStatus';
+import { statusCounts, liveStatus, isStale, collectorNote, linkUnstable } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -497,6 +497,16 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   const status    = liveStatus(machine, liveTick);
   // The collector's sentence about its own link to the machine, when it posts one.
   const note      = collectorNote(params);
+  // The SAME steady signal the pill uses, not the latest sample. The note used
+  // to read `note.linkDown` — one reading — so while the pill held Signal Lost
+  // for two minutes the sentence under it blinked out every time a good
+  // reading slipped through, and the card explained nothing at the moment it
+  // most needed to.
+  const blind     = linkUnstable(machine.linkLastSilentAt);
+  // Its own words when the latest reading really is a blind one; otherwise a
+  // plain sentence. Never the reason off a GOOD reading — "activity 1s ago"
+  // printed under a Signal Lost pill would be worse than saying nothing.
+  const blindWhy  = note.linkDown && note.text ? note.text : 'PLC unreachable';
   const lastSeen  = liveTick?.lastReadingAt || machine.lastReadingAt;
 
   // ── The card answers for the shift on the floor, dark or not ─────────────
@@ -616,7 +626,11 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
     // machine doesn't have; a derived count has no register to quote, so the
     // sub-line names the signal the server counted edges of.
     sub: dark
-      ? `${counterNow != null ? `counter reads ${fmtNum(counterNow)} · ` : ''}signal lost ${fmtTime(lastSeen)}`
+      // "signal lost 7:16 pm" when 7:16 pm is NOW reads as the signal having
+      // just dropped. It had not: this machine never stopped sending, it
+      // stopped being able to see its own PLC, and the two want different
+      // words.
+      ? `${counterNow != null ? `counter reads ${fmtNum(counterNow)} · ` : ''}${blind ? blindWhy : `signal lost ${fmtTime(lastSeen)}`}`
       : borrowedFrom(activity)
       ?? (counterNow != null ? `counter reads ${fmtNum(counterNow)}`
         : `counted from ${(activity?.productionKey || 'signal').replace(/_/g, ' ')} cycles`),
@@ -681,10 +695,11 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
         <div className="flex flex-col items-end gap-1 shrink-0">
           {/* The collector's own words for why it has nothing, when it sends
               them — otherwise a flapping "Stopped" is all the floor sees. */}
-          <StatusPill status={status} title={note.text || undefined} />
-          <Freshness lastReadingAt={lastSeen} />
-          {note.linkDown && (
-            <div className="text-[10px] text-idle text-right max-w-[140px] leading-tight" title={note.text}>{note.text}</div>
+          <StatusPill status={status} title={blind ? blindWhy : (note.text || undefined)} />
+          <Freshness lastReadingAt={lastSeen} blind={blind} />
+          {blind && (
+            <div className="text-[10px] text-idle text-right max-w-[140px] leading-tight"
+              title="The collector is sending, but it cannot see the machine">{blindWhy}</div>
           )}
         </div>
       </div>

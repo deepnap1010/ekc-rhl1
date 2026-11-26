@@ -23,20 +23,30 @@ export function StatusPill({ status, title }: StatusPillProps) {
 
 interface FreshnessPillProps {
   lastSeenAt?: string | Date | null;
+  /** The collector is reporting but cannot see the machine — see
+   *  components/Freshness for why "Live" must not be shown as the machine's. */
+  blind?: boolean;
   className?: string;
 }
 
 // Data-freshness indicator derived from the last reading time. Pulses while live.
-export function FreshnessPill({ lastSeenAt, className = '' }: FreshnessPillProps) {
+export function FreshnessPill({ lastSeenAt, blind, className = '' }: FreshnessPillProps) {
   const f = freshness(lastSeenAt);
+  // See components/Freshness: "Live" names the COLLECTOR when the machine
+  // itself cannot be seen, and must not be dressed as the machine streaming.
+  const blindLive = !!blind && f.state === 'live';
+  const label = blindLive ? 'collector live' : f.label;
+  const color = blindLive ? '#94A3B8' : f.color;
   return (
     <span
       className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${className}`}
-      style={{ color: f.color }}
-      title={lastSeenAt ? new Date(lastSeenAt).toLocaleString('en-IN') : 'No readings yet'}
+      style={{ color }}
+      title={blindLive
+        ? 'The collector is sending, but it cannot see the machine'
+        : lastSeenAt ? new Date(lastSeenAt).toLocaleString('en-IN') : 'No readings yet'}
     >
-      <span className={`w-2 h-2 rounded-full ${f.pulse ? 'live-dot' : ''}`} style={{ background: f.color }} />
-      {f.label}
+      <span className={`w-2 h-2 rounded-full ${f.pulse && !blindLive ? 'live-dot' : ''}`} style={{ background: color }} />
+      {label}
     </span>
   );
 }
