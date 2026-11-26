@@ -15,6 +15,33 @@ export const STALE_MS = 120_000;
 /** Silence threshold after which any machine is shown as Signal Lost. */
 export const NETWORK_LOST_MS = 10 * 60_000;
 
+/** How long after the last BLIND reading we go on saying the link is unstable.
+ *
+ *  A collector that cannot reach the PLC is not reporting the machine's state,
+ *  so the word it sends is not about the machine at all — and on a link that
+ *  drops in and out, the one reading in a hundred that gets through flips the
+ *  pill to Running while the machine is invisible. SPG07 changed its pill 223
+ *  times in ten minutes across a shift that was 98% blind.
+ *
+ *  Blind readings keep ARRIVING while a link flaps, so the stamp this reads
+ *  keeps refreshing and the pill holds one steady word. A link that genuinely
+ *  recovers stops refreshing it and the machine's own status is back within
+ *  two minutes. */
+export const LINK_UNSTABLE_MS = 120_000;
+
+/** True while the collector has recently said it cannot see the machine.
+ *
+ *  Compared as an ABSOLUTE distance, because the stamp is written by the
+ *  factory server's clock and read against the browser's. A browser running a
+ *  couple of minutes slow sees every stamp in the future, and a plain
+ *  `now - t < LIMIT` would then be true forever — pinning a machine on Signal
+ *  Lost for good over a clock that is merely out of step. Either way round,
+ *  skew now costs at most the window itself. */
+export function linkUnstable(lastSilentAt?: string | null, now = Date.now()): boolean {
+  const t = Date.parse(String(lastSilentAt ?? ''));
+  return Number.isFinite(t) && Math.abs(now - t) < LINK_UNSTABLE_MS;
+}
+
 export function isStale(lastReadingAt?: string | null, now = Date.now()): boolean {
   if (!lastReadingAt) return true;
   const t = new Date(lastReadingAt).getTime();
@@ -23,7 +50,16 @@ export function isStale(lastReadingAt?: string | null, now = Date.now()): boolea
 
 /** Displayed status: the reported field while data flows — silence 10+ min
  *  becomes 'network' (Signal Lost), whatever the last status claimed. */
-export function effectiveStatus(m: Pick<Machine, 'status' | 'lastReadingAt'>, now = Date.now()): string {
+export function effectiveStatus(
+  m: Pick<Machine, 'status' | 'lastReadingAt' | 'linkLastSilentAt'>,
+  now = Date.now(),
+): string {
+  // Before anything else: when the collector cannot see the PLC we have no
+  // word about the MACHINE to report, however many readings are arriving.
+  // Signal Lost already means exactly that, is already in the filters, tiles
+  // and reports, and b2e68f2 already keeps it out of downtime — so this reuses
+  // it rather than inventing a bucket the rest of the app would not know.
+  if (linkUnstable(m.linkLastSilentAt, now)) return 'network';
   // Normalised, not merely lower-cased. Collectors disagree on spelling — PC04
   // posts "Stop" — and this one value decides the pill, the KPI tiles, the
   // status filter and the sort order. Lower-casing alone left them disagreeing
@@ -42,7 +78,7 @@ export function effectiveStatus(m: Pick<Machine, 'status' | 'lastReadingAt'>, no
  *  One helper, used by the Machines page and the Dashboard board alike, so the
  *  two surfaces cannot drift into answering "now" differently. */
 export function liveStatus(
-  m: Pick<Machine, 'status' | 'lastReadingAt'>,
+  m: Pick<Machine, 'status' | 'lastReadingAt' | 'linkLastSilentAt'>,
   tick?: { status?: string | null; lastReadingAt?: string | null } | null,
   now = Date.now(),
 ): string {
@@ -52,7 +88,13 @@ export function liveStatus(
   const tickAt = Date.parse(tick?.lastReadingAt ?? '') || 0;
   const docAt = Date.parse(String(m.lastReadingAt ?? '')) || 0;
   return effectiveStatus(
-    { status: tick?.status || m.status, lastReadingAt: tickAt >= docAt ? tick?.lastReadingAt : m.lastReadingAt },
+    {
+      status: tick?.status || m.status,
+      lastReadingAt: tickAt >= docAt ? tick?.lastReadingAt : m.lastReadingAt,
+      // Not taken from the tick: a socket frame is ONE sample, and one sample
+      // deciding the pill is the thing this is here to stop.
+      linkLastSilentAt: m.linkLastSilentAt,
+    },
     now,
   );
 }

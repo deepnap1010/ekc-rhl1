@@ -108,6 +108,11 @@ export const ingest = asyncHandler(async (req, res) => {
     // fleet counts, health, the client's pill — gets one spelling instead of
     // each guessing.
     if (status) set.status = status;
+    // Stamped on every blind reading. The client holds "Signal Lost" for two
+    // minutes after the last one, so a link dropping in and out hundreds of
+    // times a minute reads as one steady sentence rather than a pill flipping
+    // between Running and Offline every few seconds.
+    if (blind) set.linkLastSilentAt = now;
     machineOps.push({ updateOne: { filter: { $or: [{ code: id }, { machineId: id }] }, update: { $set: set }, upsert: true } });
   }
 

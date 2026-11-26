@@ -476,6 +476,7 @@ export const getMachine = asyncHandler(async (req, res) => {
     class: profile?.class || null,
     isActive: (m.isActive as boolean) !== false,
     lastSeenAt: firstDefined(m.lastSeenAt, m.lastReadingAt, m.updatedAt),
+    linkLastSilentAt: m.linkLastSilentAt ?? null,
     registeredAt: firstDefined(m.registeredAt, m.createdAt),
     oee: typeof m.oee === 'number' ? m.oee : null,
     telemetryCount,

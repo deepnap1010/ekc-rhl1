@@ -171,6 +171,8 @@ export interface Machine {
   oee?: number;
   totalOutput?: number;
   lastReadingAt?: string | null;
+  /** When this machine's collector last reported it could not see the PLC. */
+  linkLastSilentAt?: string | null;
   installedOn?: string | null;
   telemetryCount?: number;
   latestTelemetry?: Telemetry | null;

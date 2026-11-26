@@ -77,6 +77,7 @@ export default function MachineDetail() {
   const status = effectiveStatus({
     status: live?.status || machine.status,
     lastReadingAt: lastSeenAt ? new Date(lastSeenAt).toISOString() : null,
+    linkLastSilentAt: machine.linkLastSilentAt,
   });
   // Why the collector has nothing, in its own words — the same sentence the
   // Machines card shows, so the two surfaces cannot explain one machine

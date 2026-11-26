@@ -16,6 +16,12 @@ export interface IMachine {
   machineType?: string;
   // Schema-agnostic live snapshot / thresholds (Mixed): keys vary per machine type.
   currentParameters?: Record<string, unknown>;
+  // When this machine's collector last told us it could not see the PLC. Only
+  // ever written, never cleared: while a link FLAPS the blind readings keep
+  // arriving and keep refreshing it, which is exactly what makes the pill hold
+  // steady instead of blinking with every sample. A link that genuinely
+  // recovers simply stops refreshing it and it ages out.
+  linkLastSilentAt?: Date;
   thresholds?: Record<string, unknown>;
   ratedCapacity?: number;
   oee?: number;
@@ -41,6 +47,7 @@ const machineSchema = new mongoose.Schema<IMachine>(
 
     // Latest live snapshot pushed by the factory system (schema-agnostic per machine type)
     currentParameters: { type: mongoose.Schema.Types.Mixed, default: {} },
+    linkLastSilentAt: { type: Date },
     thresholds:        { type: mongoose.Schema.Types.Mixed, default: {} }, // e.g. { temperatureMax: 1250 }
 
     ratedCapacity: { type: Number },
