@@ -9,6 +9,8 @@ import { Machine, type IMachine } from '../models/Machine.js';
 import { Telemetry } from '../models/Telemetry.js';
 import { ok, fail, asyncHandler } from '../utils/http.js';
 import { normalizeStatus, linkIsDown } from '../utils/status.js';
+import { statusFromData } from '../utils/production.js';
+import { flattenData } from '../utils/flatten.js';
 import { env } from '../config/env.js';
 
 interface Reading {
@@ -77,7 +79,14 @@ export const ingest = asyncHandler(async (req, res) => {
     // the latest value — so for every collector that sends its status beside the
     // payload rather than inside it, the history had no per-minute state at all
     // and the timeline fell back to reconstructing one from downtime spans.
-    const reported = r.status ? normalizeStatus(r.status) : '';
+    // The top level first, always — a collector that states its status beside
+    // the payload is answering the question directly. Only when it sends none
+    // do we look inside, where NECKDRILLING1 keeps its `run-status`. The
+    // flatten is paid by that one machine: every other collector takes the
+    // first branch and never reaches it.
+    const reported = r.status
+      ? normalizeStatus(r.status)
+      : normalizeStatus(statusFromData(flattenData(data)));
     // A collector that cannot reach the PLC is not reporting the MACHINE's
     // state, it is reporting its own blindness — and the rest of the payload
     // goes stale with it. On 2026-11-26 SPG07's totals and state_elapsed came

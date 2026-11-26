@@ -21,6 +21,11 @@ const ALIASES = new Map<string, string>([
   ['run', 'running'], ['running', 'running'],
   ['stop', 'stopped'], ['stopped', 'stopped'], ['halt', 'stopped'], ['halted', 'stopped'],
   ['idle', 'idle'], ['standby', 'idle'],
+  // NECKDRILLING1's run-status cycles idle / pause / run. Left unmapped, the
+  // sweep's fallthrough treats an unknown word as RUNNING and credits paused
+  // time as runtime — the CUTTINGMACHINE04 failure this table exists to stop.
+  // A paused machine is loaded and powered but making nothing: that is idle.
+  ['pause', 'idle'], ['paused', 'idle'],
   ['offline', 'offline'], ['disconnected', 'offline'],
 ]);
 

@@ -103,5 +103,31 @@ export function pickRunKeys(flat: Record<string, unknown>): MachineBooks {
   };
 }
 
+// A few collectors put the machine's state INSIDE the payload instead of beside
+// it. NECKDRILLING1 is the plant's only one: 618 readings in a shift, not one of
+// them carrying a top-level status, while `run-status` sat in its data cycling
+// idle / pause / run. With nothing reading it the machine had no status at all,
+// and the two halves of the app read that absence in OPPOSITE directions — the
+// client's `m.status || 'offline'` printed "Offline" over a machine that had
+// reported seconds earlier, while the downtime sweep fell through to its `up`
+// default and credited the whole window as runtime: 22m up, 0m downtime, 100%
+// efficiency, not one span, under an Offline badge.
+//
+// Anchored on the key ENDING in status/state, so the `opr-mode` and `ready`
+// sitting beside it in the same payload cannot be mistaken for one.
+const STATUS_KEY_RE = /^((run|running|machine|op|opr|operation|operating|current) )?(status|state)$/;
+
+/** The machine's state read out of its payload, for collectors that do not send
+ *  one beside it. '' when the payload holds none — never a guess, and never a
+ *  substitute for a status the collector did send. */
+export function statusFromData(flat: Record<string, unknown>): string {
+  for (const k of Object.keys(flat)) {
+    if (!STATUS_KEY_RE.test(normRunKey(stripGroups(k)))) continue;
+    const v = flat[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
 /** Back-compat single-signal helper. */
 export const pickRunKey = (flat: Record<string, unknown>): RunSignal | null => pickRunKeys(flat).run;

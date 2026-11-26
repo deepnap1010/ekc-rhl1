@@ -27,7 +27,7 @@ export const STATUS: Record<string, StatusStyle> = {
 const STATUS_ALIASES = new Map<string, string>([
   ['run', 'running'], ['running', 'running'],
   ['stop', 'stopped'], ['stopped', 'stopped'], ['halt', 'stopped'], ['halted', 'stopped'],
-  ['idle', 'idle'], ['standby', 'idle'],
+  ['idle', 'idle'], ['standby', 'idle'], ['pause', 'idle'], ['paused', 'idle'],
   ['offline', 'offline'], ['disconnected', 'offline'],
 ]);
 
