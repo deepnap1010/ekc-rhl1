@@ -247,7 +247,15 @@ export const machineTimeline = asyncHandler(async (req, res) => {
           readings: { $sum: 1 },
           // Non-numeric samples are ignored rather than compared: BSON orders
           // strings above numbers, so one stray '' would win every $max.
-          prodMax: counterAt ? { $max: { $cond: [{ $isNumber: counterAt }, counterAt, null] } } : { $max: null },
+          // Blind readings are excluded from the COUNTER but not from the
+          // row: filtering them out of the pipeline would delete the minute
+          // altogether, when what the minute has to say is precisely that the
+          // machine could not be seen then. docStatus above already carries
+          // that word — ingest stored it as offline — so the row survives and
+          // reads "signal lost" instead of a stale counter's "Stopped".
+          prodMax: counterAt
+            ? { $max: { $cond: [{ $and: [{ $isNumber: counterAt }, { $ne: ['$status', 'offline'] }] }, counterAt, null] } }
+            : { $max: null },
         } },
         // Deliberately NO { $sort: { _id: 1 } } here: a sort after $group is a
         // blocking sort, and this Atlas tier ignores allowDiskUse — a History range
@@ -841,7 +849,9 @@ export const machineHourly = asyncHandler(async (req, res) => {
     // Highest counter value per minute (replay-proof), stepped in Node — then
     // each confirmed climb lands in the hour of the sample that observed it.
     const rows = await Telemetry.aggregate([
-      { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD } } },
+      // Blind readings carry a cached counter — see activity.service's
+      // production pipeline. The hourly bars read the same series as the card.
+      { $match: { machineId: { $in: refs }, timestamp: { $gte: fromD, $lte: endD }, status: { $ne: 'offline' } } },
       { $addFields: { pv: { $getField: { field: key, input: '$data' } } } },
       { $match: { pv: { $type: ['int', 'long', 'double', 'decimal'] } } },
       { $group: { _id: { $dateTrunc: { date: '$timestamp', unit: 'minute' } }, v: { $max: '$pv' } } },

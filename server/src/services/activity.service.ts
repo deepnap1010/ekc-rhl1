@@ -364,7 +364,17 @@ export async function computeActivity(
         (key ? { $getField: { field: key, input: '$data' } } : null);
       const made = (await Promise.all(keyed.map(async (k) => {
         const rows = await Telemetry.aggregate([
-          { $match: { machineId: k.id, timestamp: { $gte: fromD, $lte: endD } } },
+          // A reading whose collector could not see the machine carries a
+          // CACHED payload, not a measurement. SPG07's blind readings replay a
+          // snapshot whose PROD_COUNT sits at 24 while the live counter reads
+          // 23 — and because the group below takes the per-minute $max, every
+          // blind minute locks at the stale 24, nothing ever climbs above it,
+          // and a machine that made 23 pieces reports 0. Ingest already stores
+          // these as offline, so they are simply not asked.
+          //   $ne also matches a reading with NO status at all, which is how it
+          //   must stay: several collectors here send none (NECKDRILLING1 posts
+          //   its state inside the payload) and their counters are real.
+          { $match: { machineId: k.id, timestamp: { $gte: fromD, $lte: endD }, status: { $ne: 'offline' } } },
           { $addFields: {
             pv: field(k.key),
             rv: field(k.books.run?.key ?? null),

@@ -94,7 +94,10 @@ async function rawProductionEventsBy(
   // allowDiskUse) — the series is ordered in Node.
   const series = await Promise.all(keyed.map(async (k) => {
     const rows = await Telemetry.aggregate([
-      { $match: { machineId: k.ref, timestamp: range } },
+      // Blind readings carry a cached counter, not a measurement — see the
+      // note in activity.service's production pipeline. Excluded here too, so
+      // the counters service and the boards cannot disagree about one machine.
+      { $match: { machineId: k.ref, timestamp: range, status: { $ne: 'offline' } } },
       { $addFields: { pv: { $getField: { field: k.key, input: '$data' } } } },
       { $match: { pv: { $type: NUMERIC } } },
       { $group: { _id: { $dateTrunc: { date: '$timestamp', unit: 'minute', binSize } }, pv: { $max: '$pv' } } },
