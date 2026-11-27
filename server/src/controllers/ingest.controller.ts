@@ -11,7 +11,7 @@ import { ok, fail, asyncHandler } from '../utils/http.js';
 import { normalizeStatus, linkIsDown } from '../utils/status.js';
 import { statusFromData } from '../utils/production.js';
 import { flattenData } from '../utils/flatten.js';
-import { env } from '../config/env.js';
+import { env, normalizeAddr } from '../config/env.js';
 
 interface Reading {
   machineId?: string;
@@ -48,6 +48,37 @@ function noteSource(id: string, ip: string | undefined): void {
   }
 }
 
+// A machine pinned in INGEST_BIND takes readings only from its own address.
+// Everything NOT named there is unpoliced and ingests exactly as before.
+function sourceAllowed(id: string, ip: string): boolean {
+  const allowed = env.ingestBind.get(id.toUpperCase());
+  return !allowed || allowed.has(ip);
+}
+
+// A refused box does not stop sending because we stopped listening — the one
+// posting as SPG07 floods at nine readings a second, which is 777,000 log lines
+// a day if each is announced. The first is said plainly, then a rollup every
+// five minutes carrying the count, so the line stays visible in `pm2 logs`
+// without burying everything else in it.
+const REFUSED = new Map<string, { n: number; at: number }>();
+const REFUSE_ROLLUP_MS = 5 * 60_000;
+function noteRefusal(id: string, ip: string): void {
+  const key = `${id}|${ip}`;
+  const now = Date.now();
+  const rec = REFUSED.get(key);
+  if (!rec) {
+    REFUSED.set(key, { n: 1, at: now });
+    console.warn(`[ingest] REFUSED: ${id} from ${ip || 'an unknown address'} — not an address bound to that machine (INGEST_BIND). Reading dropped.`);
+    return;
+  }
+  rec.n++;
+  if (now - rec.at >= REFUSE_ROLLUP_MS) {
+    console.warn(`[ingest] REFUSED: ${id} from ${ip} — ${rec.n} readings dropped in the last ${Math.round((now - rec.at) / 60_000)} min.`);
+    rec.n = 0;
+    rec.at = now;
+  }
+}
+
 export const ingest = asyncHandler(async (req, res) => {
   // Fail closed: no key configured, or a wrong/absent header → reject.
   // Accept x-ingest-key OR x-api-key (the JCI-style header) so JCI integrations are drop-in.
@@ -64,11 +95,23 @@ export const ingest = asyncHandler(async (req, res) => {
   const now = new Date();
   const telemetry: Record<string, unknown>[] = [];
   const machineOps: AnyBulkWriteOperation<IMachine>[] = [];
+  let refused = 0;
+  const refusedWho = new Set<string>();
 
   for (const r of readings) {
     const id = String(r.machineId || r.code || '').trim();
     if (!id) return fail(res, 400, 'Each reading requires a machineId (or code)');
-    noteSource(id, req.ip);
+    const from = normalizeAddr(req.ip);
+    noteSource(id, from);
+    // Dropped per READING, not per request: a batch carrying several machines
+    // keeps the ones whose source is right instead of losing good data because
+    // one entry in it came from the wrong box.
+    if (!sourceAllowed(id, from)) {
+      noteRefusal(id, from);
+      refused++;
+      refusedWho.add(`${id} from ${from || 'an unknown address'}`);
+      continue;
+    }
     const ts = r.timestamp ? new Date(r.timestamp) : now;
     const data = r.data && typeof r.data === 'object' ? r.data : {};
     const name = r.name || r.machineName;
@@ -116,7 +159,18 @@ export const ingest = asyncHandler(async (req, res) => {
     machineOps.push({ updateOne: { filter: { $or: [{ code: id }, { machineId: id }] }, update: { $set: set }, upsert: true } });
   }
 
+  // Every reading in this request came from a box that is not bound to the
+  // machine it claims. Say so with a 403 rather than answering 200 to a sender
+  // whose every reading we are dropping — a collector told nothing goes on
+  // believing it is feeding the floor. A MIXED batch still succeeds below and
+  // reports the count, so one wrong entry never costs the right ones.
+  //   This also keeps both arrays non-empty at the writes: each reading either
+  //   fails the 400 above, is refused here, or lands in both.
+  if (!telemetry.length && refused) {
+    return fail(res, 403, `Refused ${refused} reading(s): ${[...refusedWho].join('; ')} — see INGEST_BIND.`);
+  }
+
   await Telemetry.insertMany(telemetry, { ordered: false });
   await Machine.bulkWrite(machineOps, { ordered: false });
-  return ok(res, { ingested: telemetry.length });
+  return ok(res, { ingested: telemetry.length, ...(refused ? { refused } : {}) });
 });
