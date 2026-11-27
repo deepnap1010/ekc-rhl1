@@ -14,7 +14,7 @@ import MachineOverview from '../components/machine/MachineOverview';
 import ParametersModal from '../components/machine/MachineParameters';
 import MachineTimeline from '../components/machine/MachineTimeline';
 import { fmtNum, fmtTime, fmtDuration, prettyType } from '../lib/format';
-import { effectiveStatus, collectorNote, linkUnstable } from '../lib/machineStatus';
+import { effectiveStatus, collectorNote, linkUnstable, liveRecent } from '../lib/machineStatus';
 import { useMachineLive } from '../hooks/useLive';
 import { useMachineConfig, machineKey } from '../lib/machineConfig';
 import type { Machine } from '../types/api';
@@ -78,12 +78,13 @@ export default function MachineDetail() {
     status: live?.status || machine.status,
     lastReadingAt: lastSeenAt ? new Date(lastSeenAt).toISOString() : null,
     linkLastSilentAt: machine.linkLastSilentAt,
+    lastLiveReadingAt: machine.lastLiveReadingAt,
   });
   // Why the collector has nothing, in its own words — the same sentence the
   // Machines card shows, so the two surfaces cannot explain one machine
   // differently.
   const note = collectorNote(live?.currentParameters || machine.liveParameters || machine.latestData);
-  const blind = linkUnstable(machine.linkLastSilentAt);
+  const blind = linkUnstable(machine.linkLastSilentAt) && !liveRecent(machine.lastLiveReadingAt);
   const blindWhy = note.linkDown && note.text ? note.text : 'PLC unreachable';
   const title = cfg.displayName || machine.name || id;
   const typeLabel = machine.type && machine.type !== 'UNKNOWN' ? prettyType(machine.type) : 'Unclassified';

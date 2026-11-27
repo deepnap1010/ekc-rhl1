@@ -485,6 +485,7 @@ export const getMachine = asyncHandler(async (req, res) => {
     isActive: (m.isActive as boolean) !== false,
     lastSeenAt: firstDefined(m.lastSeenAt, m.lastReadingAt, m.updatedAt),
     linkLastSilentAt: m.linkLastSilentAt ?? null,
+    lastLiveReadingAt: m.lastLiveReadingAt ?? null,
     registeredAt: firstDefined(m.registeredAt, m.createdAt),
     oee: typeof m.oee === 'number' ? m.oee : null,
     telemetryCount,

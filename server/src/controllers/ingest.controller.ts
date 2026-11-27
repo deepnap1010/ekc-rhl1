@@ -79,6 +79,32 @@ function noteRefusal(id: string, ip: string): void {
   }
 }
 
+// How long a reading that COULD see the machine goes on speaking for it.
+//
+// On 2026-11-27 one box, 192.168.2.236, was found sending two feeds under the
+// name SPG07, 0.4 seconds apart: a real one (prod 65, running 11574, idle
+// 12916 — a machine idle for 55 minutes) and a process stuck since 17 November
+// replaying a frozen snapshot (prod 24, running 6804, idle 60554, elapsed
+// 6284, byte-identical for ten days) at 523 readings a minute against the real
+// feed's 11. The frozen one wins every race simply by being louder, so the
+// machine document read `offline`, the downtime sweep turned that into spans,
+// and the card said "signal lost 2h 47m" about a machine we could see once a
+// minute the whole time.
+//
+// The rule underneath is not about SPG07: a reading whose collector could not
+// reach the machine carries no fact about the machine, and something that
+// knows nothing must not be allowed to overwrite something that knows. So
+// while a live reading is recent, a blind one updates only the fields that are
+// about the COLLECTOR — it still arrived, it is still blind, both are stamped
+// — and leaves status and the parameter snapshot alone. Once the live feed
+// itself goes quiet for this long, the blind readings are all we have and they
+// take over exactly as before.
+//
+// Five minutes: the real feed polls once a minute, so this survives four
+// missed polls before conceding, while a machine that truly goes dark still
+// falls to Signal Lost well inside the 10-minute silence rule.
+const LIVE_GRACE_MS = 5 * 60_000;
+
 export const ingest = asyncHandler(async (req, res) => {
   // Fail closed: no key configured, or a wrong/absent header → reject.
   // Accept x-ingest-key OR x-api-key (the JCI-style header) so JCI integrations are drop-in.
@@ -144,19 +170,58 @@ export const ingest = asyncHandler(async (req, res) => {
     const status = blind ? 'offline' : reported;
     telemetry.push({ machineId: id, machineName: name, machineType: type, timestamp: ts, receivedAt: now, data, ...(status ? { status } : {}), ...(blind && reported ? { reportedStatus: reported } : {}) });
 
-    const set: Partial<IMachine> = { machineId: id, code: id, currentParameters: data, lastReadingAt: ts, lastSeenAt: now };
-    if (name) set.name = name;
-    if (type) set.type = type;
-    // Canonicalised once, here, so every reader downstream — downtime engine,
-    // fleet counts, health, the client's pill — gets one spelling instead of
-    // each guessing.
-    if (status) set.status = status;
-    // Stamped on every blind reading. The client holds "Signal Lost" for two
-    // minutes after the last one, so a link dropping in and out hundreds of
-    // times a minute reads as one steady sentence rather than a pill flipping
-    // between Running and Offline every few seconds.
-    if (blind) set.linkLastSilentAt = now;
-    machineOps.push({ updateOne: { filter: { $or: [{ code: id }, { machineId: id }] }, update: { $set: set }, upsert: true } });
+    const filter = { $or: [{ code: id }, { machineId: id }] };
+
+    if (!blind) {
+      const set: Partial<IMachine> = {
+        machineId: id, code: id, currentParameters: data,
+        lastReadingAt: ts, lastSeenAt: now,
+        // The stamp the blind branch below reads. Written on every reading that
+        // could see the machine, whatever it saw.
+        lastLiveReadingAt: now,
+      };
+      if (name) set.name = name;
+      if (type) set.type = type;
+      // Canonicalised once, here, so every reader downstream — downtime engine,
+      // fleet counts, health, the client's pill — gets one spelling instead of
+      // each guessing.
+      if (status) set.status = status;
+      machineOps.push({ updateOne: { filter, update: { $set: set }, upsert: true } });
+    } else {
+      // linkLastSilentAt is stamped on every blind reading below. The client
+      // holds "Signal Lost" for two minutes after the last one, so a link
+      // dropping in and out hundreds of times a minute reads as one steady
+      // sentence rather than a pill flipping between Running and Offline every
+      // few seconds.
+      //
+      // An aggregation-pipeline update so the DATABASE decides, against the
+      // stamp it already holds. The alternative — read the machine, compare,
+      // then write — opens a window at nine readings a second in which the one
+      // live reading per minute lands between the read and the write and is
+      // thrown away by the very rule meant to protect it.
+      const liveRecent = { $gt: ['$lastLiveReadingAt', new Date(now.getTime() - LIVE_GRACE_MS)] };
+      // $literal on every payload-derived value: inside a pipeline a bare
+      // string is an EXPRESSION, so a name or a payload key beginning with '$'
+      // would be read as a field path instead of stored. A missing
+      // lastLiveReadingAt compares false, so an upsert and a machine that has
+      // never been seen alive both fall through to the old behaviour.
+      machineOps.push({
+        updateOne: {
+          filter,
+          update: [{
+            $set: {
+              machineId: { $literal: id }, code: { $literal: id },
+              ...(name ? { name: { $literal: name } } : {}),
+              ...(type ? { type: { $literal: type } } : {}),
+              lastReadingAt: ts, lastSeenAt: now, linkLastSilentAt: now,
+              status: { $cond: [liveRecent, '$status', 'offline'] },
+              currentParameters: { $cond: [liveRecent, '$currentParameters', { $literal: data }] },
+            },
+          }],
+          upsert: true,
+        },
+      });
+    }
   }
 
   // Every reading in this request came from a box that is not bound to the

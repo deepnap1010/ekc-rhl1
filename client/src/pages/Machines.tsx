@@ -18,7 +18,7 @@ import DiaTraceModal from '../components/machine/DiaTraceModal';
 import CorrectionModal from '../components/machine/CorrectionModal';
 import { isFurnaceRef, temperatureNow } from '../lib/temperature';
 import { processCompare } from '../lib/machineOrder';
-import { statusCounts, liveStatus, isStale, collectorNote, linkUnstable } from '../lib/machineStatus';
+import { statusCounts, liveStatus, isStale, collectorNote, linkUnstable, liveRecent } from '../lib/machineStatus';
 import { computeHeadline, type Headline } from '../lib/headline';
 import { useDashboardLive } from '../hooks/useLive';
 import { useAppConfig } from '../hooks/useAppConfig';
@@ -502,7 +502,7 @@ function MachineCard({ machine, liveTick, activity: liveActivity, assignment, da
   // for two minutes the sentence under it blinked out every time a good
   // reading slipped through, and the card explained nothing at the moment it
   // most needed to.
-  const blind     = linkUnstable(machine.linkLastSilentAt);
+  const blind     = linkUnstable(machine.linkLastSilentAt) && !liveRecent(machine.lastLiveReadingAt);
   // Its own words when the latest reading really is a blind one; otherwise a
   // plain sentence. Never the reason off a GOOD reading — "activity 1s ago"
   // printed under a Signal Lost pill would be worse than saying nothing.

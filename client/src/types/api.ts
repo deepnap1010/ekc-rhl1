@@ -173,6 +173,8 @@ export interface Machine {
   lastReadingAt?: string | null;
   /** When this machine's collector last reported it could not see the PLC. */
   linkLastSilentAt?: string | null;
+  /** When a reading last arrived that COULD see the machine. */
+  lastLiveReadingAt?: string | null;
   installedOn?: string | null;
   telemetryCount?: number;
   latestTelemetry?: Telemetry | null;

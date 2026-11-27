@@ -22,6 +22,10 @@ export interface IMachine {
   // steady instead of blinking with every sample. A link that genuinely
   // recovers simply stops refreshing it and it ages out.
   linkLastSilentAt?: Date;
+  // When a reading last arrived that could actually see the machine. The
+  // counterpart to the field above, and the one that decides whether a blind
+  // reading is allowed to speak: see ingest.controller's LIVE_GRACE_MS.
+  lastLiveReadingAt?: Date;
   thresholds?: Record<string, unknown>;
   ratedCapacity?: number;
   oee?: number;
@@ -47,7 +51,8 @@ const machineSchema = new mongoose.Schema<IMachine>(
 
     // Latest live snapshot pushed by the factory system (schema-agnostic per machine type)
     currentParameters: { type: mongoose.Schema.Types.Mixed, default: {} },
-    linkLastSilentAt: { type: Date },
+    linkLastSilentAt:  { type: Date },
+    lastLiveReadingAt: { type: Date },
     thresholds:        { type: mongoose.Schema.Types.Mixed, default: {} }, // e.g. { temperatureMax: 1250 }
 
     ratedCapacity: { type: Number },

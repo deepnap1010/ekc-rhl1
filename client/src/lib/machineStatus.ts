@@ -42,6 +42,25 @@ export function linkUnstable(lastSilentAt?: string | null, now = Date.now()): bo
   return Number.isFinite(t) && Math.abs(now - t) < LINK_UNSTABLE_MS;
 }
 
+/** How long a reading that COULD see the machine goes on speaking for it.
+ *
+ *  Matches LIVE_GRACE_MS in the server's ingest controller, and must: the
+ *  server stops letting blind readings overwrite the status on exactly this
+ *  boundary, and a pill that drew the line somewhere else would contradict the
+ *  very durations printed beneath it.
+ *
+ *  SPG07's collector sends 11 readings a minute that can see the machine and
+ *  523 that cannot. Being outnumbered 48 to 1 is not the same as being gone —
+ *  one good look a minute is the resolution this dashboard works at. */
+export const LIVE_GRACE_MS = 5 * 60_000;
+
+/** True while a reading that could actually see the machine is recent.
+ *  Absolute distance, for the same clock-skew reason as linkUnstable. */
+export function liveRecent(lastLiveReadingAt?: string | null, now = Date.now()): boolean {
+  const t = Date.parse(String(lastLiveReadingAt ?? ''));
+  return Number.isFinite(t) && Math.abs(now - t) < LIVE_GRACE_MS;
+}
+
 export function isStale(lastReadingAt?: string | null, now = Date.now()): boolean {
   if (!lastReadingAt) return true;
   const t = new Date(lastReadingAt).getTime();
@@ -51,7 +70,7 @@ export function isStale(lastReadingAt?: string | null, now = Date.now()): boolea
 /** Displayed status: the reported field while data flows — silence 10+ min
  *  becomes 'network' (Signal Lost), whatever the last status claimed. */
 export function effectiveStatus(
-  m: Pick<Machine, 'status' | 'lastReadingAt' | 'linkLastSilentAt'>,
+  m: Pick<Machine, 'status' | 'lastReadingAt' | 'linkLastSilentAt' | 'lastLiveReadingAt'>,
   now = Date.now(),
 ): string {
   // Before anything else: when the collector cannot see the PLC we have no
@@ -59,7 +78,11 @@ export function effectiveStatus(
   // Signal Lost already means exactly that, is already in the filters, tiles
   // and reports, and b2e68f2 already keeps it out of downtime — so this reuses
   // it rather than inventing a bucket the rest of the app would not know.
-  if (linkUnstable(m.linkLastSilentAt, now)) return 'network';
+  //   …unless something that COULD see the machine spoke recently. SPG07's box
+  // sends 523 blind readings a minute beside 11 real ones; "blind readings are
+  // arriving" and "the machine cannot be seen" are not the same sentence, and
+  // only the second one justifies throwing away a status we actually have.
+  if (linkUnstable(m.linkLastSilentAt, now) && !liveRecent(m.lastLiveReadingAt, now)) return 'network';
   // Normalised, not merely lower-cased. Collectors disagree on spelling — PC04
   // posts "Stop" — and this one value decides the pill, the KPI tiles, the
   // status filter and the sort order. Lower-casing alone left them disagreeing
@@ -78,7 +101,7 @@ export function effectiveStatus(
  *  One helper, used by the Machines page and the Dashboard board alike, so the
  *  two surfaces cannot drift into answering "now" differently. */
 export function liveStatus(
-  m: Pick<Machine, 'status' | 'lastReadingAt' | 'linkLastSilentAt'>,
+  m: Pick<Machine, 'status' | 'lastReadingAt' | 'linkLastSilentAt' | 'lastLiveReadingAt'>,
   tick?: { status?: string | null; lastReadingAt?: string | null } | null,
   now = Date.now(),
 ): string {
@@ -94,6 +117,7 @@ export function liveStatus(
       // Not taken from the tick: a socket frame is ONE sample, and one sample
       // deciding the pill is the thing this is here to stop.
       linkLastSilentAt: m.linkLastSilentAt,
+      lastLiveReadingAt: m.lastLiveReadingAt,
     },
     now,
   );
